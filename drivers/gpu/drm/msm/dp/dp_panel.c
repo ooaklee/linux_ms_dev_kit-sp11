@@ -271,6 +271,29 @@ int msm_dp_panel_read_link_caps(struct msm_dp_panel *msm_dp_panel,
 
 	rc = drm_dp_read_downstream_info(panel->aux, msm_dp_panel->dpcd,
 					 msm_dp_panel->downstream_ports);
+	if (rc)
+		return rc;
+
+	drm_edid_free(msm_dp_panel->drm_edid);
+
+	msm_dp_panel->drm_edid = drm_edid_read_ddc(connector, &panel->aux->ddc);
+
+	drm_edid_connector_update(connector, msm_dp_panel->drm_edid);
+
+	if (msm_dp_panel->drm_edid) {
+		drm_dp_cec_attach(panel->aux,
+					connector->display_info.source_physical_address);
+	} else {
+		DRM_ERROR("panel edid read failed\n");
+		drm_dp_cec_unset_edid(panel->aux);
+		/* check edid read fail is due to unplug */
+		if (!msm_dp_aux_is_link_connected(panel->aux)) {
+			rc = -ETIMEDOUT;
+			goto end;
+		}
+	}
+
+end:
 	return rc;
 }
 
