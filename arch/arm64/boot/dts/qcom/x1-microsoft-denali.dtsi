@@ -1313,6 +1313,7 @@
 
 &usb_1_ss0 {
 	dr_mode = "host";
+	snps,reinit-phy-on-resume;
 
 	status = "okay";
 };
@@ -1343,6 +1344,7 @@
 
 &usb_1_ss1 {
 	dr_mode = "host";
+	snps,reinit-phy-on-resume;
 
 	status = "okay";
 };
