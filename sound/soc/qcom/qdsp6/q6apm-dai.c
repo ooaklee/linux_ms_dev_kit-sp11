@@ -462,6 +462,14 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 
 	}
 
+	if (protected_pull) {
+		ret = q6apm_graph_media_format_shmem(prtd->graph, &cfg);
+		if (ret < 0) {
+			dev_err(dev, "Failed to set pull media format %d\n", ret);
+			return ret;
+		}
+	}
+
 	ret = q6apm_graph_media_format_pcm(prtd->graph, &cfg);
 	if (ret < 0) {
 		dev_err(dev, "%s: CMD Format block failed\n", __func__);
@@ -469,7 +477,8 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	}
 
 	/* rate and channels are sent to audio driver */
-	ret = q6apm_graph_media_format_shmem(prtd->graph, &cfg);
+	ret = protected_pull ? 0 :
+		q6apm_graph_media_format_shmem(prtd->graph, &cfg);
 	if (ret < 0) {
 		dev_err(dev, "Failed to set media format %d\n", ret);
 		return ret;
