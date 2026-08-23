@@ -45,21 +45,25 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
 	case WSA_CODEC_DMA_RX_1:
-		/*
-		 * Set limit of -3 dB on Digital Volume and 0 dB on PA Volume
-		 * to reduce the risk of speaker damage until we have active
-		 * speaker protection in place.
-		 */
+		/* Keep the -3 dB digital limit on every X1E80100 card. */
 		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
 		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
 		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
 		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+
+		/*
+		 * Denali's hardware-qualified protected profile uses the full PA
+		 * range and selects its operating point in UCM. Keep the upstream
+		 * 0 dB damage-prevention cap on every unprotected machine.
+		 */
+		if (!data->cfg->protected_speaker_feedback) {
+			snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
+			snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
+			snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+		}
 		break;
 	case WSA_CODEC_DMA_TX_0:
 	case WSA_CODEC_DMA_TX_1:
