@@ -133,6 +133,15 @@ struct audioreach_graph {
 	bool dma_quarantined;
 	bool oob_map_uncertain;
 	bool oob_transfer_uncertain;
+	void *position_virt;
+	dma_addr_t position_dma;
+	phys_addr_t position_dsp_addr;
+	size_t position_size;
+	u32 position_mem_map_handle;
+	u32 position_token;
+	bool position_map_uncertain;
+	/* Serialize teardown of the DSP-owned position mapping. */
+	struct mutex position_lock;
 	/* Cached Graph data */
 	void *graph;
 	struct kref refcount;
@@ -255,6 +264,10 @@ int q6apm_set_real_module_id(struct device *dev, struct q6apm_graph *graph, uint
 int q6apm_get_hw_pointer(struct q6apm_graph *graph, int dir);
 bool q6apm_is_graph_in_push_pull_mode(struct q6apm_graph *graph);
 bool q6apm_is_graph_in_push_pull_mode_from_id(struct device *dev, unsigned int graph_id, int dir);
+bool q6apm_graph_is_sp11_pull(struct q6apm_graph *graph);
+bool q6apm_graph_id_is_sp11_pull(struct device *dev, unsigned int graph_id);
+snd_pcm_uframes_t q6apm_get_pull_hw_pointer(struct q6apm_graph *graph,
+					    struct snd_pcm_runtime *runtime);
 int q6apm_push_pull_config(struct q6apm_graph *graph, phys_addr_t bphys,
 			   phys_addr_t pphys, uint32_t size);
 
