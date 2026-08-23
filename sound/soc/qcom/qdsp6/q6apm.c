@@ -2144,11 +2144,22 @@ int q6apm_graph_prepare(struct q6apm_graph *graph)
 		q6apm_graph_user_get(graph) ? graph : NULL;
 	struct audioreach_graph *ar_graph;
 	bool protected = q6apm_graph_has_protection(graph);
-	int ret;
+	int ret = 0;
 
 	if (!active)
 		return -ESHUTDOWN;
 	ar_graph = graph->ar_graph;
+	if (q6apm_graph_is_sp11_pull(graph)) {
+		/* The qualified FullIO pull sequence advances directly to START. */
+		mutex_lock(&ar_graph->protection_lock);
+		if (ar_graph->protection_faulted)
+			ret = -EIO;
+		else
+			ar_graph->prepared = true;
+		ar_graph->prepare_uncertain = false;
+		mutex_unlock(&ar_graph->protection_lock);
+		return ret;
+	}
 	ret = audioreach_graph_mgmt_cmd(ar_graph, APM_CMD_GRAPH_PREPARE);
 	if (protected) {
 		mutex_lock(&ar_graph->protection_lock);
