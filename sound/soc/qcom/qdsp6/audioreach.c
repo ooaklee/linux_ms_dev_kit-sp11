@@ -2163,10 +2163,15 @@ int audioreach_setup_push_pull(struct q6apm_graph *graph, phys_addr_t bphys,
 	struct apm_module_param_data *param_data;
 	int payload_size;
 	struct gpr_pkt *pkt __free(kfree) = NULL;
+	bool protected = q6apm_graph_has_protection(graph);
 	void *p;
 
 	payload_size = sizeof(*cfg) + APM_MODULE_PARAM_DATA_SIZE;
-	pkt = audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0);
+	if (protected)
+		pkt = audioreach_alloc_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0,
+					       graph->port->id, graph->shm_iid);
+	else
+		pkt = audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0);
 	if (IS_ERR(pkt))
 		return PTR_ERR(pkt);
 
@@ -2188,6 +2193,9 @@ int audioreach_setup_push_pull(struct q6apm_graph *graph, phys_addr_t bphys,
 	cfg->shared_pos_buf_addr_lsw = lower_32_bits(pphys);
 	cfg->shared_pos_buf_addr_msw = upper_32_bits(pphys);
 	cfg->pos_buf_mem_map_handle = pos_buf_mem_map_handle;
+
+	if (protected)
+		return audioreach_graph_send_cmd_sync(graph, pkt, 0);
 
 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
 }
