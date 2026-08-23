@@ -219,7 +219,7 @@ static int q6apm_lpass_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_STOP:
 		if (dai_data->is_port_started[dai->id] &&
 		    q6apm_graph_has_protection(dai_data->graph[dai->id]) &&
-		    !q6apm_is_graph_in_push_pull_mode(dai_data->graph[dai->id])) {
+		    !q6apm_graph_is_sp11_pull(dai_data->graph[dai->id])) {
 			ret = q6apm_graph_stop(dai_data->graph[dai->id]);
 			if (ret < 0)
 				dev_err(dai->dev, "Failed to stop APM port %d\n",
@@ -247,8 +247,7 @@ static int q6apm_lpass_dai_prepare(struct snd_pcm_substream *substream, struct s
 		return graph_id;
 
 	if (dai_data->is_port_started[dai->id]) {
-		if (q6apm_graph_has_protection(dai_data->graph[dai->id]) &&
-		    q6apm_is_graph_in_push_pull_mode(dai_data->graph[dai->id]))
+		if (q6apm_graph_is_sp11_pull(dai_data->graph[dai->id]))
 			return 0;
 		rc = q6apm_graph_stop(dai_data->graph[dai->id]);
 		if (rc < 0) {
