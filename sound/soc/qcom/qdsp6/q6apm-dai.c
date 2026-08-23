@@ -137,7 +137,7 @@ static bool q6apm_denali_pull_runtime(struct snd_pcm_substream *substream,
 {
 	return substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
 		q6apm_denali_protection_runtime(substream, graph) &&
-		q6apm_is_graph_in_push_pull_mode(graph);
+		q6apm_graph_is_sp11_pull(graph);
 }
 
 static bool q6apm_denali_protected_graph(struct snd_soc_component *component,
@@ -146,6 +146,14 @@ static bool q6apm_denali_protected_graph(struct snd_soc_component *component,
 {
 	return q6apm_denali_rtd(rtd) && graph_id < APM_PORT_MAX &&
 		q6apm_graph_id_has_protection(component->dev, graph_id);
+}
+
+static bool q6apm_denali_sp11_pull_graph(struct snd_soc_component *component,
+					 struct snd_soc_pcm_runtime *rtd,
+					 unsigned int graph_id)
+{
+	return q6apm_denali_rtd(rtd) && graph_id < APM_PORT_MAX &&
+		q6apm_graph_id_is_sp11_pull(component->dev, graph_id);
 }
 
 static void q6apm_latch_protected_graph(struct snd_soc_component *component,
@@ -383,7 +391,8 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 		dev_err(dev, "Denali pull PCM geometry is invalid\n");
 		return -EINVAL;
 	}
-	if (protected_pull && prtd->pull_started) {
+	if (protected_pull && prtd->pull_started &&
+	    prtd->state != Q6APM_STREAM_UNCERTAIN) {
 		prtd->state = Q6APM_STREAM_RUNNING;
 		dev_dbg(dev, "reusing persistent Denali pull graph\n");
 		return 0;
@@ -405,6 +414,11 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 				return ret;
 			}
 			prtd->state = Q6APM_STREAM_STOPPED;
+			if (protected_pull) {
+				prtd->pull_started = false;
+				prtd->push_pull_size = 0;
+				prtd->soft_paused = false;
+			}
 		}
 		q6apm_free_fragments(prtd->graph, substream->stream);
 	}
@@ -532,8 +546,7 @@ static int q6apm_dai_sp11_soft_pause(struct snd_soc_component *component,
 	unsigned long timeout;
 	int ret;
 
-	if (!q6apm_graph_has_protection(prtd->graph) ||
-	    !q6apm_is_graph_in_push_pull_mode(prtd->graph))
+	if (!q6apm_graph_is_sp11_pull(prtd->graph))
 		return -EOPNOTSUPP;
 
 	/* Suppress watermark callbacks while trigger() holds the PCM lock. */
@@ -551,6 +564,7 @@ static int q6apm_dai_sp11_soft_pause(struct snd_soc_component *component,
 	prtd->soft_paused = pause;
 	timeout = wait_for_completion_timeout(done, msecs_to_jiffies(SP11_SOFT_PAUSE_TIMEOUT_MS));
 	if (!timeout) {
+		prtd->state = Q6APM_STREAM_UNCERTAIN;
 		dev_err(component->dev, "Denali soft-%s completion timed out\n",
 			pause ? "pause" : "resume");
 		return -ETIMEDOUT;
@@ -715,7 +729,7 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 	else
 		prtd->phys = substream->dma_buffer.addr | (pdata->sid << 32);
 
-	if (q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
+	if (q6apm_is_graph_in_push_pull_mode(prtd->graph) && !protected_pull) {
 		void *pos_buffer;
 
 		prtd->pos_phys = prtd->phys + prtd->mapped_pcm_bytes;
@@ -794,6 +808,10 @@ static int q6apm_dai_hw_free(struct snd_soc_component *component,
 	}
 
 	prtd->state = Q6APM_STREAM_STOPPED;
+	if (q6apm_denali_pull_runtime(substream, prtd->graph)) {
+		prtd->pull_started = false;
+		prtd->push_pull_size = 0;
+	}
 	return 0;
 }
 
@@ -813,8 +831,10 @@ static int q6apm_dai_close(struct snd_soc_component *component,
 		ret = -EIO;
 	} else if (protected_pull && prtd->pull_started) {
 		ret = q6apm_graph_stop(prtd->graph);
-		if (!ret)
+		if (!ret) {
 			prtd->pull_started = false;
+			prtd->push_pull_size = 0;
+		}
 	} else if (prtd->state) {
 		/* only stop graph that is started */
 		if (!protected || prtd->state == Q6APM_STREAM_RUNNING ||
@@ -846,6 +866,9 @@ static snd_pcm_uframes_t q6apm_dai_pointer(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	snd_pcm_uframes_t ptr;
+
+	if (q6apm_denali_pull_runtime(substream, prtd->graph))
+		return q6apm_get_pull_hw_pointer(prtd->graph, runtime);
 
 	if (q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
 		int retries = 10;
@@ -900,7 +923,8 @@ static int q6apm_dai_hw_params(struct snd_soc_component *component,
 static int q6apm_dai_memory_map(struct snd_soc_component *component,
 				struct snd_pcm_substream *substream,
 				int graph_id, bool is_push_pull,
-				bool protected, bool *retain_buffer)
+				bool sp11_pull, bool protected,
+				bool *retain_buffer)
 {
 	struct q6apm_dai_data *pdata;
 	struct device *dev = component->dev;
@@ -919,7 +943,7 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 	else
 		phys = substream->dma_buffer.addr | (pdata->sid << 32);
 
-	map_size = protected && is_push_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
+	map_size = sp11_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
 	ret = q6apm_map_memory_fixed_region(dev, graph_id, phys, map_size);
 	if (ret < 0) {
 		*retain_buffer = protected &&
@@ -928,7 +952,7 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 		return ret;
 	}
 
-	if (is_push_pull) {
+	if (is_push_pull && !sp11_pull) {
 		if (pdata->sid < 0)
 			phys = substream->dma_buffer.addr + map_size;
 		else
@@ -985,6 +1009,7 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 	int graph_id, ret;
 	bool is_push_pull;
 	bool protected;
+	bool sp11_pull;
 	bool retain_buffer = false;
 	struct snd_pcm_substream *substream = NULL;
 
@@ -1005,9 +1030,11 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 		is_push_pull = q6apm_is_graph_in_push_pull_mode_from_id(component->dev,
 									graph_id,
 									substream->stream);
-		size = protected && is_push_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
+		sp11_pull = q6apm_denali_sp11_pull_graph(component, rtd, graph_id) &&
+			substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+		size = sp11_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
 		size += PAGE_SIZE;
-		if (is_push_pull)
+		if (is_push_pull && !sp11_pull)
 			size += POS_BUFFER_BYTES;
 
 		ret = snd_pcm_set_fixed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV, component->dev, size);
@@ -1016,7 +1043,8 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 
 		ret = q6apm_dai_memory_map(component, substream,
 					   graph_id, is_push_pull,
-					   protected, &retain_buffer);
+					   sp11_pull, protected,
+					   &retain_buffer);
 		if (ret) {
 			if (retain_buffer)
 				q6apm_dai_retain_dma_buffer(component,
