@@ -3,7 +3,9 @@
 
 #include <linux/init.h>
 #include <linux/bitmap.h>
+#include <linux/completion.h>
 #include <linux/err.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -34,6 +36,12 @@
 #define BUFFER_BYTES_MIN (PLAYBACK_MIN_NUM_PERIODS * PLAYBACK_MIN_PERIOD_SIZE)
 #define SP11_PULL_PERIOD_BYTES	1920
 #define SP11_PULL_BUFFER_BYTES	3840
+#define SP11_SOFT_PAUSE_RAMPDOWN_MS	20
+#define SP11_SOFT_PAUSE_DOWNSTREAM_MS	25
+#define SP11_SOFT_PAUSE_MARGIN_MS	5
+#define SP11_SOFT_PAUSE_TIMEOUT_MS	(SP11_SOFT_PAUSE_RAMPDOWN_MS + \
+					 SP11_SOFT_PAUSE_DOWNSTREAM_MS + \
+					 SP11_SOFT_PAUSE_MARGIN_MS)
 #define COMPR_PLAYBACK_MAX_FRAGMENT_SIZE (128 * 1024)
 #define COMPR_PLAYBACK_MAX_NUM_FRAGMENTS (16 * 4)
 #define COMPR_PLAYBACK_MIN_FRAGMENT_SIZE (8 * 1024)
@@ -93,6 +101,10 @@ struct q6apm_dai_rtd {
 	wait_queue_head_t callback_wait;
 	bool callbacks_quarantined;
 	bool notify_on_drain;
+	bool soft_paused;
+	bool pull_started;
+	struct completion soft_pause_done;
+	struct completion soft_resume_done;
 };
 
 struct q6apm_dai_data {
@@ -252,7 +264,14 @@ static void event_handler(uint32_t opcode, uint32_t token, void *payload, void *
 
 	switch (opcode) {
 	case APM_CLIENT_EVENT_WATERMARK_EVENT:
-		snd_pcm_period_elapsed(substream);
+		if (prtd->state == Q6APM_STREAM_RUNNING)
+			snd_pcm_period_elapsed(substream);
+		break;
+	case APM_CLIENT_EVENT_SOFT_PAUSE_COMPLETE:
+		complete(&prtd->soft_pause_done);
+		break;
+	case APM_CLIENT_EVENT_SOFT_RESUME_COMPLETE:
+		complete(&prtd->soft_resume_done);
 		break;
 	case APM_CLIENT_EVENT_CMD_EOS_DONE:
 		prtd->state = Q6APM_STREAM_STOPPED;
@@ -364,6 +383,11 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 		dev_err(dev, "Denali pull PCM geometry is invalid\n");
 		return -EINVAL;
 	}
+	if (protected_pull && prtd->pull_started) {
+		prtd->state = Q6APM_STREAM_RUNNING;
+		dev_dbg(dev, "reusing persistent Denali pull graph\n");
+		return 0;
+	}
 
 	cfg.direction = substream->stream;
 	cfg.sample_rate = runtime->rate;
@@ -402,6 +426,15 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 			if (ret < 0) {
 				dev_err(dev, "WaterMark event config failed rc = %d\n", ret);
 				return ret;
+			}
+			if (protected_pull) {
+				ret = q6apm_register_sp11_soft_pause_events(prtd->graph);
+				if (ret < 0) {
+					dev_err(dev,
+						"soft-pause event registration failed: %d\n",
+						ret);
+					return ret;
+				}
 			}
 			prtd->push_pull_size = prtd->pcm_size;
 		}
@@ -460,6 +493,8 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 
 	/* Now that graph as been prepared and started update the internal state accordingly */
 	prtd->state = Q6APM_STREAM_RUNNING;
+	if (protected_pull)
+		prtd->pull_started = true;
 
 	return 0;
 }
@@ -488,24 +523,81 @@ static int q6apm_dai_ack(struct snd_soc_component *component, struct snd_pcm_sub
 	return ret;
 }
 
+static int q6apm_dai_sp11_soft_pause(struct snd_soc_component *component,
+				     struct q6apm_dai_rtd *prtd,
+				     bool pause)
+{
+	struct completion *done = pause ? &prtd->soft_pause_done :
+					    &prtd->soft_resume_done;
+	unsigned long timeout;
+	int ret;
+
+	if (!q6apm_graph_has_protection(prtd->graph) ||
+	    !q6apm_is_graph_in_push_pull_mode(prtd->graph))
+		return -EOPNOTSUPP;
+
+	/* Suppress watermark callbacks while trigger() holds the PCM lock. */
+	if (pause)
+		prtd->state = Q6APM_STREAM_STOPPED;
+
+	reinit_completion(done);
+	ret = q6apm_graph_sp11_soft_pause(prtd->graph, pause);
+	if (ret) {
+		if (pause)
+			prtd->state = Q6APM_STREAM_RUNNING;
+		return ret;
+	}
+
+	prtd->soft_paused = pause;
+	timeout = wait_for_completion_timeout(done, msecs_to_jiffies(SP11_SOFT_PAUSE_TIMEOUT_MS));
+	if (!timeout) {
+		dev_err(component->dev, "Denali soft-%s completion timed out\n",
+			pause ? "pause" : "resume");
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+
 static int q6apm_dai_trigger(struct snd_soc_component *component,
 			     struct snd_pcm_substream *substream, int cmd)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	bool protected;
+	bool protected_pull;
 	int ret = 0;
 
 	protected = q6apm_denali_protection_runtime(substream, prtd->graph);
+	protected_pull = q6apm_denali_pull_runtime(substream, prtd->graph);
 	if (prtd->state == Q6APM_STREAM_QUARANTINED)
 		return -EIO;
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
+		break;
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		if (protected_pull && prtd->soft_paused) {
+			ret = q6apm_dai_sp11_soft_pause(component, prtd, false);
+			if (!ret) {
+				prtd->soft_paused = false;
+				prtd->state = Q6APM_STREAM_RUNNING;
+			}
+		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		/* TODO support be handled via SoftPause Module */
+		if (protected_pull) {
+			if (prtd->soft_paused) {
+				ret = q6apm_dai_sp11_soft_pause(component, prtd, false);
+				if (ret)
+					break;
+				prtd->soft_paused = false;
+			}
+			prtd->state = Q6APM_STREAM_STOPPED;
+			prtd->queue_ptr = 0;
+			prtd->last_pos_index = 0;
+			break;
+		}
 		if (protected &&
 		    (prtd->state == Q6APM_STREAM_RUNNING ||
 		     prtd->state == Q6APM_STREAM_UNCERTAIN)) {
@@ -518,7 +610,13 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
 		prtd->last_pos_index = 0;
 		break;
 	case SNDRV_PCM_TRIGGER_SUSPEND:
+		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		if (protected_pull && !prtd->soft_paused) {
+			ret = q6apm_dai_sp11_soft_pause(component, prtd, true);
+			if (!ret)
+				prtd->state = Q6APM_STREAM_STOPPED;
+		}
 		break;
 	default:
 		ret = -EINVAL;
@@ -561,6 +659,8 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 	spin_lock_init(&prtd->callback_lock);
 	atomic_set(&prtd->callback_users, 0);
 	init_waitqueue_head(&prtd->callback_wait);
+	init_completion(&prtd->soft_pause_done);
+	init_completion(&prtd->soft_resume_done);
 	prtd->substream = substream;
 	prtd->graph = q6apm_graph_open(dev, event_handler, prtd,
 				       graph_id, substream->stream,
@@ -680,6 +780,9 @@ static int q6apm_dai_hw_free(struct snd_soc_component *component,
 	protected = q6apm_denali_protection_runtime(substream, prtd->graph);
 	if (prtd->state == Q6APM_STREAM_QUARANTINED)
 		return -EIO;
+	if (q6apm_denali_pull_runtime(substream, prtd->graph) &&
+	    prtd->state != Q6APM_STREAM_UNCERTAIN)
+		return 0;
 	if (prtd->state != Q6APM_STREAM_UNCERTAIN &&
 	    (!protected || prtd->state != Q6APM_STREAM_RUNNING))
 		return 0;
@@ -700,19 +803,25 @@ static int q6apm_dai_close(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	bool protected;
+	bool protected_pull;
 	int close_ret;
 	int ret = 0;
 
 	protected = q6apm_denali_protection_runtime(substream, prtd->graph);
+	protected_pull = q6apm_denali_pull_runtime(substream, prtd->graph);
 	if (prtd->state == Q6APM_STREAM_QUARANTINED) {
 		ret = -EIO;
+	} else if (protected_pull && prtd->pull_started) {
+		ret = q6apm_graph_stop(prtd->graph);
+		if (!ret)
+			prtd->pull_started = false;
 	} else if (prtd->state) {
 		/* only stop graph that is started */
 		if (!protected || prtd->state == Q6APM_STREAM_RUNNING ||
 		    prtd->state == Q6APM_STREAM_UNCERTAIN) {
 			ret = q6apm_graph_stop(prtd->graph);
 		}
-		if (!ret)
+		if (!ret && !q6apm_is_graph_in_push_pull_mode(prtd->graph))
 			q6apm_free_fragments(prtd->graph, substream->stream);
 	}
 	if (ret && q6apm_graph_execution_uncertain(prtd->graph))
