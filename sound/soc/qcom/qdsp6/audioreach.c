@@ -2163,7 +2163,7 @@ int audioreach_setup_push_pull(struct q6apm_graph *graph, phys_addr_t bphys,
 	struct apm_module_param_data *param_data;
 	int payload_size;
 	struct gpr_pkt *pkt __free(kfree) = NULL;
-	bool protected = q6apm_graph_has_protection(graph);
+	bool protected = q6apm_graph_is_sp11_pull(graph);
 	void *p;
 
 	payload_size = sizeof(*cfg) + APM_MODULE_PARAM_DATA_SIZE;
