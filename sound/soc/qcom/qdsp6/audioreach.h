@@ -73,6 +73,8 @@ struct audioreach_graph;
 #define APM_CMD_CLOSE_ALL			0x01001013
 #define APM_CMD_REGISTER_SHARED_CFG		0x0100100A
 #define EVENT_ID_SH_MEM_PULL_PUSH_MODE_WATERMARK	0x0800101C
+#define EVENT_ID_SOFT_PAUSE_PAUSE_COMPLETE		0x0800103F
+#define EVENT_ID_SOFT_PAUSE_RESUME_COMPLETE		0x08001043
 
 /**
  * struct event_cfg_sh_mem_pull_push_mode_watermark_t - Watermark config

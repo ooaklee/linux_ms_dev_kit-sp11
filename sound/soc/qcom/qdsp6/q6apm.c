@@ -26,6 +26,12 @@
 #define APM_MMAP_TOKEN_OOB_SEQ_MASK		GENMASK(31, 18)
 #define Q6APM_DSP_SID_MASK			GENMASK(3, 0)
 
+/* Windows DEFAULT soft-pause module in the qualified SP11 graph. */
+#define SP11_MODULE_ID_SOFT_PAUSE	0x07001019
+#define SP11_SOFT_PAUSE_IID		0x0000466b
+#define SP11_PARAM_SOFT_PAUSE_PAUSE	0x0800102e
+#define SP11_PARAM_SOFT_PAUSE_RESUME	0x0800102f
+
 struct apm_graph_mgmt_cmd {
 	struct apm_module_param_data param_data;
 	uint32_t num_sub_graphs;
@@ -1434,11 +1440,28 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 
 	switch (hdr->opcode) {
 	case APM_EVENT_MODULE_TO_CLIENT:
+		if (data->payload_size < sizeof(*event))
+			break;
 		event = data->payload;
 		switch (event->event_id) {
 		case EVENT_ID_SH_MEM_PULL_PUSH_MODE_WATERMARK:
 			client_event = APM_CLIENT_EVENT_WATERMARK_EVENT;
-			graph->cb(client_event, hdr->token, data->payload, graph->priv);
+			if (graph->cb)
+				graph->cb(client_event, hdr->token, data->payload,
+					  graph->priv);
+			break;
+		case EVENT_ID_SOFT_PAUSE_PAUSE_COMPLETE:
+		case EVENT_ID_SOFT_PAUSE_RESUME_COMPLETE:
+			if (hdr->src_port != SP11_SOFT_PAUSE_IID ||
+			    !graph->protection_runtime ||
+			    !graph->is_push_pull_mode || !graph->cb)
+				break;
+			client_event = event->event_id ==
+				EVENT_ID_SOFT_PAUSE_PAUSE_COMPLETE ?
+				APM_CLIENT_EVENT_SOFT_PAUSE_COMPLETE :
+				APM_CLIENT_EVENT_SOFT_RESUME_COMPLETE;
+			graph->cb(client_event, hdr->token, data->payload,
+				  graph->priv);
 			break;
 		}
 
@@ -1536,6 +1559,56 @@ int q6apm_register_watermark_event(struct q6apm_graph *graph, int water_mark_lev
 	return audioreach_shmem_register_event(graph, water_mark_level_bytes, num_levels);
 }
 EXPORT_SYMBOL_GPL(q6apm_register_watermark_event);
+
+static int q6apm_register_module_event(struct q6apm_graph *graph, u32 iid,
+				       u32 event_id)
+{
+	struct apm_module_register_events *event;
+	size_t payload_size = ALIGN(sizeof(*event), 8);
+	void *p;
+
+	struct gpr_pkt *pkt __free(kfree) =
+		audioreach_alloc_cmd_pkt(payload_size,
+					 APM_CMD_REGISTER_MODULE_EVENTS, 0,
+					 graph->port->id, iid);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+
+	p = (u8 *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+	memset(p, 0, payload_size);
+	event = p;
+	event->module_instance_id = iid;
+	event->event_id = event_id;
+	event->is_register = 1;
+
+	return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+}
+
+int q6apm_register_sp11_soft_pause_events(struct q6apm_graph *graph)
+{
+	struct q6apm_graph *active __free(q6apm_graph_user) =
+		q6apm_graph_user_get(graph) ? graph : NULL;
+	struct audioreach_module *module;
+	int ret;
+
+	if (!active)
+		return -ESHUTDOWN;
+	if (!graph->protection_runtime || !graph->is_push_pull_mode)
+		return -EOPNOTSUPP;
+
+	module = q6apm_find_module_by_mid(graph, SP11_MODULE_ID_SOFT_PAUSE);
+	if (!module || module->instance_id != SP11_SOFT_PAUSE_IID)
+		return -ENODEV;
+
+	ret = q6apm_register_module_event(graph, module->instance_id,
+					  EVENT_ID_SOFT_PAUSE_PAUSE_COMPLETE);
+	if (ret)
+		return ret;
+
+	return q6apm_register_module_event(graph, module->instance_id,
+					   EVENT_ID_SOFT_PAUSE_RESUME_COMPLETE);
+}
+EXPORT_SYMBOL_GPL(q6apm_register_sp11_soft_pause_events);
 
 int q6apm_push_pull_config(struct q6apm_graph *graph, phys_addr_t bphys,
 			   phys_addr_t pphys, uint32_t size)
@@ -2016,6 +2089,39 @@ int q6apm_graph_flush(struct q6apm_graph *graph)
 	return audioreach_graph_mgmt_cmd(graph->ar_graph, APM_CMD_GRAPH_FLUSH);
 }
 EXPORT_SYMBOL_GPL(q6apm_graph_flush);
+
+int q6apm_graph_sp11_soft_pause(struct q6apm_graph *graph, bool pause)
+{
+	struct q6apm_graph *active __free(q6apm_graph_user) =
+		q6apm_graph_user_get(graph) ? graph : NULL;
+	struct apm_module_param_data *param;
+	struct audioreach_module *module;
+	size_t payload_size = ALIGN(sizeof(*param), 8);
+
+	if (!active)
+		return -ESHUTDOWN;
+	if (!graph->protection_runtime || !graph->is_push_pull_mode)
+		return -EOPNOTSUPP;
+
+	module = q6apm_find_module_by_mid(graph, SP11_MODULE_ID_SOFT_PAUSE);
+	if (!module || module->instance_id != SP11_SOFT_PAUSE_IID)
+		return -EOPNOTSUPP;
+
+	struct gpr_pkt *pkt __free(kfree) =
+		audioreach_alloc_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0,
+					 graph->port->id, module->instance_id);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+
+	param = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+	memset(param, 0, payload_size);
+	param->module_instance_id = module->instance_id;
+	param->param_id = pause ? SP11_PARAM_SOFT_PAUSE_PAUSE :
+					SP11_PARAM_SOFT_PAUSE_RESUME;
+
+	return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+}
+EXPORT_SYMBOL_GPL(q6apm_graph_sp11_soft_pause);
 
 static int q6apm_audio_probe(struct snd_soc_component *component)
 {
