@@ -235,7 +235,6 @@ static int q6apm_map_position_buffer(struct audioreach_graph *graph)
 		return -ENODEV;
 
 	graph->position_token = (graph->id & APM_MMAP_TOKEN_GID_MASK) |
-		APM_MMAP_TOKEN_MAP_TYPE_POS_BUF |
 		APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS;
 	token = graph->position_token;
 	graph->position_size = PAGE_SIZE;
@@ -2392,8 +2391,7 @@ int q6apm_graph_sp11_soft_pause(struct q6apm_graph *graph, bool pause)
 		return -EOPNOTSUPP;
 
 	struct gpr_pkt *pkt __free(kfree) =
-		audioreach_alloc_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0,
-					 graph->port->id, module->instance_id);
+		audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0);
 	if (IS_ERR(pkt))
 		return PTR_ERR(pkt);
 
@@ -2403,7 +2401,7 @@ int q6apm_graph_sp11_soft_pause(struct q6apm_graph *graph, bool pause)
 	param->param_id = pause ? SP11_PARAM_SOFT_PAUSE_PAUSE :
 					SP11_PARAM_SOFT_PAUSE_RESUME;
 
-	return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
 }
 EXPORT_SYMBOL_GPL(q6apm_graph_sp11_soft_pause);
 
