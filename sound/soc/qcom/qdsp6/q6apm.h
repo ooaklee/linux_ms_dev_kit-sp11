@@ -43,6 +43,8 @@
 #define APM_CLIENT_EVENT_DATA_WRITE_DONE	0x1009
 #define APM_CLIENT_EVENT_DATA_READ_DONE		0x100a
 #define APM_CLIENT_EVENT_WATERMARK_EVENT	0x100b
+#define APM_CLIENT_EVENT_SOFT_PAUSE_COMPLETE	0x100c
+#define APM_CLIENT_EVENT_SOFT_RESUME_COMPLETE	0x100d
 #define APM_WRITE_TOKEN_MASK                   GENMASK(15, 0)
 #define APM_WRITE_TOKEN_LEN_MASK               GENMASK(31, 16)
 #define APM_WRITE_TOKEN_LEN_SHIFT              16
@@ -190,6 +192,7 @@ int q6apm_graph_prepare(struct q6apm_graph *graph);
 int q6apm_graph_start(struct q6apm_graph *graph);
 int q6apm_graph_stop(struct q6apm_graph *graph);
 int q6apm_graph_flush(struct q6apm_graph *graph);
+int q6apm_graph_sp11_soft_pause(struct q6apm_graph *graph, bool pause);
 bool q6apm_graph_execution_uncertain(struct q6apm_graph *graph);
 void q6apm_graph_quarantine_dma(struct q6apm_graph *graph);
 bool q6apm_graph_dma_quarantined(struct device *dev, unsigned int graph_id);
@@ -256,4 +259,5 @@ int q6apm_push_pull_config(struct q6apm_graph *graph, phys_addr_t bphys,
 			   phys_addr_t pphys, uint32_t size);
 
 int q6apm_register_watermark_event(struct q6apm_graph *graph, int watermark_bytes, int num_levels);
+int q6apm_register_sp11_soft_pause_events(struct q6apm_graph *graph);
 #endif /* __APM_GRAPH_ */
