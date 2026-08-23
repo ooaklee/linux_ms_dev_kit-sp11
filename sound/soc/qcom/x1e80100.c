@@ -3,9 +3,11 @@
 
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/pcm.h>
+#include <sound/pcm_params.h>
 #include <sound/jack.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -21,6 +23,7 @@ struct x1e80100_snd_data {
 	struct snd_soc_jack jack;
 	struct snd_soc_jack dp_jack[8];
 	bool jack_setup;
+	bool protected_speaker_feedback;
 };
 
 static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
@@ -50,6 +53,11 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 		snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
 		snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
 		break;
+	case WSA_CODEC_DMA_TX_0:
+	case WSA_CODEC_DMA_TX_1:
+		if (data->protected_speaker_feedback)
+			return 0;
+		break;
 	case DISPLAY_PORT_RX_0:
 		dp_pcm_id = 0;
 		dp_jack = &data->dp_jack[dp_pcm_id];
@@ -71,11 +79,14 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 static int x1e80100_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				     struct snd_pcm_hw_params *params)
 {
+	struct x1e80100_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_interval *rate = hw_param_interval(params,
 						      SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
 							  SNDRV_PCM_HW_PARAM_CHANNELS);
+	struct snd_mask *format = hw_param_mask(params,
+					       SNDRV_PCM_HW_PARAM_FORMAT);
 
 	rate->min = rate->max = 48000;
 	switch (cpu_dai->id) {
@@ -84,6 +95,26 @@ static int x1e80100_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	case TX_CODEC_DMA_TX_2:
 	case TX_CODEC_DMA_TX_3:
 		channels->min = 1;
+		break;
+	case WSA_CODEC_DMA_TX_0:
+		if (!data->protected_speaker_feedback)
+			break;
+		rate->min = 8000;
+		rate->max = 8000;
+		channels->min = 2;
+		channels->max = 2;
+		snd_mask_none(format);
+		snd_mask_set_format(format, SNDRV_PCM_FORMAT_S32_LE);
+		break;
+	case WSA_CODEC_DMA_TX_1:
+		if (!data->protected_speaker_feedback)
+			break;
+		rate->min = 24000;
+		rate->max = 24000;
+		channels->min = 2;
+		channels->max = 2;
+		snd_mask_none(format);
+		snd_mask_set_format(format, SNDRV_PCM_FORMAT_S32_LE);
 		break;
 	default:
 		break;
@@ -127,6 +158,7 @@ static int x1e80100_snd_prepare(struct snd_pcm_substream *substream)
 	struct x1e80100_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	unsigned int channels = substream->runtime->channels;
 	unsigned int rx_slot[4];
+	unsigned int tx_slot[4];
 	int ret;
 
 	switch (cpu_dai->id) {
@@ -138,6 +170,20 @@ static int x1e80100_snd_prepare(struct snd_pcm_substream *substream)
 
 		ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
 						  channels, rx_slot);
+		if (ret)
+			return ret;
+		break;
+	case WSA_CODEC_DMA_TX_0:
+	case WSA_CODEC_DMA_TX_1:
+		if (!data->protected_speaker_feedback)
+			break;
+
+		ret = x1e80100_snd_hw_map_channels(tx_slot, channels);
+		if (ret)
+			return ret;
+
+		ret = snd_soc_dai_set_channel_map(cpu_dai, channels, tx_slot,
+						  0, NULL);
 		if (ret)
 			return ret;
 		break;
@@ -203,12 +249,16 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 		return ret;
 
 	card->driver_name = of_device_get_match_data(dev);
+	data->protected_speaker_feedback =
+		of_device_is_compatible(dev->of_node, "microsoft,denali-sndcard") &&
+		of_machine_is_compatible("microsoft,denali");
 	x1e80100_add_be_ops(card);
 
 	return devm_snd_soc_register_card(dev, card);
 }
 
 static const struct of_device_id snd_x1e80100_dt_match[] = {
+	{ .compatible = "microsoft,denali-sndcard", .data = "x1e80100" },
 	{ .compatible = "qcom,x1e80100-sndcard", .data = "x1e80100" },
 	{ .compatible = "qcom,glymur-sndcard", .data = "glymur" },
 	{}
