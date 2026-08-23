@@ -32,6 +32,8 @@
 #define CAPTURE_MIN_PERIOD_SIZE		6144
 #define BUFFER_BYTES_MAX (PLAYBACK_MAX_NUM_PERIODS * PLAYBACK_MAX_PERIOD_SIZE)
 #define BUFFER_BYTES_MIN (PLAYBACK_MIN_NUM_PERIODS * PLAYBACK_MIN_PERIOD_SIZE)
+#define SP11_PULL_PERIOD_BYTES	1920
+#define SP11_PULL_BUFFER_BYTES	3840
 #define COMPR_PLAYBACK_MAX_FRAGMENT_SIZE (128 * 1024)
 #define COMPR_PLAYBACK_MAX_NUM_FRAGMENTS (16 * 4)
 #define COMPR_PLAYBACK_MIN_FRAGMENT_SIZE (8 * 1024)
@@ -72,6 +74,7 @@ struct q6apm_dai_rtd {
 	phys_addr_t phys;
 	phys_addr_t pos_phys;
 	unsigned int pcm_size;
+	size_t mapped_pcm_bytes;
 	unsigned int push_pull_size;
 	unsigned int pcm_count;
 	unsigned int periods;
@@ -115,6 +118,14 @@ static bool q6apm_denali_protection_runtime(struct snd_pcm_substream *substream,
 {
 	return q6apm_denali_card(substream) &&
 		q6apm_graph_has_protection(graph);
+}
+
+static bool q6apm_denali_pull_runtime(struct snd_pcm_substream *substream,
+				      struct q6apm_graph *graph)
+{
+	return substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+		q6apm_denali_protection_runtime(substream, graph) &&
+		q6apm_is_graph_in_push_pull_mode(graph);
 }
 
 static bool q6apm_denali_protected_graph(struct snd_soc_component *component,
@@ -182,6 +193,30 @@ static const struct snd_pcm_hardware q6apm_dai_hardware_playback = {
 	.periods_min =          PLAYBACK_MIN_NUM_PERIODS,
 	.periods_max =          PLAYBACK_MAX_NUM_PERIODS,
 	.fifo_size =            0,
+};
+
+static const struct snd_pcm_hardware q6apm_dai_hardware_sp11_pull = {
+	.info =			(SNDRV_PCM_INFO_MMAP |
+				 SNDRV_PCM_INFO_BLOCK_TRANSFER |
+				 SNDRV_PCM_INFO_MMAP_VALID |
+				 SNDRV_PCM_INFO_INTERLEAVED |
+				 SNDRV_PCM_INFO_PAUSE |
+				 SNDRV_PCM_INFO_RESUME |
+				 SNDRV_PCM_INFO_NO_REWINDS |
+				 SNDRV_PCM_INFO_SYNC_APPLPTR |
+				 SNDRV_PCM_INFO_BATCH),
+	.formats =		SNDRV_PCM_FMTBIT_S16_LE,
+	.rates =		SNDRV_PCM_RATE_48000,
+	.rate_min =		48000,
+	.rate_max =		48000,
+	.channels_min =		2,
+	.channels_max =		2,
+	.buffer_bytes_max =	SP11_PULL_BUFFER_BYTES,
+	.period_bytes_min =	SP11_PULL_PERIOD_BYTES,
+	.period_bytes_max =	SP11_PULL_PERIOD_BYTES,
+	.periods_min =		2,
+	.periods_max =		2,
+	.fifo_size =		0,
 };
 
 static bool q6apm_dai_callback_get(struct q6apm_dai_rtd *prtd)
@@ -305,6 +340,7 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	struct device *dev = component->dev;
 	struct q6apm_dai_data *pdata;
 	bool protected;
+	bool protected_pull;
 	int ret;
 
 	pdata = snd_soc_component_get_drvdata(component);
@@ -318,6 +354,16 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	if (prtd->state == Q6APM_STREAM_QUARANTINED)
 		return -EIO;
 	protected = q6apm_denali_protection_runtime(substream, prtd->graph);
+	protected_pull = q6apm_denali_pull_runtime(substream, prtd->graph);
+	if (protected_pull &&
+	    (runtime->rate != 48000 || runtime->channels != 2 ||
+	     prtd->bits_per_sample != 16 ||
+	     prtd->pcm_size != SP11_PULL_BUFFER_BYTES ||
+	     snd_pcm_lib_period_bytes(substream) != SP11_PULL_PERIOD_BYTES ||
+	     prtd->periods != 2)) {
+		dev_err(dev, "Denali pull PCM geometry is invalid\n");
+		return -EINVAL;
+	}
 
 	cfg.direction = substream->stream;
 	cfg.sample_rate = runtime->rate;
@@ -496,6 +542,7 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 	struct device *dev = component->dev;
 	struct q6apm_dai_data *pdata;
 	struct q6apm_dai_rtd *prtd;
+	bool protected_pull;
 	int close_ret, graph_id, ret;
 
 	graph_id = cpu_dai->driver->id;
@@ -523,9 +570,11 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 		ret = PTR_ERR(prtd->graph);
 		goto err;
 	}
+	protected_pull = q6apm_denali_pull_runtime(substream, prtd->graph);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		runtime->hw = q6apm_dai_hardware_playback;
+		runtime->hw = protected_pull ? q6apm_dai_hardware_sp11_pull :
+					       q6apm_dai_hardware_playback;
 	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
 		runtime->hw = q6apm_dai_hardware_capture;
 
@@ -536,7 +585,7 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 		goto err;
 	}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK && !protected_pull) {
 		ret = snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 						   BUFFER_BYTES_MIN, BUFFER_BYTES_MAX);
 		if (ret < 0) {
@@ -559,7 +608,8 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 	}
 
 	runtime->private_data = prtd;
-	runtime->dma_bytes = BUFFER_BYTES_MAX;
+	prtd->mapped_pcm_bytes = protected_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
+	runtime->dma_bytes = prtd->mapped_pcm_bytes;
 	if (pdata->sid < 0)
 		prtd->phys = substream->dma_buffer.addr;
 	else
@@ -568,8 +618,9 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 	if (q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
 		void *pos_buffer;
 
-		prtd->pos_phys = prtd->phys + BUFFER_BYTES_MAX;
-		pos_buffer = (void *)(substream->dma_buffer.area + BUFFER_BYTES_MAX);
+		prtd->pos_phys = prtd->phys + prtd->mapped_pcm_bytes;
+		pos_buffer = (void *)(substream->dma_buffer.area +
+				      prtd->mapped_pcm_bytes);
 		prtd->pos_buffer = (struct sh_mem_pull_push_mode_position_buffer *)(pos_buffer);
 	}
 
@@ -744,6 +795,7 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 {
 	struct q6apm_dai_data *pdata;
 	struct device *dev = component->dev;
+	size_t map_size;
 	phys_addr_t phys;
 	int ret;
 
@@ -758,7 +810,8 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 	else
 		phys = substream->dma_buffer.addr | (pdata->sid << 32);
 
-	ret = q6apm_map_memory_fixed_region(dev, graph_id, phys, BUFFER_BYTES_MAX);
+	map_size = protected && is_push_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
+	ret = q6apm_map_memory_fixed_region(dev, graph_id, phys, map_size);
 	if (ret < 0) {
 		*retain_buffer = protected &&
 			(ret == -ETIMEDOUT || ret == -ESHUTDOWN);
@@ -768,9 +821,10 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 
 	if (is_push_pull) {
 		if (pdata->sid < 0)
-			phys = substream->dma_buffer.addr + BUFFER_BYTES_MAX;
+			phys = substream->dma_buffer.addr + map_size;
 		else
-			phys = (substream->dma_buffer.addr + BUFFER_BYTES_MAX) | (pdata->sid << 32);
+			phys = (substream->dma_buffer.addr + map_size) |
+			       (pdata->sid << 32);
 
 		ret = q6apm_map_pos_buffer(dev, graph_id, phys, POS_BUFFER_BYTES);
 		if (ret < 0) {
@@ -818,7 +872,7 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 	 * address arithmetic can overflow when the buffer is placed near the
 	 * end of the addressable range.
 	 */
-	int size = BUFFER_BYTES_MAX + PAGE_SIZE;
+	int size;
 	int graph_id, ret;
 	bool is_push_pull;
 	bool protected;
@@ -842,6 +896,8 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 		is_push_pull = q6apm_is_graph_in_push_pull_mode_from_id(component->dev,
 									graph_id,
 									substream->stream);
+		size = protected && is_push_pull ? PAGE_SIZE : BUFFER_BYTES_MAX;
+		size += PAGE_SIZE;
 		if (is_push_pull)
 			size += POS_BUFFER_BYTES;
 
