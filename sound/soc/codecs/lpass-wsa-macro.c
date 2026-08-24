@@ -1562,6 +1562,10 @@ static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *componen
 		snd_soc_component_update_bits(component, tx_reg1,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
 					      CDC_WSA_TX_SPKR_PROT_NO_RESET);
+
+		/* Windows qcaucd materializes TOP_CFG1 after each enabled VI pair. */
+		if (of_machine_is_compatible("microsoft,denali"))
+			snd_soc_component_write(component, CDC_WSA_TOP_TOP_CFG1, 0x03);
 	} else {
 		snd_soc_component_update_bits(component, tx_reg0,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
