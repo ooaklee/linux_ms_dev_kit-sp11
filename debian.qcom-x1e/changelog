@@ -1,3 +1,10 @@
+linux-qcom-x1e (7.2.0-jg-0sp11v12) resolute; urgency=medium
+
+  * Surface Pro 11 v12: add 48 kHz stereo TX-macro microphone capture
+    and shared direct-DMIC clock sequencing
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 26 Aug 2026 08:00:00 +0100
+
 linux-qcom-x1e (7.2.0-jg-0sp11v11) resolute; urgency=medium
 
   * Surface Pro 11 v11: support X1P MSHW0485 touchscreen product ID
