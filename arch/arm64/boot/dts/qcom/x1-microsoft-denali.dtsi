@@ -329,9 +329,7 @@
 				"VA DMIC0", "vdd-micb",
 				"VA DMIC1", "vdd-micb",
 				"TX DMIC0", "vdd-micb",
-				"TX DMIC1", "vdd-micb",
-				"TX DMIC0", "VA DMIC0 Clock",
-				"TX DMIC1", "VA DMIC1 Clock";
+				"TX DMIC1", "vdd-micb";
 
 		wsa-dai-link {
 			link-name = "WSA Playback";
