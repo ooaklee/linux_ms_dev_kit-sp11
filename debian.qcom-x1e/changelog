@@ -1,4 +1,4 @@
-linux-qcom-x1e (7.2.0-jg-0sp11v13) resolute; urgency=medium
+linux-qcom-x1e (7.2.0-jg-0sp11v12) resolute; urgency=medium
 
   * Surface Pro 11 v13: adopt geocausa mic implementation (0072 VA DMIC
     Windows divider + 0078 share VA DMIC clock with TX capture), drop our
@@ -6,13 +6,6 @@ linux-qcom-x1e (7.2.0-jg-0sp11v13) resolute; urgency=medium
     [geocausa https://github.com/geocausa]
 
  -- Leon Silcott <leon@boasi.io>  Wed, 26 Aug 2026 18:30:00 +0100
-
-linux-qcom-x1e (7.2.0-jg-0sp11v12) resolute; urgency=medium
-
-  * Surface Pro 11 v12: add 48 kHz stereo TX-macro microphone capture
-    and shared direct-DMIC clock sequencing
-
- -- Leon Silcott <leon@boasi.io>  Wed, 26 Aug 2026 08:00:00 +0100
 
 linux-qcom-x1e (7.2.0-jg-0sp11v11) resolute; urgency=medium
 
