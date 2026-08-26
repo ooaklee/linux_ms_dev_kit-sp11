@@ -1214,6 +1214,43 @@ static const struct snd_soc_dapm_widget va_macro_dapm_widgets[] = {
 			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
 			   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD),
 
+	/*
+	 * The VA macro owns the shared clocks for direct DMIC inputs.  Expose
+	 * them as supplies so other capture macros can request them through
+	 * card-level DAPM routes while sharing the existing reference counts.
+	 */
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC0 Clock", 0, SND_SOC_NOPM, 0, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC1 Clock", 0, SND_SOC_NOPM, 1, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC2 Clock", 0, SND_SOC_NOPM, 2, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC3 Clock", 0, SND_SOC_NOPM, 3, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC4 Clock", 0, SND_SOC_NOPM, 4, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC5 Clock", 0, SND_SOC_NOPM, 5, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC6 Clock", 0, SND_SOC_NOPM, 6, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
+	SND_SOC_DAPM_SUPPLY_S("VA DMIC7 Clock", 0, SND_SOC_NOPM, 7, 0,
+			      va_macro_enable_dmic,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
 	SND_SOC_DAPM_SUPPLY_S("VA_MCLK", -1, SND_SOC_NOPM, 0, 0,
 			      va_macro_mclk_event,
 			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
@@ -1223,6 +1260,15 @@ static const struct snd_soc_dapm_route va_audio_map[] = {
 	{"VA_AIF1 CAP", NULL, "VA_MCLK"},
 	{"VA_AIF2 CAP", NULL, "VA_MCLK"},
 	{"VA_AIF3 CAP", NULL, "VA_MCLK"},
+
+	{"VA DMIC0 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC1 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC2 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC3 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC4 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC5 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC6 Clock", NULL, "VA_MCLK"},
+	{"VA DMIC7 Clock", NULL, "VA_MCLK"},
 
 	{"VA_AIF1 CAP", NULL, "VA_AIF1_CAP Mixer"},
 	{"VA_AIF2 CAP", NULL, "VA_AIF2_CAP Mixer"},
