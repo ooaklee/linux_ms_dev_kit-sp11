@@ -38,6 +38,7 @@
 
 #define VFE_BUS_WRITE_CLIENT_CFG(vfe, c)	((vfe_is_lite(vfe) ? 0x400 : 0xe00) + (c) * 0x100)
 #define		VFE_BUS_WRITE_CLIENT_CFG_EN	BIT(0)
+#define		VFE_BUS_WRITE_CLIENT_CFG_MODE_MIPI_RAW	BIT(16)
 #define VFE_BUS_IMAGE_ADDR(vfe, c)		((vfe_is_lite(vfe) ? 0x404 : 0xe04) + (c) * 0x100)
 #define VFE_BUS_FRAME_INCR(vfe, c)		((vfe_is_lite(vfe) ? 0x408 : 0xe08) + (c) * 0x100)
 #define VFE_BUS_IMAGE_CFG0(vfe, c)		((vfe_is_lite(vfe) ? 0x40c : 0xe0c) + (c) * 0x100)
@@ -186,7 +187,8 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 	vfe_disable_irq(vfe);
 
 	/* Enable WM */
-	writel(VFE_BUS_WRITE_CLIENT_CFG_EN,
+	writel(VFE_BUS_WRITE_CLIENT_CFG_EN |
+	       VFE_BUS_WRITE_CLIENT_CFG_MODE_MIPI_RAW,
 	       vfe->base + VFE_BUS_WRITE_CLIENT_CFG(vfe, wm));
 
 	dev_dbg(vfe->camss->dev, "RDI%d WM:%d width %d height %d stride %d\n",
