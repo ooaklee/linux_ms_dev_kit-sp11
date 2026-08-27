@@ -34,10 +34,15 @@ Verification performed
   image, allmodconfig, or Linux hardware validation.
 * The two code commits passed whitespace checks and strict checkpatch with
   the sign-off requirement explicitly excluded; no sign-off was invented.
-  The broader repository check has inherited diagnostics: 11 errors,
-  67 warnings, and 497 checks at both base and patched revisions, including
-  three project-authored errors. Its broken-pipe handling can return zero
-  despite errors, so its exit status does not establish clean CI.
+  The broader repository check reported 11 errors and 67 warnings at both
+  the recorded base and two-code-commit tip, including three project-authored
+  errors. It reported 495 CHECK records at the base and 497 at the code tip.
+  The two additional CamelCase records name ``SE_GENI_TX_FIFOn`` and
+  ``SE_GENI_RX_FIFOn`` in ``drivers/spi/spi-geni-qcom.c``; that file's Git
+  blob is identical at both revisions. There are no added CAMSS CHECK
+  records. The reason for the different SPI reporting was not established.
+  The script's broken-pipe handling can return zero despite errors, so its
+  exit status does not establish clean CI.
 * The preserved diff and mail artifacts retain blank context lines, context
   prefixes before tabs, mail separators, and an ending blank line. A whole
   documentation whitespace check reports those artifact lines. Authored
