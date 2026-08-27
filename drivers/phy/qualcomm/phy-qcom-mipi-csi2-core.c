@@ -46,6 +46,10 @@ phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
 		u64 min_rate = link_freq / 4;
 		long round_rate;
 
+		/* Use the conservative maximum clock vote for C-PHY. */
+		if (csi2phy->stream_cfg.mode == PHY_MODE_MIPI_CPHY)
+			min_rate = 0;
+
 		phy_qcom_mipi_csi2_add_clock_margin(&min_rate);
 
 		/* This clock should be enabled only not set */
@@ -91,14 +95,52 @@ phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
 	return 0;
 }
 
+static int phy_qcom_mipi_csi2_set_mode(struct phy *phy, enum phy_mode mode,
+				       int submode)
+{
+	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
+
+	if (submode)
+		return -EINVAL;
+
+	switch (mode) {
+	case PHY_MODE_MIPI_DPHY:
+		return 0;
+	case PHY_MODE_MIPI_CPHY:
+		return csi2phy->soc_cfg->supports_cphy ? 0 : -EOPNOTSUPP;
+	default:
+		return -EINVAL;
+	}
+}
+
 static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 					union phy_configure_opts *opts)
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
 	struct phy_configure_opts_mipi_dphy *dphy_cfg_opts = &opts->mipi_dphy;
 	struct mipi_csi2phy_stream_cfg *stream_cfg = &csi2phy->stream_cfg;
+	enum phy_mode mode = phy_get_mode(phy);
 	int ret;
 	int i;
+
+	if (mode == PHY_MODE_MIPI_CPHY) {
+		/*
+		 * Until generic C-PHY options exist, the consumer carries the
+		 * symbol rate in hs_clk_rate and the number of trios in lanes.
+		 */
+		if (dphy_cfg_opts->lanes != 1)
+			return -EINVAL;
+
+		stream_cfg->mode = mode;
+		stream_cfg->combo_mode = 1;
+		stream_cfg->link_freq = dphy_cfg_opts->hs_clk_rate;
+		stream_cfg->num_data_lanes = dphy_cfg_opts->lanes;
+
+		return 0;
+	}
+
+	if (mode != PHY_MODE_MIPI_DPHY)
+		return -EINVAL;
 
 	ret = phy_mipi_dphy_config_validate(dphy_cfg_opts);
 	if (ret)
@@ -107,6 +149,7 @@ static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 	if (dphy_cfg_opts->lanes < 1 || dphy_cfg_opts->lanes > CSI2_MAX_DATA_LANES)
 		return -EINVAL;
 
+	stream_cfg->mode = mode;
 	stream_cfg->combo_mode = 0;
 	stream_cfg->link_freq = dphy_cfg_opts->hs_clk_rate;
 	stream_cfg->num_data_lanes = dphy_cfg_opts->lanes;
@@ -181,6 +224,7 @@ static const struct phy_ops phy_qcom_mipi_csi2_ops = {
 	.configure	= phy_qcom_mipi_csi2_configure,
 	.power_on	= phy_qcom_mipi_csi2_power_on,
 	.power_off	= phy_qcom_mipi_csi2_power_off,
+	.set_mode	= phy_qcom_mipi_csi2_set_mode,
 	.owner		= THIS_MODULE,
 };
 

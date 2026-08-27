@@ -11,8 +11,23 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/module.h>
 
 #include "phy-qcom-mipi-csi2.h"
+
+static unsigned int mipi_csi2phy_cphy_trio;
+module_param_named(cphy_trio, mipi_csi2phy_cphy_trio, uint, 0644);
+MODULE_PARM_DESC(cphy_trio, "C-PHY bring-up tuning: receive trio (0..2)");
+
+static unsigned int mipi_csi2phy_cphy_settle;
+module_param_named(cphy_settle, mipi_csi2phy_cphy_settle, uint, 0644);
+MODULE_PARM_DESC(cphy_settle,
+		 "C-PHY bring-up tuning: settle override (0=table default)");
+
+static unsigned int mipi_csi2phy_cphy_cdr;
+module_param_named(cphy_cdr, mipi_csi2phy_cphy_cdr, uint, 0644);
+MODULE_PARM_DESC(cphy_cdr,
+		 "C-PHY bring-up tuning: CDR override (0=table default)");
 
 #define CSIPHY_3PH_LNn_CFG1(n)				(0x000 + 0x100 * (n))
 #define CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG		(BIT(7) | BIT(6))
@@ -55,6 +70,7 @@
 #define CSIPHY_2PH_REGS					5
 #define CSIPHY_3PH_REGS					6
 #define CSIPHY_SKEW_CAL					7
+#define CSIPHY_CDR_LN_SETTINGS				8
 
 /* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode */
 static const struct
@@ -339,6 +355,85 @@ static void phy_qcom_mipi_csi2_gen1_config_lanes(struct mipi_csi2phy_device *csi
 	writel_relaxed(val, csi2phy->base + CSIPHY_3PH_LNn_MISC1(l));
 }
 
+#include "phy-qcom-mipi-csi2-cphy-x1e80100.h"
+
+static const struct x1e80100_cphy_rate *
+phy_qcom_mipi_csi2_cphy_select_rate(struct mipi_csi2phy_device *csi2phy,
+				    s64 symbol_rate)
+{
+	const struct x1e80100_cphy_rate *rate = &x1e_cphy_rates[0];
+	u64 requested_rate;
+	unsigned int i;
+
+	if (symbol_rate <= 0) {
+		dev_dbg(csi2phy->dev,
+			"C-PHY symbol rate unavailable, defaulting to %llu Hz\n",
+			(unsigned long long)rate->symbol_rate);
+		return rate;
+	}
+
+	requested_rate = symbol_rate;
+	if (requested_rate >= x1e_cphy_rates[ARRAY_SIZE(x1e_cphy_rates) - 1].symbol_rate) {
+		rate = &x1e_cphy_rates[ARRAY_SIZE(x1e_cphy_rates) - 1];
+	} else if (requested_rate > rate->symbol_rate) {
+		for (i = 1; i < ARRAY_SIZE(x1e_cphy_rates); i++) {
+			if (requested_rate > x1e_cphy_rates[i].symbol_rate)
+				continue;
+
+			if (x1e_cphy_rates[i].symbol_rate - requested_rate <
+			    requested_rate - x1e_cphy_rates[i - 1].symbol_rate)
+				rate = &x1e_cphy_rates[i];
+			else
+				rate = &x1e_cphy_rates[i - 1];
+			break;
+		}
+	}
+
+	dev_dbg(csi2phy->dev,
+		"C-PHY symbol rate %llu Hz selects %llu Hz table\n",
+		(unsigned long long)requested_rate,
+		(unsigned long long)rate->symbol_rate);
+
+	return rate;
+}
+
+static void
+phy_qcom_mipi_csi2_gen2_config_cphy_lanes(struct mipi_csi2phy_device *csi2phy,
+					  s64 symbol_rate)
+{
+	const struct x1e80100_cphy_rate *rate;
+	const struct mipi_csi2phy_lane_regs *r;
+	unsigned int i;
+	u32 val;
+
+	rate = phy_qcom_mipi_csi2_cphy_select_rate(csi2phy, symbol_rate);
+
+	for (i = 0, r = rate->regs; i < rate->num_regs; i++, r++) {
+		switch (r->mipi_csi2phy_param_type) {
+		case CSIPHY_SETTLE_CNT_LOWER_BYTE:
+			val = mipi_csi2phy_cphy_settle ?
+				mipi_csi2phy_cphy_settle : r->reg_data;
+			break;
+		case CSIPHY_CDR_LN_SETTINGS:
+			val = mipi_csi2phy_cphy_cdr ?
+				mipi_csi2phy_cphy_cdr : r->reg_data;
+			break;
+		case CSIPHY_SKEW_CAL:
+		case CSIPHY_DNP_PARAMS:
+			continue;
+		default:
+			val = r->reg_data;
+			break;
+		}
+
+		writel_relaxed(val & 0xff, csi2phy->base + r->reg_addr);
+		/* Complete the analog write before any required delay. */
+		mb();
+		if (r->delay_us)
+			udelay(r->delay_us);
+	}
+}
+
 static void
 phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
 				     u8 settle_cnt)
@@ -375,6 +470,47 @@ static bool phy_qcom_mipi_csi2_is_gen2(struct mipi_csi2phy_device *csi2phy)
 	return regs->generation == GEN2;
 }
 
+static int
+phy_qcom_mipi_csi2_cphy_lanes_enable(struct mipi_csi2phy_device *csi2phy,
+				     struct mipi_csi2phy_stream_cfg *cfg)
+{
+	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
+	unsigned int trio = min(mipi_csi2phy_cphy_trio, 2U);
+	u8 val = BIT((trio * 2) + 1);
+	int i;
+
+	dev_dbg(csi2phy->dev, "enable C-PHY trio %u with lane mask %#x\n",
+		trio, val);
+
+	writel_relaxed(0x01, csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+	udelay(2);
+	writel_relaxed(val, csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
+	writel_relaxed(0x00, csi2phy->base + regs->offset + 0x84);
+	writel_relaxed(0x00, csi2phy->base + regs->offset + 0x8c);
+	udelay(2);
+	writel_relaxed(0x7a, csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
+	writel_relaxed(0x01, csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
+	/* Commit the common settings before programming the analog table. */
+	mb();
+
+	phy_qcom_mipi_csi2_gen2_config_cphy_lanes(csi2phy, cfg->link_freq);
+
+	writel_relaxed(0x0e, csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+	usleep_range(3048, 3200);
+
+	/* IRQ_MASK registers - disable all interrupts */
+	for (i = 11; i < 22; i++)
+		writel_relaxed(0, csi2phy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
+
+	return 0;
+}
+
 static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 					   struct mipi_csi2phy_stream_cfg *cfg)
 {
@@ -383,6 +519,13 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	u8 settle_cnt;
 	u8 val;
 	int i;
+
+	if (cfg->mode == PHY_MODE_MIPI_CPHY) {
+		if (!phy_qcom_mipi_csi2_is_gen2(csi2phy))
+			return -EOPNOTSUPP;
+
+		return phy_qcom_mipi_csi2_cphy_lanes_enable(csi2phy, cfg);
+	}
 
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq, csi2phy->timer_clk_rate);
 
@@ -470,6 +613,7 @@ const struct mipi_csi2phy_soc_cfg mipi_csi2_dphy_4nm_x1e = {
 		.offset = 0x1000,
 		.generation = GEN2,
 	},
+	.supports_cphy = true,
 	.supply_names = (const char *[]){
 		"vdda-0p8",
 		"vdda-1p2"
