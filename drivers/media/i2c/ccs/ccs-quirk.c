@@ -41,8 +41,9 @@ struct ccs_limit_override {
 static int imx681_limits(struct ccs_sensor *sensor)
 {
 	/*
-	 * Embedded equivalent of ccs-sensor-4260-0681-0010.fw. Values are
-	 * raw CCS register encodings, including IEEE-754 frequency limits.
+	 * Embedded equivalent of the IMX681 firmware limits for either
+	 * reported manufacturer ID. Values are raw CCS register encodings,
+	 * including IEEE-754 frequency limits.
 	 */
 	static const struct ccs_limit_override overrides[] = {
 		{ CCS_L_MIN_OP_SYS_CLK_FREQ_REV_MHZ, 0x44834000 },
@@ -54,9 +55,14 @@ static int imx681_limits(struct ccs_sensor *sensor)
 		{ CCS_L_MIN_PLL_OP_CLK_FREQ_MHZ, 0x4489e600 },
 		/*
 		 * Bring-up-derived permissive limits. The Windows-derived mode
-		 * tables program the sensor PLL itself.
+		 * tables program the sensor PLL itself. The SP11 front camera's
+		 * 4K30 RAW10 mode at the 1 Gsym/s C-PHY link computes an op pixel
+		 * clock of exactly 500 MHz, so 450 MHz rejects it with "no valid
+		 * link frequencies" / "no supported mbus code found" during probe.
+		 * 600 MHz provides margin and also covers approximately 587.5 MHz
+		 * 1080p120-class clocks.
 		 */
-		{ CCS_L_MAX_OP_PIX_CLK_FREQ_MHZ, 0x43e10000 }, /* 450 MHz */
+		{ CCS_L_MAX_OP_PIX_CLK_FREQ_MHZ, 0x44160000 }, /* 600 MHz */
 		{ CCS_L_MIN_VT_PIX_CLK_FREQ_MHZ, 0x43200000 }, /* 160 MHz */
 	};
 	unsigned int i;

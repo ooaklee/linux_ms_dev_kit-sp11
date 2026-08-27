@@ -347,8 +347,12 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	}
 
 	if (is_cphy) {
-		/* The X1E generic PHY consumes the symbol rate through this field. */
-		dphy_cfg->hs_clk_rate = link_freq;
+		/*
+		 * The X1E generic PHY consumes the symbol rate through this field.
+		 * For CCS C-PHY sensors, DT link-frequencies is half the symbol rate
+		 * (op_sys = 2 * link_freq), so double it to match the sensor output.
+		 */
+		dphy_cfg->hs_clk_rate = link_freq * 2;
 		dphy_cfg->lanes = 1;
 
 		ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_CPHY);

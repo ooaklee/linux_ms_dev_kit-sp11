@@ -108,7 +108,8 @@
 			imx681_ep: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
 				data-lanes = <1>;
-				link-frequencies = /bits/ 64 <1000000000>;
+				/* Half the 2.4 Gsym/s C-PHY symbol rate per the CCS PLL convention. */
+				link-frequencies = /bits/ 64 <1200000000>;
 				remote-endpoint = <&csiphy2_ep>;
 			};
 		};

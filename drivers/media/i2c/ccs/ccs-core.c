@@ -87,14 +87,17 @@ struct ccs_sensor_ident {
 	const struct ccs_quirk *quirk;
 };
 
+#define CCS_IMX681_IDENT(_manufacturer_id) { \
+	.manufacturer_id = (_manufacturer_id), \
+	.model_id = CCS_IMX681_MODEL_ID, \
+	.revision = CCS_IMX681_REVISION, \
+	.name = "imx681", \
+	.quirk = &ccs_imx681_quirk, \
+}
+
 static const struct ccs_sensor_ident ccs_sensor_idents[] = {
-	{
-		.manufacturer_id = 0x4260,
-		.model_id = 0x0681,
-		.revision = 0x0010,
-		.name = "imx681",
-		.quirk = &ccs_imx681_quirk,
-	},
+	CCS_IMX681_IDENT(CCS_IMX681_MFR_ID),
+	CCS_IMX681_IDENT(CCS_IMX681_SP11_MFR_ID),
 };
 
 static const struct ccs_imx681_mode *
