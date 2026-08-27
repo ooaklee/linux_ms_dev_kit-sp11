@@ -1,9 +1,0 @@
-gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
-GNU Make 4.3
-flex 2.6.4
-bison (GNU Bison) 3.8.2
-bc 1.07.1
-Version: DTC 1.7.0
-Python 3.12.3
-0.190
-3.0.13

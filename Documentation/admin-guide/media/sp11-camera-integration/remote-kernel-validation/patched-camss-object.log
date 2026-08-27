@@ -1,7 +1,0 @@
-make: Entering directory '/work/kernel'
-make[1]: Entering directory '/work/build'
-  CC [M]  drivers/media/platform/qcom/camss/camss-csid-680.o
-  CC [M]  drivers/media/platform/qcom/camss/camss-vfe-680.o
-  LD [M]  drivers/media/platform/qcom/camss/qcom-camss.o
-make[1]: Leaving directory '/work/build'
-make: Leaving directory '/work/kernel'
