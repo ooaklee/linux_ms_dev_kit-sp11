@@ -1,6 +1,6 @@
 linux-qcom-x1e (7.2.0-jg-0sp11v12) resolute; urgency=medium
 
-  * Surface Pro 11 v13: adopt geocausa mic implementation (0072 VA DMIC
+  * Surface Pro 11 v12: adopt geocausa mic implementation (0072 VA DMIC
     Windows divider + 0078 share VA DMIC clock with TX capture), drop our
     VA DMIC DAPM-supply approach, retain TX capture DAI + micbias + 4.8 MHz
     [geocausa https://github.com/geocausa]
