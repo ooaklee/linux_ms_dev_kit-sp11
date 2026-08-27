@@ -33,6 +33,24 @@
 #include <uapi/linux/ccs.h>
 
 #include "ccs.h"
+#include "ccs-imx681-init.h"
+#include "ccs-imx681-mode.h"
+#include "ccs-imx681-vendor.h"
+
+/*
+ * Bring-up aid: bit 0 skips lane-mode register 0x0114, bit 1 skips PLL
+ * registers 0x0300..0x030f, and bit 2 skips the 361-row vendor table.
+ */
+static unsigned int imx681_mode_skip;
+module_param(imx681_mode_skip, uint, 0644);
+MODULE_PARM_DESC(imx681_mode_skip,
+		 "Bring-up: IMX681 skip mask, bit0 lane, bit1 PLL, bit2 vendor");
+
+/* Select the alternate Windows 3840x2160 table at the next stream start. */
+static bool imx681_windows;
+module_param(imx681_windows, bool, 0644);
+MODULE_PARM_DESC(imx681_windows,
+		 "Bring-up: select IMX681 Windows 3840x2160 at next stream");
 
 #define CCS_ALIGN_DIM(dim, flags)	\
 	((flags) & V4L2_SEL_FLAG_GE	\
@@ -60,6 +78,33 @@ static const struct ccs_module_ident ccs_module_idents[] = {
 	CCS_IDENT_LQ(0x10, 0x4141, -1, "jt8ev1", &smiapp_jt8ev1_quirk),
 	CCS_IDENT_LQ(0x10, 0x4241, -1, "imx125es", &smiapp_imx125es_quirk),
 };
+
+struct ccs_sensor_ident {
+	u16 manufacturer_id;
+	u16 model_id;
+	u16 revision;
+	char *name;
+	const struct ccs_quirk *quirk;
+};
+
+static const struct ccs_sensor_ident ccs_sensor_idents[] = {
+	{
+		.manufacturer_id = 0x4260,
+		.model_id = 0x0681,
+		.revision = 0x0010,
+		.name = "imx681",
+		.quirk = &ccs_imx681_quirk,
+	},
+};
+
+static const struct ccs_imx681_mode *
+ccs_imx681_current_mode(const struct ccs_sensor *sensor)
+{
+	if (!ccs_is_imx681(sensor))
+		return NULL;
+
+	return &imx681_modes[imx681_windows ? 1 : 0];
+}
 
 #define CCS_DEVICE_FLAG_IS_SMIA		BIT(0)
 
@@ -597,11 +642,112 @@ static int ccs_pll_update(struct ccs_sensor *sensor)
  *
  */
 
+#define IMX681_EXPOSURE_MIN_TICKS	5000U
+#define IMX681_EXPOSURE_MAX_TICKS	2000000U
+#define IMX681_EXPOSURE_STEP_TICKS	10U
+
+static int ccs_imx681_group_write(struct ccs_sensor *sensor,
+				  const struct ccs_reg_8 *regs,
+				  unsigned int num_regs)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
+	int release_ret;
+	int ret;
+	unsigned int i;
+
+	if (!ccs_is_imx681(sensor))
+		return -EINVAL;
+
+	ret = ccs_write_addr(sensor, CCI_REG8(0x0104), 1);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < num_regs; i++) {
+		ret = ccs_write_addr(sensor, CCI_REG8(regs[i].reg), regs[i].val);
+		if (ret)
+			break;
+	}
+
+	release_ret = ccs_write_addr(sensor, CCI_REG8(0x0104), 0);
+	if (release_ret) {
+		dev_dbg(&client->dev, "IMX681 group hold release failed: %d\n",
+			release_ret);
+		if (!ret)
+			ret = release_ret;
+	}
+
+	return ret;
+}
+
+static int ccs_imx681_set_exposure(struct ccs_sensor *sensor, u32 exposure)
+{
+	const struct ccs_reg_8 regs[] = {
+		{ 0x0229, (exposure >> 16) & 0xff },
+		{ 0x022a, (exposure >> 8) & 0xff },
+		{ 0x022b, exposure & 0xff },
+	};
+
+	return ccs_imx681_group_write(sensor, regs, ARRAY_SIZE(regs));
+}
+
+static int ccs_imx681_set_digital_gain(struct ccs_sensor *sensor, s32 value)
+{
+	u16 code = 0x0100 + clamp(value, 0, 960) * 4;
+	const struct ccs_reg_8 regs[] = {
+		{ 0x020e, code >> 8 },
+		{ 0x020f, code & 0xff },
+	};
+
+	return ccs_imx681_group_write(sensor, regs, ARRAY_SIZE(regs));
+}
+
+static u32 ccs_imx681_ticks_to_lines(const struct ccs_imx681_mode *mode,
+				     u32 ticks)
+{
+	return DIV_ROUND_CLOSEST_ULL((u64)ticks * mode->pixel_rate,
+				     10000000ULL * mode->line_length_pck);
+}
+
+static void ccs_imx681_exposure_range(struct ccs_sensor *sensor, int *min,
+				      int *max, int *step, int *def)
+{
+	const struct ccs_imx681_mode *mode = ccs_imx681_current_mode(sensor);
+	u32 margin = max(CCS_LIM(sensor, COARSE_INTEGRATION_TIME_MAX_MARGIN),
+			 1U);
+	u32 mode_max = mode->frame_length_lines > margin ?
+		mode->frame_length_lines - margin : 1;
+	u32 min_lines;
+	u32 max_lines;
+	u32 step_lines;
+	u32 default_lines;
+
+	/*
+	 * Windows exposes 100 ns ticks: 5000..2000000, step 10, default
+	 * 5000, with auto exposure enabled. Auto exposure remains userspace
+	 * policy; this control reports the converted manual line bounds.
+	 */
+	min_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_MIN_TICKS);
+	max_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_MAX_TICKS);
+	step_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_STEP_TICKS);
+	default_lines = min_lines;
+
+	*min = clamp_t(u32, min_lines, 1, mode_max);
+	*max = clamp_t(u32, max_lines, *min, mode_max);
+	*step = max_t(u32, step_lines, 1);
+	*def = clamp_t(u32, default_lines, *min, *max);
+}
+
 static void __ccs_update_exposure_limits(struct ccs_sensor *sensor,
 					 const struct v4l2_rect *pa_src)
 {
 	struct v4l2_ctrl *ctrl = sensor->exposure;
-	int max;
+	int min, max, step, def;
+
+	if (ccs_is_imx681(sensor)) {
+		ccs_imx681_exposure_range(sensor, &min, &max, &step, &def);
+		__v4l2_ctrl_modify_range(ctrl, min, max, step, def);
+		return;
+	}
 
 	max = pa_src->height + sensor->vblank->val -
 		CCS_LIM(sensor, COARSE_INTEGRATION_TIME_MAX_MARGIN);
@@ -789,6 +935,11 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case V4L2_CID_DIGITAL_GAIN:
+		if (ccs_is_imx681(sensor)) {
+			rval = ccs_imx681_set_digital_gain(sensor, ctrl->val);
+			break;
+		}
+
 		if (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
 		    CCS_DIGITAL_GAIN_CAPABILITY_GLOBAL) {
 			rval = ccs_write(sensor, DIGITAL_GAIN_GLOBAL,
@@ -820,7 +971,11 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 
 		break;
 	case V4L2_CID_EXPOSURE:
-		rval = ccs_write(sensor, COARSE_INTEGRATION_TIME, ctrl->val);
+		if (ccs_is_imx681(sensor))
+			rval = ccs_imx681_set_exposure(sensor, ctrl->val);
+		else
+			rval = ccs_write(sensor, COARSE_INTEGRATION_TIME,
+					 ctrl->val);
 
 		break;
 	case V4L2_CID_HFLIP:
@@ -894,6 +1049,8 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
 	struct v4l2_fwnode_device_properties props;
+	int exposure_min = 0, exposure_max = 0;
+	int exposure_step = 1, exposure_def = 0;
 	int rval;
 
 	rval = v4l2_ctrl_handler_init(&sensor->pixel_array->ctrl_handler, 19);
@@ -1032,7 +1189,13 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 					     &ctrl_cfg, NULL);
 	}
 
-	if (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
+	if (ccs_is_imx681(sensor)) {
+		/* Input 0..960 maps to U8.8 codes 0x0100..0x1000 (1x..16x). */
+		sensor->digital_gain =
+			v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
+					  &ccs_ctrl_ops, V4L2_CID_DIGITAL_GAIN,
+					  0, 960, 1, 0);
+	} else if (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
 	    CCS_DIGITAL_GAIN_CAPABILITY_GLOBAL ||
 	    CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
 	    SMIAPP_DIGITAL_GAIN_CAPABILITY_PER_CHANNEL)
@@ -1044,10 +1207,15 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 				      1U),
 				  0x100);
 
-	/* Exposure limits will be updated soon, use just something here. */
+	if (ccs_is_imx681(sensor))
+		ccs_imx681_exposure_range(sensor, &exposure_min, &exposure_max,
+					  &exposure_step, &exposure_def);
+
+	/* Generic exposure limits will be updated after state initialisation. */
 	sensor->exposure = v4l2_ctrl_new_std(
 		&sensor->pixel_array->ctrl_handler, &ccs_ctrl_ops,
-		V4L2_CID_EXPOSURE, 0, 0, 1, 0);
+		V4L2_CID_EXPOSURE, exposure_min, exposure_max, exposure_step,
+		exposure_def);
 
 	sensor->hflip = v4l2_ctrl_new_std(
 		&sensor->pixel_array->ctrl_handler, &ccs_ctrl_ops,
@@ -1214,6 +1382,16 @@ static int ccs_get_mbus_formats(struct ccs_sensor *sensor)
 		}
 	}
 
+	if (ccs_is_imx681(sensor)) {
+		for (i = 0; i < ARRAY_SIZE(ccs_csi_data_formats); i++) {
+			const struct ccs_csi_data_format *f =
+				&ccs_csi_data_formats[i];
+
+			if (f->width != 10 || f->compressed != 10)
+				sensor->default_mbus_frame_fmts &= ~BIT_U64(i);
+		}
+	}
+
 	/* Figure out which BPP values can be used with which formats. */
 	pll->binning_horizontal = 1;
 	pll->binning_vertical = 1;
@@ -1296,6 +1474,17 @@ static void ccs_update_blanking(struct ccs_sensor *sensor,
 	u16 min_fll, max_fll, min_llp, max_llp, min_lbp;
 	int min, max;
 	u8 binh, binv;
+	const struct ccs_imx681_mode *mode;
+
+	mode = ccs_imx681_current_mode(sensor);
+	if (mode) {
+		min = mode->frame_length_lines - mode->height;
+		__v4l2_ctrl_modify_range(vblank, min, min, 1, min);
+		min = mode->line_length_pck - mode->width;
+		__v4l2_ctrl_modify_range(hblank, min, min, 1, min);
+		__ccs_update_exposure_limits(sensor, pa_src);
+		return;
+	}
 
 	ccs_get_binning(sensor, NULL, &binh, &binv);
 
@@ -1851,6 +2040,70 @@ error:
 	return rval;
 }
 
+static int ccs_imx681_write_regs(struct ccs_sensor *sensor,
+				 const struct ccs_reg_8 *regs,
+				 unsigned int num_regs, bool mode_regs)
+{
+	unsigned int i;
+	int ret;
+
+	if (!ccs_is_imx681(sensor))
+		return -EINVAL;
+
+	for (i = 0; i < num_regs; i++) {
+		u16 reg = regs[i].reg;
+
+		if (mode_regs && (imx681_mode_skip & BIT(0)) && reg == 0x0114)
+			continue;
+		if (mode_regs && (imx681_mode_skip & BIT(1)) &&
+		    reg >= 0x0300 && reg <= 0x030f)
+			continue;
+
+		ret = ccs_write_addr(sensor, CCI_REG8(reg), regs[i].val);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
+{
+	const struct ccs_imx681_mode *mode = ccs_imx681_current_mode(sensor);
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
+	int ret;
+
+	if (!mode)
+		return -EINVAL;
+
+	/* Windows mode retains the reference semantics of forcing vendor init. */
+	if (imx681_windows || !(imx681_mode_skip & BIT(2))) {
+		ret = ccs_imx681_write_regs(sensor, imx681_vendor_init,
+					    ARRAY_SIZE(imx681_vendor_init), false);
+		if (ret)
+			return ret;
+	}
+
+	ret = ccs_imx681_write_regs(sensor, mode->regs, mode->num_regs, true);
+	if (ret)
+		return ret;
+
+	usleep_range(10000, 11000);
+
+	ret = ccs_imx681_set_exposure(sensor, sensor->exposure->val);
+	if (ret)
+		return ret;
+
+	ret = ccs_imx681_set_digital_gain(sensor, sensor->digital_gain->val);
+	if (ret)
+		return ret;
+
+	dev_dbg(&client->dev, "IMX681 mode %ux%u, skip mask %#x\n",
+		mode->width, mode->height, imx681_mode_skip);
+
+	return 0;
+}
+
 static int ccs_enable_streams(struct v4l2_subdev *subdev,
 			      struct v4l2_subdev_state *state, u32 pad,
 			      u64 streams_mask)
@@ -1869,6 +2122,9 @@ static int ccs_enable_streams(struct v4l2_subdev *subdev,
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
 	u8 binning_mode, binh, binv;
 	int rval;
+
+	if (ccs_is_imx681(sensor) && subdev != &sensor->src->sd)
+		return 0;
 
 	if (pad != CCS_PAD_SRC)
 		return -EINVAL;
@@ -1999,6 +2255,12 @@ static int ccs_enable_streams(struct v4l2_subdev *subdev,
 		goto err_pm_put;
 	}
 
+	if (ccs_is_imx681(sensor)) {
+		rval = ccs_imx681_start_streaming(sensor);
+		if (rval)
+			goto err_pm_put;
+	}
+
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_STREAMING);
 
 	sensor->streaming |= streams_mask;
@@ -2018,6 +2280,9 @@ static int ccs_disable_streams(struct v4l2_subdev *subdev,
 	struct ccs_sensor *sensor = to_ccs_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
 	int rval;
+
+	if (ccs_is_imx681(sensor) && subdev != &sensor->src->sd)
+		return 0;
 
 	if (pad != CCS_PAD_SRC)
 		return -EINVAL;
@@ -2147,6 +2412,30 @@ static u32 ccs_get_mbus_code(struct v4l2_subdev *subdev, unsigned int pad)
 		return sensor->internal_csi_format->code;
 }
 
+static int ccs_enum_frame_size(struct v4l2_subdev *subdev,
+			       struct v4l2_subdev_state *sd_state,
+			       struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct ccs_subdev *ssd = to_ccs_subdev(subdev);
+	struct ccs_sensor *sensor = ssd->sensor;
+	const struct ccs_imx681_mode *mode;
+
+	if (!ccs_is_imx681(sensor) || fse->pad != ssd->source_pad ||
+	    fse->index >= ARRAY_SIZE(imx681_modes))
+		return -EINVAL;
+
+	if (fse->code != ccs_get_mbus_code(subdev, fse->pad))
+		return -EINVAL;
+
+	mode = &imx681_modes[fse->index];
+	fse->min_width = mode->width;
+	fse->max_width = mode->width;
+	fse->min_height = mode->height;
+	fse->max_height = mode->height;
+
+	return 0;
+}
+
 static int ccs_get_format(struct v4l2_subdev *subdev,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_format *fmt)
@@ -2182,6 +2471,17 @@ static void ccs_propagate(struct v4l2_subdev *subdev,
 						   CCS_STREAM_PIXEL);
 		fmt->width = comp->width;
 		fmt->height = comp->height;
+		if (ssd == ssd->sensor->src && ccs_is_imx681(ssd->sensor)) {
+			const struct ccs_imx681_mode *mode =
+				ccs_imx681_current_mode(ssd->sensor);
+
+			crop->left = 0;
+			crop->top = 0;
+			crop->width = mode->width;
+			crop->height = mode->height;
+			fmt->width = mode->width;
+			fmt->height = mode->height;
+		}
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -2586,6 +2886,16 @@ static void ccs_get_native_size(struct ccs_subdev *ssd, struct v4l2_rect *r)
 	r->height = CCS_LIM(ssd->sensor, Y_ADDR_MAX) + 1;
 }
 
+static void ccs_get_active_size(struct ccs_subdev *ssd, struct v4l2_rect *r)
+{
+	ccs_get_native_size(ssd, r);
+
+	if (ccs_is_imx681(ssd->sensor)) {
+		r->width = 4032;
+		r->height = 3024;
+	}
+}
+
 static int ccs_get_selection(struct v4l2_subdev *subdev,
 			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_selection *sel)
@@ -2605,10 +2915,24 @@ static int ccs_get_selection(struct v4l2_subdev *subdev,
 					     CCS_STREAM_PIXEL);
 
 	switch (sel->target) {
-	case V4L2_SEL_TGT_CROP_BOUNDS:
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		if (ssd == sensor->pixel_array) {
 			ccs_get_native_size(ssd, &sel->r);
+		} else if (sel->pad == ssd->sink_pad) {
+			struct v4l2_mbus_framefmt *sink_fmt =
+				v4l2_subdev_state_get_format(sd_state,
+							     ssd->sink_pad);
+			sel->r.top = 0;
+			sel->r.left = 0;
+			sel->r.width = sink_fmt->width;
+			sel->r.height = sink_fmt->height;
+		} else {
+			sel->r = *comp;
+		}
+		break;
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+		if (ssd == sensor->pixel_array) {
+			ccs_get_active_size(ssd, &sel->r);
 		} else if (sel->pad == ssd->sink_pad) {
 			struct v4l2_mbus_framefmt *sink_fmt =
 				v4l2_subdev_state_get_format(sd_state,
@@ -2920,6 +3244,21 @@ static int ccs_identify_module(struct ccs_sensor *sensor)
 		break;
 	}
 
+	/* Sensor identities are distinct from the replaceable module tuple. */
+	for (i = 0; i < ARRAY_SIZE(ccs_sensor_idents); i++) {
+		const struct ccs_sensor_ident *ident = &ccs_sensor_idents[i];
+
+		if (ident->manufacturer_id !=
+		    minfo->sensor_mipi_manufacturer_id ||
+		    ident->model_id != minfo->sensor_model_id ||
+		    ident->revision != minfo->sensor_revision_number)
+			continue;
+
+		minfo->name = ident->name;
+		minfo->quirk = ident->quirk;
+		break;
+	}
+
 	dev_dbg(&client->dev, "the sensor is called %s\n", minfo->name);
 
 	return 0;
@@ -3080,7 +3419,7 @@ static int ccs_init_state(struct v4l2_subdev *sd,
 	struct v4l2_rect *crop =
 		v4l2_subdev_state_get_crop(sd_state, pad);
 
-	ccs_get_native_size(ssd, crop);
+	ccs_get_active_size(ssd, crop);
 
 	fmt->width = crop->width;
 	fmt->height = crop->height;
@@ -3108,6 +3447,7 @@ static const struct v4l2_subdev_video_ops ccs_video_ops = {
 
 static const struct v4l2_subdev_pad_ops ccs_pad_ops = {
 	.enum_mbus_code = ccs_enum_mbus_code,
+	.enum_frame_size = ccs_enum_frame_size,
 	.get_fmt = ccs_get_format,
 	.set_fmt = ccs_set_format,
 	.get_selection = ccs_get_selection,

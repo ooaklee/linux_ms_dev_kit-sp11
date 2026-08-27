@@ -33,6 +33,48 @@ static int ccs_write_addr_8s(struct ccs_sensor *sensor,
 	return 0;
 }
 
+struct ccs_limit_override {
+	unsigned int limit;
+	u32 value;
+};
+
+static int imx681_limits(struct ccs_sensor *sensor)
+{
+	/*
+	 * Embedded equivalent of ccs-sensor-4260-0681-0010.fw. Values are
+	 * raw CCS register encodings, including IEEE-754 frequency limits.
+	 */
+	static const struct ccs_limit_override overrides[] = {
+		{ CCS_L_MIN_OP_SYS_CLK_FREQ_REV_MHZ, 0x44834000 },
+		{ CCS_L_MAX_OP_SYS_CLK_FREQ_REV_MHZ, 0x451c4000 },
+		{ CCS_L_MIN_OP_PIX_CLK_FREQ_REV_MHZ, 0x41960000 },
+		{ CCS_L_MAX_OP_PIX_CLK_FREQ_REV_MHZ, 0x4332947b },
+		{ CCS_L_NUM_OF_OP_LANES, 0x04 },
+		{ CCS_L_OP_BITS_PER_LANE, 0x0a },
+		{ CCS_L_MIN_PLL_OP_CLK_FREQ_MHZ, 0x4489e600 },
+		/*
+		 * Bring-up-derived permissive limits. The Windows-derived mode
+		 * tables program the sensor PLL itself.
+		 */
+		{ CCS_L_MAX_OP_PIX_CLK_FREQ_MHZ, 0x43e10000 }, /* 450 MHz */
+		{ CCS_L_MIN_VT_PIX_CLK_FREQ_MHZ, 0x43200000 }, /* 160 MHz */
+	};
+	unsigned int i;
+
+	if (!ccs_is_imx681(sensor))
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(overrides); i++)
+		ccs_replace_limit(sensor, overrides[i].limit, 0,
+				  overrides[i].value);
+
+	return 0;
+}
+
+const struct ccs_quirk ccs_imx681_quirk = {
+	.limits = imx681_limits,
+};
+
 static int jt8ew9_limits(struct ccs_sensor *sensor)
 {
 	if (sensor->minfo.revision_number < 0x0300)

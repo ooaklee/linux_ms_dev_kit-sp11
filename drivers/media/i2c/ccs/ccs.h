@@ -249,6 +249,7 @@ struct ccs_sensor {
 
 	/* Pixel array controls */
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *digital_gain;
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *vflip;
 	struct v4l2_ctrl *vblank;
@@ -267,6 +268,13 @@ struct ccs_sensor {
 
 #define to_ccs_sensor(_sd)	\
 	(to_ccs_subdev(_sd)->sensor)
+
+static inline bool ccs_is_imx681(const struct ccs_sensor *sensor)
+{
+	return sensor->minfo.sensor_mipi_manufacturer_id == 0x4260 &&
+	       sensor->minfo.sensor_model_id == 0x0681 &&
+	       sensor->minfo.sensor_revision_number == 0x0010;
+}
 
 void ccs_replace_limit(struct ccs_sensor *sensor,
 		       unsigned int limit, unsigned int offset, u32 val);
