@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "purpose": "Portable compilation and static-review evidence export; no hardware-validation claim.",
+  "original_bundle": {
+    "private_retention_label": "remote-kernel-validation-20260827",
+    "artifact_manifest_filename": "artifact-manifest.json",
+    "artifact_manifest_sha256": "f0ffd02f7d6504af4ce61ead4504d7ac9619a5d6c66533e2133f0916373865e0",
+    "verified_payload_files": 30,
+    "all_original_bytes_preserved": true,
+    "preservation_method": "Verified exact bundle moved intact to private workspace output; hashes reverified after move."
+  },
+  "exported_files": [
+    {
+      "path": "01-commit-checkpatch.log",
+      "source_path": "01-commit-checkpatch.log",
+      "original_sha256": "fccc0c0fafbb5e8195de3cd26bcd78d6bf324cd08f7de8221054f173b2f9d124",
+      "exported_sha256": "fccc0c0fafbb5e8195de3cd26bcd78d6bf324cd08f7de8221054f173b2f9d124",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "02-commit-checkpatch.log",
+      "source_path": "02-commit-checkpatch.log",
+      "original_sha256": "9e6efca64f3bde071b83e78e162b4e5eba3be246ea2b5a8fe2717e9dde7a4c4c",
+      "exported_sha256": "9e6efca64f3bde071b83e78e162b4e5eba3be246ea2b5a8fe2717e9dde7a4c4c",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "arm64-camss.config",
+      "source_path": "arm64-camss.config",
+      "original_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "exported_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "baseline-camss-object.log",
+      "source_path": "baseline-camss-object.log",
+      "original_sha256": "a411ef261337b14411bce6af50c976ee4f0b55fe0b24671fa0c681d3870559ff",
+      "exported_sha256": "a411ef261337b14411bce6af50c976ee4f0b55fe0b24671fa0c681d3870559ff",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "camera-integration-series.patch",
+      "source_path": "camera-integration-series.patch",
+      "original_sha256": "edc78479a349cdb2f8ec85499708cd11a50489d548b452b5fee136b96d27bcd8",
+      "exported_sha256": "edc78479a349cdb2f8ec85499708cd11a50489d548b452b5fee136b96d27bcd8",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "camera-integration.patch",
+      "source_path": "camera-integration.patch",
+      "original_sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f",
+      "exported_sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "diagnostic-comparison.json",
+      "source_path": "repo-integration-diagnostic-comparison.json",
+      "original_sha256": "25e6467ed97ffe8b1a27048515a74b4256f3b8f4e2c6e7512f0dcb06b2575f44",
+      "exported_sha256": "25e6467ed97ffe8b1a27048515a74b4256f3b8f4e2c6e7512f0dcb06b2575f44",
+      "operation": "rename only; bytes unchanged"
+    },
+    {
+      "path": "environment.json",
+      "source_path": "environment.json",
+      "original_sha256": "1284b146e35605857520e347002164e17f4ae0d8a1503140c8d3569407ba1bf3",
+      "exported_sha256": "1144c2ff2e414aa69279a95da263eb4446d4be56ee0bf673819abc33676636a3",
+      "operation": "JSON host-path sanitization",
+      "changes": [
+        "Removed host-specific logs_dir.",
+        "Added portable_logs_dir as dot and explicit private raw-log retention flag.",
+        "Container-internal /work paths are retained as build-context evidence, not host paths."
+      ]
+    },
+    {
+      "path": "kernel-validation.json",
+      "source_path": "kernel-validation.json",
+      "original_sha256": "be4fdc3f6610a9915ced7fedeea0857639f9522ea9fced087c75f64e614e8832",
+      "exported_sha256": "6a4933a0b132b0ebe0fcbdd40aaa291b1078fb97a8dcc5422c01ed8171c7aae0",
+      "operation": "JSON host-path sanitization",
+      "changes": [
+        "Replaced repo_integration_check.log host path with an explicit private-log label.",
+        "Added relative portable_diagnostic_summary link; all validation results and hashes are retained."
+      ]
+    },
+    {
+      "path": "patched-camss-object.log",
+      "source_path": "patched-camss-object.log",
+      "original_sha256": "9f8cb8631869a863912760c6679b904e937e4864909915bced28247d51860da7",
+      "exported_sha256": "9f8cb8631869a863912760c6679b904e937e4864909915bced28247d51860da7",
+      "operation": "byte-identical copy"
+    },
+    {
+      "path": "tool-versions.txt",
+      "source_path": "tool-versions.txt",
+      "original_sha256": "d6901b60e2738369fef166fdaefc876101b5b7770b9eb08fbc0a24c1e0d38c09",
+      "exported_sha256": "d6901b60e2738369fef166fdaefc876101b5b7770b9eb08fbc0a24c1e0d38c09",
+      "operation": "byte-identical copy"
+    }
+  ],
+  "omitted_files": [
+    {
+      "source_path": "01-csid-checkpatch.log",
+      "original_sha256": "c627f6e9e14f929b605ffebe94fa4a23fcebd617a00a9b9d6100c24900d7705e",
+      "bytes": 127,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "01-csid-commit-message.txt",
+      "original_sha256": "31ebaf29f1c860a360ca13d873c1ebe8fdc2c29671096171a70f8598673a1144",
+      "bytes": 822,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "01-csid-crop-drop.diff",
+      "original_sha256": "758415e340f3d4981676045945608688dab5ef2f2fcbdc5cdc3adcedbe5800a3",
+      "bytes": 829,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "02-vfe-checkpatch.log",
+      "original_sha256": "c40d256217c9aa257a057b35d4339c2e2f06568492a0ee8749a7bc9f6c5511d4",
+      "bytes": 127,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "02-vfe-commit-message.txt",
+      "original_sha256": "d5676a9c2704de53bf4c41e7fdb763064c891a2f5ab4242f9dcdd129b55d95fb",
+      "bytes": 790,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "02-vfe-mipi-raw.diff",
+      "original_sha256": "7e6809f77e27169453d6c157c293f1d0ace236ac43cd1eebe5e50c7057f02f89",
+      "bytes": 1148,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "apt-install.log",
+      "original_sha256": "7955acae60911c1e928478825521ed675e83a219183cb705b5f11982a6e23128",
+      "bytes": 38004,
+      "reason": "Raw package-management log retained privately."
+    },
+    {
+      "source_path": "apt-update.log",
+      "original_sha256": "45f8845dc20da49835f4a4cd04b484ed7205c46354ce93a1a9b45a8b68b126a5",
+      "bytes": 1705,
+      "reason": "Raw package-management log retained privately."
+    },
+    {
+      "source_path": "commits.txt",
+      "original_sha256": "8c7fa8ea53b11025a6a7c87b0988fdf992b08154c453f6de5c2e695ab5258006",
+      "bytes": 2191,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "config-options.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "defconfig.log",
+      "original_sha256": "d80e47692b40b83355f63c68186485f5ec646058386759995b0327fe7fa6bdfd",
+      "bytes": 1021,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "git-diff-check.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "modules-prepare.log",
+      "original_sha256": "fcdb23973979dc0febaf557e4a03a155a2cd51de754f07dbdfc792737dcc0fcc",
+      "bytes": 5813,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "olddefconfig.log",
+      "original_sha256": "88d67a4edda9d3b2484d2df69d60b816adc21f0d23986c1f9f878de9d918683e",
+      "bytes": 201,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "original-checkout-before-patches.json",
+      "original_sha256": "ad8a287770855c87de891664a980bc97f66bacffbe9a48193a085b701a95e12b",
+      "bytes": 2662,
+      "reason": "Original checkout preservation snapshot retained privately."
+    },
+    {
+      "source_path": "patch-apply.log",
+      "original_sha256": "8419f26c96323cf15f09bc7985d892c42d6c3be5d556f87eb83455c96aa8b295",
+      "bytes": 129,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "patch-dry-run.log",
+      "original_sha256": "c33f538748226b979e96bae130f8000e54e293421cdae4258157a387da81ff59",
+      "bytes": 129,
+      "reason": "Additional original intermediate evidence retained privately; selected final evidence included."
+    },
+    {
+      "source_path": "repo-integration-baseline.log",
+      "original_sha256": "100f2b954b5b3fc631b51f75b1bfb4b9b767bfee88708d707fd4a9127b0e7cb7",
+      "bytes": 108511,
+      "reason": "Raw broad integration-CI output retained privately; portable diagnostic comparison included."
+    },
+    {
+      "source_path": "repo-integration-check.log",
+      "original_sha256": "d03ade6a57f1aacedca546711cd684cf7705653e63c9663fb1e49badec10b5fe",
+      "bytes": 108828,
+      "reason": "Raw broad integration-CI output retained privately; portable diagnostic comparison included."
+    }
+  ],
+  "limits": [
+    "Raw apt, broad CI, and original-checkout snapshots are intentionally not in the portable export.",
+    "Original and exported SHA256s above distinguish sanitized JSON from unchanged evidence.",
+    "No kernel code, remote documentation, or raw evidence contents were modified during this export."
+  ]
+}

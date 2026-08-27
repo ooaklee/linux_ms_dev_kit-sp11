@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "bundle_kind": "sp11-camera-integration-portable-documentation",
+  "capture_date": "2026-08-27",
+  "kernel_base": "3fc7c5249f4aa9ef70d1f63e82201c8a21b33827",
+  "code_commits": [
+    "5954b481d83679d36d14f9198c5490df7ef9938d",
+    "4e82f0d2e74816b430438f544864233dc7010415"
+  ],
+  "scope": "Experimental receiver fixes and reviewed evidence only; no enabled sensors, Linux hardware validation, full camera parity, raw captures, or private host paths.",
+  "hash_algorithm": "SHA256",
+  "hash_semantics": "sha256 and bytes describe transferred payload bytes and must match Git-staged blob bytes. source_sha256 identifies the source workspace file before the documented report-link rebasing. This manifest does not hash itself.",
+  "notes": [
+    "All retained portable validation evidence remains byte-for-byte identical to its reviewed portable export; that subdirectory records original evidence hashes and sanitizations.",
+    "Relative private capture labels in the report identify retained evidence but are not included as downloadable data.",
+    "The tracing guide describes commands for the separate Windows tracing workspace; collector/debugger scripts and raw captures are not included in this kernel bundle.",
+    "Existing licensing and source attribution are preserved; the bundle adds no third-party relicensing or fabricated sign-offs."
+  ],
+  "files": [
+    {
+      "path": "Build-CameraEvidence.ps1",
+      "source_path": "analysis/camera-integration-20260827/Build-CameraEvidence.ps1",
+      "source_sha256": "cafc3c678962854fdd32276bb5861944495d6faa15b2f9e681961b1072c961dd",
+      "sha256": "cafc3c678962854fdd32276bb5861944495d6faa15b2f9e681961b1072c961dd",
+      "bytes": 8091,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "camera-integration-report.md",
+      "source_path": "analysis/camera-integration-20260827/camera-integration-report.md",
+      "source_sha256": "95c3301955ef24c8018ffedc370b38987d8397031a6998222e9533a9e6c7822d",
+      "sha256": "dfcfe256c7207762d455a041972852f4cd86abd944a314cbcad80a265835d170",
+      "bytes": 16400,
+      "operation": "Rebase exactly one ../../camera-tracing-guide.md link to camera-tracing-guide.md; all other bytes preserved."
+    },
+    {
+      "path": "camera-tracing-guide.md",
+      "source_path": "camera-tracing-guide.md",
+      "source_sha256": "faaafcfe428d5529d9f02245a3499b299ad331e31672f61abc9376320fa2dbc5",
+      "sha256": "faaafcfe428d5529d9f02245a3499b299ad331e31672f61abc9376320fa2dbc5",
+      "bytes": 10414,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "evidence-verification.json",
+      "source_path": "analysis/camera-integration-20260827/evidence-verification.json",
+      "source_sha256": "bd6ab6c42ca75d7333fd823039f3d2a75b99089ff5d197ae607790638084e9b0",
+      "sha256": "bd6ab6c42ca75d7333fd823039f3d2a75b99089ff5d197ae607790638084e9b0",
+      "bytes": 5358,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "opencode-review-answer.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-review-answer.md",
+      "source_sha256": "11f5907765c29b93774994f1fc4368a5db70fdaa62df3e6435e396017d3c4afe",
+      "sha256": "11f5907765c29b93774994f1fc4368a5db70fdaa62df3e6435e396017d3c4afe",
+      "bytes": 9475,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "opencode-review-input.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-review-input.md",
+      "source_sha256": "a921f6fb7cd886571008ca95737fe9a34d33f0202b9839eb970096e0c424c09a",
+      "sha256": "a921f6fb7cd886571008ca95737fe9a34d33f0202b9839eb970096e0c424c09a",
+      "bytes": 6645,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "opencode-review-metadata.json",
+      "source_path": "analysis/camera-integration-20260827/opencode-review-metadata.json",
+      "source_sha256": "66a301cae7ae791eeff66b0f1d1ea8e32befe5df289705eec3eda9daefa6dc49",
+      "sha256": "66a301cae7ae791eeff66b0f1d1ea8e32befe5df289705eec3eda9daefa6dc49",
+      "bytes": 1362,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "remote-kernel-validation/01-commit-checkpatch.log",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/01-commit-checkpatch.log",
+      "source_sha256": "fccc0c0fafbb5e8195de3cd26bcd78d6bf324cd08f7de8221054f173b2f9d124",
+      "sha256": "fccc0c0fafbb5e8195de3cd26bcd78d6bf324cd08f7de8221054f173b2f9d124",
+      "bytes": 179,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/02-commit-checkpatch.log",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/02-commit-checkpatch.log",
+      "source_sha256": "9e6efca64f3bde071b83e78e162b4e5eba3be246ea2b5a8fe2717e9dde7a4c4c",
+      "sha256": "9e6efca64f3bde071b83e78e162b4e5eba3be246ea2b5a8fe2717e9dde7a4c4c",
+      "bytes": 182,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/arm64-camss.config",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/arm64-camss.config",
+      "source_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "bytes": 323088,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/artifact-manifest.json",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/artifact-manifest.json",
+      "source_sha256": "f1a41642e9d138cadaae15e6e97f1a25c6b071f0abe3f53cbe572c37da50bb41",
+      "sha256": "f1a41642e9d138cadaae15e6e97f1a25c6b071f0abe3f53cbe572c37da50bb41",
+      "bytes": 2147,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/baseline-camss-object.log",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/baseline-camss-object.log",
+      "source_sha256": "a411ef261337b14411bce6af50c976ee4f0b55fe0b24671fa0c681d3870559ff",
+      "sha256": "a411ef261337b14411bce6af50c976ee4f0b55fe0b24671fa0c681d3870559ff",
+      "bytes": 1840,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/camera-integration-series.patch",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/camera-integration-series.patch",
+      "source_sha256": "edc78479a349cdb2f8ec85499708cd11a50489d548b452b5fee136b96d27bcd8",
+      "sha256": "edc78479a349cdb2f8ec85499708cd11a50489d548b452b5fee136b96d27bcd8",
+      "bytes": 4217,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/camera-integration.patch",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/camera-integration.patch",
+      "source_sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f",
+      "sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f",
+      "bytes": 1977,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/diagnostic-comparison.json",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/diagnostic-comparison.json",
+      "source_sha256": "25e6467ed97ffe8b1a27048515a74b4256f3b8f4e2c6e7512f0dcb06b2575f44",
+      "sha256": "25e6467ed97ffe8b1a27048515a74b4256f3b8f4e2c6e7512f0dcb06b2575f44",
+      "bytes": 2663,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/environment.json",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/environment.json",
+      "source_sha256": "1144c2ff2e414aa69279a95da263eb4446d4be56ee0bf673819abc33676636a3",
+      "sha256": "1144c2ff2e414aa69279a95da263eb4446d4be56ee0bf673819abc33676636a3",
+      "bytes": 358,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/kernel-validation.json",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/kernel-validation.json",
+      "source_sha256": "6a4933a0b132b0ebe0fcbdd40aaa291b1078fb97a8dcc5422c01ed8171c7aae0",
+      "sha256": "6a4933a0b132b0ebe0fcbdd40aaa291b1078fb97a8dcc5422c01ed8171c7aae0",
+      "bytes": 2624,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/patched-camss-object.log",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/patched-camss-object.log",
+      "source_sha256": "9f8cb8631869a863912760c6679b904e937e4864909915bced28247d51860da7",
+      "sha256": "9f8cb8631869a863912760c6679b904e937e4864909915bced28247d51860da7",
+      "bytes": 340,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/provenance.json",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/provenance.json",
+      "source_sha256": "19ee35f8dab002c70688f8f81a179f2900109448a37fb5d54459cb448e5f62a0",
+      "sha256": "19ee35f8dab002c70688f8f81a179f2900109448a37fb5d54459cb448e5f62a0",
+      "bytes": 10604,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "remote-kernel-validation/tool-versions.txt",
+      "source_path": "analysis/camera-integration-20260827/remote-kernel-validation/tool-versions.txt",
+      "source_sha256": "d6901b60e2738369fef166fdaefc876101b5b7770b9eb08fbc0a24c1e0d38c09",
+      "sha256": "d6901b60e2738369fef166fdaefc876101b5b7770b9eb08fbc0a24c1e0d38c09",
+      "bytes": 148,
+      "operation": "byte-for-byte copy of portable evidence export"
+    },
+    {
+      "path": "source-audit.md",
+      "source_path": "analysis/camera-integration-20260827/source-audit.md",
+      "source_sha256": "e88e8d821414d179c4d1bf29587c358473f144cd0852040aeb91db6d19d99959",
+      "sha256": "e88e8d821414d179c4d1bf29587c358473f144cd0852040aeb91db6d19d99959",
+      "bytes": 20125,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "windows-advertised-profiles.csv",
+      "source_path": "analysis/camera-integration-20260827/windows-advertised-profiles.csv",
+      "source_sha256": "ff6003f0494031248894ca16356ba37f459b429a60df9fa411029e5f55182962",
+      "sha256": "ff6003f0494031248894ca16356ba37f459b429a60df9fa411029e5f55182962",
+      "bytes": 14086,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "windows-control-capabilities.json",
+      "source_path": "analysis/camera-integration-20260827/windows-control-capabilities.json",
+      "source_sha256": "462f4fe1faf9aa351f1b9fce41c8e635755751d5d22a9532aaae6887e2aa018e",
+      "sha256": "462f4fe1faf9aa351f1b9fce41c8e635755751d5d22a9532aaae6887e2aa018e",
+      "bytes": 14831,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "windows-rgb-stream-results.csv",
+      "source_path": "analysis/camera-integration-20260827/windows-rgb-stream-results.csv",
+      "source_sha256": "d621528a43c8888bd794137f17575116c0c6cc45bd0a21dd77a4d2c8e804f535",
+      "sha256": "d621528a43c8888bd794137f17575116c0c6cc45bd0a21dd77a4d2c8e804f535",
+      "bytes": 2456,
+      "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "windows-validation.json",
+      "source_path": "analysis/camera-integration-20260827/windows-validation.json",
+      "source_sha256": "f79640ee7e21ead55c9ce799e0f2875014e1f67c008597a1a0f27bb69274fd2a",
+      "sha256": "f79640ee7e21ead55c9ce799e0f2875014e1f67c008597a1a0f27bb69274fd2a",
+      "bytes": 3770,
+      "operation": "byte-for-byte copy"
+    }
+  ]
+}

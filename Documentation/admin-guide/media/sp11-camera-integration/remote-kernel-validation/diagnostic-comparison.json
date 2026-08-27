@@ -1,0 +1,68 @@
+{
+  "baseline_error_records": [
+    {
+      "diagnostic": "ERROR:SPACING: spaces required around that ':' (ctx:VxE)",
+      "file": "arch/x86/include/asm/nospec-branch.h"
+    },
+    {
+      "diagnostic": "ERROR:CODE_INDENT: code indent should use tabs where possible",
+      "file": "drivers/gpu/drm/amd/display/dc/dce/dce_clock_source.c"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that open parenthesis '('",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited before that close parenthesis ')'",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that open parenthesis '('",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited before that close parenthesis ')'",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that open parenthesis '('",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited before that close parenthesis ')'",
+      "file": "include/trace/events/btrfs.h"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/codecs/wsa884x.c"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/codecs/wsa884x.c"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/qcom/qdsp6/q6apm.c"
+    }
+  ],
+  "patched_error_records_identical": true,
+  "baseline_project_author_error_records": [
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/codecs/wsa884x.c"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/codecs/wsa884x.c"
+    },
+    {
+      "diagnostic": "ERROR:SPACING: space prohibited after that '&&' (ctx:WxW)",
+      "file": "sound/soc/qcom/qdsp6/q6apm.c"
+    }
+  ],
+  "patched_project_author_error_records_identical": true,
+  "camera_changed_path_error_records": [],
+  "baseline_broken_pipe_warning": true,
+  "patched_broken_pipe_warning": true,
+  "interpretation": "The integration script exits0 on both refs but its echo/grep-q pipeline emits Broken pipe and skips the author-error branch. Independent filtering finds inherited project-author ERROR records on both refs; none concern the two changed camera files. Do not present broad CI as clean; per-commit checkpatch is clean."
+}

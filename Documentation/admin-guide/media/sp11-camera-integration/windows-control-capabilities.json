@@ -1,0 +1,460 @@
+﻿[
+    {
+        "Camera":  "rear",
+        "Control":  "ExposureControl",
+        "Values":  {
+                       "Supported":  true,
+                       "MinTicks":  5000,
+                       "MaxTicks":  2000000,
+                       "StepTicks":  10,
+                       "ValueTicks":  5000,
+                       "Auto":  true
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "ExposureCompensationControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  -2,
+                       "Max":  2,
+                       "Step":  0.166666672,
+                       "Value":  0
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "WhiteBalanceControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  2300,
+                       "Max":  7500,
+                       "Step":  25,
+                       "Value":  2300,
+                       "Preset":  0
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "FocusControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  100,
+                       "Max":  5000,
+                       "Step":  1,
+                       "Value":  0,
+                       "Mode":  2,
+                       "Preset":  3,
+                       "SupportedFocusModes":  [
+                                                   "Auto",
+                                                   "Single",
+                                                   "Manual",
+                                                   "Continuous"
+                                               ],
+                       "SupportedFocusRanges":  [
+                                                    "FullRange",
+                                                    "Normal",
+                                                    "Macro"
+                                                ]
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "IsoSpeedControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  100,
+                       "Max":  3200,
+                       "Step":  1,
+                       "Value":  0,
+                       "Auto":  true,
+                       "Preset":  0
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "ZoomControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  1,
+                       "Max":  4,
+                       "Step":  0.125,
+                       "Value":  1,
+                       "Mode":  0,
+                       "SupportedModes":  [
+                                              "Auto",
+                                              "Direct",
+                                              "Smooth"
+                                          ]
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "FlashControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "TorchControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "HdrVideoControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "OpticalImageStabilizationControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "SceneModeControl",
+        "Values":  {
+                       "Value":  0,
+                       "SupportedModes":  [
+                                              "Auto",
+                                              "Macro",
+                                              "Portrait",
+                                              "Sport",
+                                              "Snow",
+                                              "Night",
+                                              "Beach",
+                                              "Sunset",
+                                              "Candlelight",
+                                              "Landscape",
+                                              "NightPortrait",
+                                              "Backlit"
+                                          ]
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "BacklightCompensation",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "Brightness",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "Contrast",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "rear",
+        "Control":  "Hue",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "ExposureControl",
+        "Values":  {
+                       "Supported":  true,
+                       "MinTicks":  5000,
+                       "MaxTicks":  2000000,
+                       "StepTicks":  10,
+                       "ValueTicks":  5000,
+                       "Auto":  true
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "ExposureCompensationControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  -2,
+                       "Max":  2,
+                       "Step":  0.166666672,
+                       "Value":  0
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "WhiteBalanceControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  2300,
+                       "Max":  7500,
+                       "Step":  25,
+                       "Value":  2300,
+                       "Preset":  0
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "FocusControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "IsoSpeedControl",
+        "Values":  {
+                       "Supported":  false,
+                       "Min":  0,
+                       "Max":  0,
+                       "Step":  1
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "ZoomControl",
+        "Values":  {
+                       "Supported":  true,
+                       "Min":  1,
+                       "Max":  4,
+                       "Step":  0.125,
+                       "Value":  1,
+                       "Mode":  0,
+                       "SupportedModes":  [
+                                              "Auto",
+                                              "Direct",
+                                              "Smooth"
+                                          ]
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "FlashControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "TorchControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "HdrVideoControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "OpticalImageStabilizationControl",
+        "Values":  {
+                       "Supported":  false
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "SceneModeControl",
+        "Values":  {
+                       "Value":  0,
+                       "SupportedModes":  [
+                                              "Auto",
+                                              "Macro",
+                                              "Portrait",
+                                              "Sport",
+                                              "Snow",
+                                              "Night",
+                                              "Beach",
+                                              "Sunset",
+                                              "Candlelight",
+                                              "Landscape",
+                                              "NightPortrait",
+                                              "Backlit"
+                                          ]
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "BacklightCompensation",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "Brightness",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "Contrast",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    },
+    {
+        "Camera":  "front",
+        "Control":  "Hue",
+        "Values":  {
+                       "Capabilities":  {
+                                            "Supported":  false,
+                                            "AutoModeSupported":  false,
+                                            "Min":  0,
+                                            "Max":  0,
+                                            "Step":  0,
+                                            "Default":  0
+                                        }
+                   },
+        "ReadErrors":  [
+
+                       ]
+    }
+]

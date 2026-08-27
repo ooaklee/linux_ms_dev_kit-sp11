@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "export_kind": "portable-kernel-validation",
+  "original_artifact_manifest_sha256": "f0ffd02f7d6504af4ce61ead4504d7ac9619a5d6c66533e2133f0916373865e0",
+  "files": [
+    {
+      "path": "01-commit-checkpatch.log",
+      "bytes": 179,
+      "sha256": "fccc0c0fafbb5e8195de3cd26bcd78d6bf324cd08f7de8221054f173b2f9d124"
+    },
+    {
+      "path": "02-commit-checkpatch.log",
+      "bytes": 182,
+      "sha256": "9e6efca64f3bde071b83e78e162b4e5eba3be246ea2b5a8fe2717e9dde7a4c4c"
+    },
+    {
+      "path": "arm64-camss.config",
+      "bytes": 323088,
+      "sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9"
+    },
+    {
+      "path": "baseline-camss-object.log",
+      "bytes": 1840,
+      "sha256": "a411ef261337b14411bce6af50c976ee4f0b55fe0b24671fa0c681d3870559ff"
+    },
+    {
+      "path": "camera-integration-series.patch",
+      "bytes": 4217,
+      "sha256": "edc78479a349cdb2f8ec85499708cd11a50489d548b452b5fee136b96d27bcd8"
+    },
+    {
+      "path": "camera-integration.patch",
+      "bytes": 1977,
+      "sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f"
+    },
+    {
+      "path": "diagnostic-comparison.json",
+      "bytes": 2663,
+      "sha256": "25e6467ed97ffe8b1a27048515a74b4256f3b8f4e2c6e7512f0dcb06b2575f44"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 358,
+      "sha256": "1144c2ff2e414aa69279a95da263eb4446d4be56ee0bf673819abc33676636a3"
+    },
+    {
+      "path": "kernel-validation.json",
+      "bytes": 2624,
+      "sha256": "6a4933a0b132b0ebe0fcbdd40aaa291b1078fb97a8dcc5422c01ed8171c7aae0"
+    },
+    {
+      "path": "patched-camss-object.log",
+      "bytes": 340,
+      "sha256": "9f8cb8631869a863912760c6679b904e937e4864909915bced28247d51860da7"
+    },
+    {
+      "path": "provenance.json",
+      "bytes": 10604,
+      "sha256": "19ee35f8dab002c70688f8f81a179f2900109448a37fb5d54459cb448e5f62a0"
+    },
+    {
+      "path": "tool-versions.txt",
+      "bytes": 148,
+      "sha256": "d6901b60e2738369fef166fdaefc876101b5b7770b9eb08fbc0a24c1e0d38c09"
+    }
+  ]
+}

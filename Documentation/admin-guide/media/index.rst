@@ -42,6 +42,7 @@ Documentation/process/debugging/media_specific_debugging_guide.rst
 	cardlist
 
 	v4l-drivers
+	sp11-camera-integration
 	dvb-drivers
 
 **Copyright** |copy| 1999-2020 : LinuxTV Developers

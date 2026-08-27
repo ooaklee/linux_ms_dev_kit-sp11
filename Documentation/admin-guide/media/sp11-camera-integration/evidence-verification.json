@@ -1,0 +1,98 @@
+﻿{
+    "SchemaVersion":  1,
+    "GeneratedUtc":  "2026-08-27T11:46:46.8466778Z",
+    "CaptureRun":  "20260827-122112986-camera-trace-integration-7.2-all-cameras-r2",
+    "StaticRun":  "camera-static-20260827-121608-270-67c835de",
+    "CaptureManifestSHA256":  "3BD9C69AB1123952F6E84E3F71ADDC6D3A36E7A187C5D8A9026F813E5014FA9A",
+    "VerifiedCaptureArtifactCount":  158,
+    "CollectionStatus":  "completed-selected-actions",
+    "InventoryErrorCount":  0,
+    "CaptureErrorPresent":  false,
+    "WindowsBuild":  "10.0.29585.0",
+    "PowerShellVersion":  "5.1.29585.1000",
+    "CollectorSHA256":  "BAEEC5483DB229EC461508E91131EFB5478DB0CB669C57EEBB8A4C2D17E1EF00",
+    "SupportSHA256":  "26E8D95ABA8673CB865A93EB90ACF40831156AD420C03B6C6C03721B1E0B7E23",
+    "ProbeSHA256":  "FA9A078618FBFF8F7DF3FAF3EFD8F34BE08A4C060177DD27FB3789945A7306F9",
+    "IsAdministrator":  false,
+    "WprSkipped":  true,
+    "ProviderEtwEnabled":  false,
+    "EtlFileCount":  0,
+    "ImageVideoAudioFileCount":  0,
+    "StreamAttempts":  22,
+    "VerifiedStreamAttempts":  22,
+    "StreamCountMeaning":  "Sequential selected RGB frame-source formats only, not every profile or raw sensor mode.",
+    "CameraInventoryCount":  12,
+    "DiscoveredEtwProviders":  11,
+    "ProfileDevices":  [
+                           {
+                               "DeviceName":  "Surface Camera Rear",
+                               "Status":  "enumerated-without-opening",
+                               "ProfileCount":  6
+                           },
+                           {
+                               "DeviceName":  "Surface Camera Front",
+                               "Status":  "enumerated-without-opening",
+                               "ProfileCount":  6
+                           },
+                           {
+                               "DeviceName":  "Surface IR Camera Front",
+                               "Status":  "enumerated-without-opening",
+                               "ProfileCount":  2
+                           }
+                       ],
+    "IrOutcome":  [
+                      "manual-required"
+                  ],
+    "RecorderCleanup":  {
+                            "WprMayStillBeActive":  false,
+                            "WprOwnedInstance":  null,
+                            "ProviderEtwMayStillBeActive":  false,
+                            "ProviderEtwOwnedSession":  null
+                        },
+    "StaticResources":  [
+                            {
+                                "File":  "SCFG_AUX_MSHW0492.bin",
+                                "Bytes":  151,
+                                "SHA256":  "1C848AC4DDBE12948CAE4AFFEE421E3A457CAC61F98DACB30043841BF0BD1BFF",
+                                "Nodes":  6,
+                                "DecodedJsonSHA256":  "0F751A753CC470288B0924493F73D6758875B929C5D779D607DCFB62C48D1145"
+                            },
+                            {
+                                "File":  "CAMI_RES_MSHW0492.bin",
+                                "Bytes":  2187,
+                                "SHA256":  "FB058D3C966F4B48412D48C2DE7F58B861103A8AA06F0BB8C1D198E12431D908",
+                                "Nodes":  203,
+                                "DecodedJsonSHA256":  "A898846E8B0968ABBF01B9CDAF338537A5A988A4CABC92B4D4419C5EA93D1758"
+                            },
+                            {
+                                "File":  "SCFG_REAR_MSHW0491.bin",
+                                "Bytes":  135,
+                                "SHA256":  "FA1D4B79AC3305ED822AAE7FB2D1676D28EB130CB651B2B7F84D208AAB64652A",
+                                "Nodes":  6,
+                                "DecodedJsonSHA256":  "4918FA3EFB2811F658E3230BBD794DFF4D674E12732AA3A60196A8AB5E79C454"
+                            },
+                            {
+                                "File":  "CAMS_RES_MSHW0491.bin",
+                                "Bytes":  2293,
+                                "SHA256":  "2D356BBFAF07CED1E5C03014A5C496B12107F5DC489C4333052565D5A5A5DCC2",
+                                "Nodes":  205,
+                                "DecodedJsonSHA256":  "DC5E32F4744E18ABB53D5CEAA4AF61FA31ED99313C2B8118C8CF7F7329E48243"
+                            },
+                            {
+                                "File":  "SCFG_FRONT_MSHW0490.bin",
+                                "Bytes":  133,
+                                "SHA256":  "E6E3D828A1E4F5BC94C545848A091C20BE399A4B22C938ED4A3DF072DD033D99",
+                                "Nodes":  6,
+                                "DecodedJsonSHA256":  "E0CE1A80EC998AB1576CCC842E5DCC521D1FD57381D89F2A3F236570BE675F56"
+                            },
+                            {
+                                "File":  "CAMF_RES_MSHW0490.bin",
+                                "Bytes":  1843,
+                                "SHA256":  "379A03154511922428EA27F56DE625F579F39CA483FB97398953278B6B5F2851",
+                                "Nodes":  169,
+                                "DecodedJsonSHA256":  "E372896B7C9C34162DAF79D18D66453E4046F9A4285F948A885F1E1F647B203B"
+                            }
+                        ],
+    "LinuxParity":  "not-tested",
+    "DeploymentReady":  false
+}

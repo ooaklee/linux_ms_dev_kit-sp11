@@ -1,0 +1,60 @@
+{
+  "base": "3fc7c5249f4aa9ef70d1f63e82201c8a21b33827",
+  "commits": [
+    "5954b481d83679d36d14f9198c5490df7ef9938d",
+    "4e82f0d2e74816b430438f544864233dc7010415"
+  ],
+  "changed_files": [
+    "drivers/media/platform/qcom/camss/camss-csid-680.c",
+    "drivers/media/platform/qcom/camss/camss-vfe-680.c"
+  ],
+  "diff_sha256": "820573183dc425ea2270ded9cfd9053d77169141db35479a621e408c9029e28f",
+  "git_diff_check": "passed",
+  "checkpatch": "passed for both commits with --no-signoff",
+  "baseline_compiler_warnings": [],
+  "patched_compiler_warnings": [],
+  "objects": [
+    {
+      "object": "/work/build/drivers/media/platform/qcom/camss/camss-csid-680.o",
+      "sha256": "1e286b47f59ab2f76a92bd87d6368effdd47ebddd7d9d79ff6f12c9b3e672501",
+      "architecture": "AArch64",
+      "type": "relocatable"
+    },
+    {
+      "object": "/work/build/drivers/media/platform/qcom/camss/camss-vfe-680.o",
+      "sha256": "a78e7d6716af00f85620c350ce6f18cb6a3981327af14fdd4a861080be311654",
+      "architecture": "AArch64",
+      "type": "relocatable"
+    },
+    {
+      "object": "/work/build/drivers/media/platform/qcom/camss/qcom-camss.o",
+      "sha256": "436271ff3612203b928119f6707a9401935c378682cdd3ef0c1ae4f146c54a2c",
+      "architecture": "AArch64",
+      "type": "relocatable"
+    }
+  ],
+  "full_kernel_image_built": false,
+  "hardware_validated": false,
+  "config_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+  "repo_integration_check": {
+    "exit_code": 0,
+    "reported_error_count": 11,
+    "log": "private-log:repo-integration-check.log",
+    "baseline_exit_code": 0,
+    "broad_errors_identical_to_baseline": true,
+    "baseline_project_author_filter_error_count": 3,
+    "patched_project_author_filter_error_count": 3,
+    "camera_changed_path_error_count": 0,
+    "baseline_broken_pipe_warning": true,
+    "patched_broken_pipe_warning": true,
+    "interpretation": "The integration script exits0 on both refs but its echo/grep-q pipeline emits Broken pipe and skips the author-error branch. Independent filtering finds inherited project-author ERROR records on both refs; none concern the two changed camera files. Do not present broad CI as clean; per-commit checkpatch is clean.",
+    "portable_diagnostic_summary": "diagnostic-comparison.json"
+  },
+  "original_checkout_preserved": {
+    "branch": "sp11/integration-7.2.x",
+    "status_identical": true,
+    "modified_file_sha256_identical": true,
+    "files_checked": 13
+  },
+  "worktree_status_after_checks": "## sp11/integration-7.2.x-ooaklee-karsies-wq-cams\n"
+}

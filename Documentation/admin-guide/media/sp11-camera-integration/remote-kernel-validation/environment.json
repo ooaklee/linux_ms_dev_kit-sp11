@@ -1,0 +1,11 @@
+{
+  "container": "sp11-cams-20260827-3fc7c52",
+  "volume": "sp11-cams-20260827-3fc7c52-work",
+  "image": "ubuntu:24.04",
+  "base": "3fc7c5249f4aa9ef70d1f63e82201c8a21b33827",
+  "source_dir": "/work/kernel",
+  "build_dir": "/work/build",
+  "case_sensitive_linux_filesystem": true,
+  "portable_logs_dir": ".",
+  "raw_logs_retained_privately": true
+}
