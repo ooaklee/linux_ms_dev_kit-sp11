@@ -1,3 +1,13 @@
+linux-qcom-x1e (7.2.0-jg-0sp11v13) resolute; urgency=medium
+
+  * Surface Pro 11 v13: add experimental camera receiver groundwork:
+    disable unconfigured CSID680 RDI crop/drop, select MIPI RAW mode for
+    VFE680 RDI, and guard CCS tiny floating-point limits against oversized
+    shifts. No camera sensors are enabled yet.
+    [karsies-wq https://github.com/karsies-wq]
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 27 Aug 2026 16:05:30 +0100
+
 linux-qcom-x1e (7.2.0-jg-0sp11v12) resolute; urgency=medium
 
   * Surface Pro 11 v12: adopt geocausa mic implementation (0072 VA DMIC
