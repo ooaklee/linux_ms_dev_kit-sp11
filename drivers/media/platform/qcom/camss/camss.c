@@ -4718,7 +4718,10 @@ static int camss_parse_endpoint_node(struct device *dev,
 {
 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
+	struct v4l2_fwnode_endpoint remote_vep = { { 0 } };
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
+	struct fwnode_handle *remote_ep;
+	enum v4l2_mbus_type bus_type;
 	unsigned int i;
 	int ret;
 
@@ -4726,20 +4729,37 @@ static int camss_parse_endpoint_node(struct device *dev,
 	if (ret)
 		return ret;
 
-	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
-	 */
-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
-		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
+	remote_ep = fwnode_graph_get_remote_endpoint(ep);
+	if (!remote_ep)
+		return -ENOTCONN;
+
+	ret = v4l2_fwnode_endpoint_parse(remote_ep, &remote_vep);
+	fwnode_handle_put(remote_ep);
+	if (ret)
+		return ret;
+
+	/* The transmitter endpoint is authoritative for the CSI-2 PHY type. */
+	bus_type = remote_vep.bus_type == V4L2_MBUS_UNKNOWN ?
+		   vep.bus_type : remote_vep.bus_type;
+	if (bus_type != V4L2_MBUS_CSI2_DPHY &&
+	    bus_type != V4L2_MBUS_CSI2_CPHY) {
+		dev_err(dev, "Unsupported bus type %d\n", bus_type);
 		return -EINVAL;
 	}
 
 	csd->interface.csiphy_id = vep.base.port;
+	csd->interface.csi2.bus_type = bus_type;
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
-	lncfg->clk.pos = mipi_csi2->clock_lane;
-	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	if (bus_type == V4L2_MBUS_CSI2_DPHY) {
+		lncfg->clk.pos = mipi_csi2->clock_lane;
+		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	} else if (mipi_csi2->num_data_lanes != 1 ||
+		   mipi_csi2->data_lanes[0] / 2 > 2) {
+		dev_err(dev, "C-PHY requires one valid trio\n");
+		return -EINVAL;
+	}
+
 	lncfg->num_data = mipi_csi2->num_data_lanes;
 
 	lncfg->data = devm_kcalloc(dev,

@@ -532,6 +532,19 @@ const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info 
 	return &formats[0];
 }
 
+bool csid_is_cphy_raw10_3844(struct csid_device *csid,
+			     const struct v4l2_mbus_framefmt *format)
+{
+	const struct csid_format_info *fmt;
+
+	fmt = csid_get_fmt_entry(csid->res->formats->formats,
+				 csid->res->formats->nformats, format->code);
+
+	/* This explicit transport/format signature is unique to the IMX681. */
+	return csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
+	       format->width == 3844 && fmt->data_type == MIPI_CSI2_DT_RAW10;
+}
+
 /*
  * csid_set_clock_rates - Calculate and set clock rates on CSID module
  * @csiphy: CSID device
@@ -845,13 +858,17 @@ static void csid_try_format(struct csid_device *csid,
 	case MSM_CSID_PAD_SRC:
 		if (csid->testgen.nmodes == CSID_PAYLOAD_MODE_DISABLED ||
 		    csid->testgen_mode->cur.val == 0) {
-			/* Test generator is disabled, */
-			/* keep pad formats in sync */
+			const struct v4l2_mbus_framefmt *sink_format;
 			u32 code = fmt->code;
 
-			*fmt = *__csid_get_format(csid, sd_state,
-						      MSM_CSID_PAD_SINK, which);
+			/* Test generator is disabled, */
+			/* keep pad formats in sync */
+			sink_format = __csid_get_format(csid, sd_state,
+							MSM_CSID_PAD_SINK, which);
+			*fmt = *sink_format;
 			fmt->code = csid->res->hw_ops->src_pad_code(csid, fmt->code, 0, code);
+			if (csid_is_cphy_raw10_3844(csid, sink_format))
+				fmt->width = 3840;
 		} else {
 			/* Test generator is enabled, set format on source */
 			/* pad to allow test generator usage */
@@ -1275,6 +1292,7 @@ static int csid_link_setup(struct media_entity *entity,
 		if (sd->grp_id == TPG_GRP_ID) {
 			tpg = v4l2_get_subdevdata(sd);
 
+			csid->phy.bus_type = V4L2_MBUS_CSI2_DPHY;
 			csid->phy.lane_cnt = tpg->res->lane_cnt;
 			csid->phy.csiphy_id = tpg->id;
 			csid->phy.lane_assign = csid_get_lane_assign(NULL, csid->phy.lane_cnt);
@@ -1288,6 +1306,7 @@ static int csid_link_setup(struct media_entity *entity,
 				return -EPERM;
 
 			csid->phy.csiphy_id = csiphy->id;
+			csid->phy.bus_type = csiphy->cfg.csi2->bus_type;
 
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
 			csid->phy.lane_cnt = lane_cfg->num_data;

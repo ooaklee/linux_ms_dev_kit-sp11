@@ -329,12 +329,16 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	struct phy_configure_opts_mipi_dphy *dphy_cfg;
 	union phy_configure_opts dphy_opts = { 0 };
 	struct device *dev = csiphy->camss->dev;
+	bool is_cphy = csiphy->cfg.csi2->bus_type == V4L2_MBUS_CSI2_CPHY;
 	s64 link_freq;
 	int ret;
 
 	dphy_cfg = &dphy_opts.mipi_dphy;
 
-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
+	if (is_cphy)
+		link_freq = camss_get_link_freq(&csiphy->subdev.entity, 0, 0);
+	else
+		link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
 
 	if (link_freq < 0) {
 		dev_err(dev,
@@ -342,14 +346,32 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		return -EINVAL;
 	}
 
-	phy_mipi_dphy_get_default_config_for_hsclk(link_freq, num_lanes, dphy_cfg);
+	if (is_cphy) {
+		/* The X1E generic PHY consumes the symbol rate through this field. */
+		dphy_cfg->hs_clk_rate = link_freq;
+		dphy_cfg->lanes = 1;
 
-	phy_set_mode(csiphy->phy, PHY_MODE_MIPI_DPHY);
+		ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_CPHY);
+		if (ret) {
+			dev_err(dev, "failed to set MIPI C-PHY mode\n");
+			goto error;
+		}
 
-	ret = phy_configure(csiphy->phy, &dphy_opts);
-	if (ret) {
-		dev_err(dev, "failed to configure MIPI D-PHY\n");
-		goto error;
+		ret = phy_configure(csiphy->phy, &dphy_opts);
+		if (ret) {
+			dev_err(dev, "failed to configure MIPI C-PHY\n");
+			goto error;
+		}
+	} else {
+		phy_mipi_dphy_get_default_config_for_hsclk(link_freq, num_lanes, dphy_cfg);
+
+		phy_set_mode(csiphy->phy, PHY_MODE_MIPI_DPHY);
+
+		ret = phy_configure(csiphy->phy, &dphy_opts);
+		if (ret) {
+			dev_err(dev, "failed to configure MIPI D-PHY\n");
+			goto error;
+		}
 	}
 
 	return phy_power_on(csiphy->phy);
