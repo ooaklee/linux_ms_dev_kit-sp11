@@ -532,6 +532,27 @@ const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info 
 	return &formats[0];
 }
 
+bool csid_is_cphy_raw10_3844(struct csid_device *csid,
+			     const struct v4l2_mbus_framefmt *format)
+{
+	return format->width == 3844 &&
+	       csid_is_sp11_imx681_format(csid, format);
+}
+
+bool csid_is_sp11_imx681_format(struct csid_device *csid,
+				const struct v4l2_mbus_framefmt *format)
+{
+	const struct csid_format_info *fmt;
+
+	fmt = csid_get_fmt_entry(csid->res->formats->formats,
+				 csid->res->formats->nformats, format->code);
+
+	/* These explicit transport/geometry signatures are unique to the IMX681. */
+	return csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
+	       (format->width == 3840 || format->width == 3844) &&
+	       format->height == 2640 && fmt->data_type == MIPI_CSI2_DT_RAW10;
+}
+
 /*
  * csid_set_clock_rates - Calculate and set clock rates on CSID module
  * @csiphy: CSID device
@@ -849,13 +870,17 @@ static void csid_try_format(struct csid_device *csid,
 	case MSM_CSID_PAD_SRC:
 		if (csid->testgen.nmodes == CSID_PAYLOAD_MODE_DISABLED ||
 		    csid->testgen_mode->cur.val == 0) {
-			/* Test generator is disabled, */
-			/* keep pad formats in sync */
+			const struct v4l2_mbus_framefmt *sink_format;
 			u32 code = fmt->code;
 
-			*fmt = *__csid_get_format(csid, sd_state,
-						      MSM_CSID_PAD_SINK, which);
+			/* Test generator is disabled, */
+			/* keep pad formats in sync */
+			sink_format = __csid_get_format(csid, sd_state,
+							MSM_CSID_PAD_SINK, which);
+			*fmt = *sink_format;
 			fmt->code = csid->res->hw_ops->src_pad_code(csid, fmt->code, 0, code);
+			if (csid_is_cphy_raw10_3844(csid, sink_format))
+				fmt->width = 3840;
 		} else {
 			/* Test generator is enabled, set format on source */
 			/* pad to allow test generator usage */
