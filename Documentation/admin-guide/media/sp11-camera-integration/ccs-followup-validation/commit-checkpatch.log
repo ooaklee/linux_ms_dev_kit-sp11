@@ -1,0 +1,3 @@
+total: 0 errors, 0 warnings, 0 checks, 9 lines checked
+
+Commit e6fa5cb158b5 ("media: ccs: avoid oversized shifts for tiny floating point limits") has no obvious style problems and is ready for submission.

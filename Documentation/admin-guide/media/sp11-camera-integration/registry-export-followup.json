@@ -1,0 +1,45 @@
+{
+  "SchemaVersion": 1,
+  "FollowupUtc": "2026-08-27T14:16:24.6165985+01:00",
+  "SourceCapture": "20260827-135431422-camera-trace-privileged-hello-retry",
+  "SourceRegistryIndexSHA256": "2491E9C7F14E4754086E14F85E370426D92DC321FF7C3215B8C408554D7A8422",
+  "TokenIsAdministrator": false,
+  "Method": "Separate read-only reg.exe exports of the two exact failed capture keys to new shorter private filenames. No registry changes and no changes to original captures.",
+  "OriginalNativeError": "Unable to write to the file. There may be a disk or file system error.",
+  "Exports": [
+    {
+      "Component": "software camera component",
+      "Kind": "DeviceInstance",
+      "OriginalStatus": "Failed",
+      "OriginalDestinationCharacters": 268,
+      "FollowupFile": "component.reg",
+      "FollowupDestinationCharacters": 104,
+      "ExitCode": 0,
+      "TimedOut": false,
+      "Exists": true,
+      "Bytes": 3088,
+      "SHA256": "C628409C73D0A7766BF559C7703BB74BC18B5E05EB43A5DBFBB85C3B3D431DF6",
+      "RegistryExportHeaderValid": true
+    },
+    {
+      "Component": "software camera component",
+      "Kind": "DeviceParameters",
+      "OriginalStatus": "Failed",
+      "OriginalDestinationCharacters": 286,
+      "FollowupFile": "component-parameters.reg",
+      "FollowupDestinationCharacters": 115,
+      "ExitCode": 0,
+      "TimedOut": false,
+      "Exists": true,
+      "Bytes": 960,
+      "SHA256": "9712585BBD2069CC4868ACDFBA1F75DE61B51A2551A186C453600D327AB37F05",
+      "RegistryExportHeaderValid": true
+    }
+  ],
+  "Diagnosis": "Both exports succeed at shorter paths without elevation; original failing destinations were 268/286 characters. This supports native destination-path length as the failure cause; original partial-inventory results remain unchanged.",
+  "RegistryChanged": false,
+  "OriginalCaptureChanged": false,
+  "FollowupManifestSHA256": "1B4C28B970BAA23C09BCA880A743E44688DC3FCD9D0FDCFF538BAB68B2F437B0",
+  "FollowupArtifactsVerified": 5,
+  "OriginalIndexUnchanged": true
+}

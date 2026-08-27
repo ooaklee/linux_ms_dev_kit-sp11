@@ -1,0 +1,178 @@
+{
+  "SchemaVersion": 2,
+  "GeneratedUtc": "2026-08-27T14:11:48.0848999+01:00",
+  "CaptureManifestSHA256": "68A5610A7902709FAE059263CB254260D9A005A74337AC60B255FB74485B4D2F",
+  "Window": {
+    "StartUtc": "2026-08-27T12:57:11.2582075Z",
+    "LockRequestResultUtc": "2026-08-27T12:57:11.6040342Z",
+    "EndUtc": "2026-08-27T12:58:06.9594963Z",
+    "DurationSeconds": 55.7012888,
+    "LockRequestResultSucceeded": true,
+    "LockCompletionNotProvenByApiReturn": true,
+    "EndIncludesOptionalOperatorObservationResponses": true
+  },
+  "OperatorOutcome": "operator-reported-face-success",
+  "ReportedObservations": {
+    "VcselRaw": "5",
+    "IndicatorRaw": "2",
+    "Units": "seconds",
+    "UnitsConfirmation": "User follow-up in this task on 2026-08-27",
+    "MeasuredTimings": false,
+    "Interpretation": "Operator estimates only; duration versus delay, timing reference points and overlap remain unspecified. These values do not establish emitter identity, power, duty cycle, or eye safety.",
+    "VcselReportedTimingSeconds": 5,
+    "PrivacyIndicatorReportedTimingSeconds": 2
+  },
+  "SavedQueries": [
+    {
+      "SourceKind": "saved-evtx",
+      "Source": "Microsoft-Windows-Biometrics_Operational.evtx",
+      "XPath": "*[System[TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+      "MaximumEvents": 1001,
+      "ExecutedUtc": "2026-08-27T13:05:01.4954534Z",
+      "Status": "ok",
+      "Count": 3,
+      "Capped": false,
+      "ErrorId": null,
+      "ExceptionType": null
+    },
+    {
+      "SourceKind": "saved-evtx",
+      "Source": "Microsoft-Windows-Biometrics_Analytic.evtx",
+      "XPath": "*[System[TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+      "MaximumEvents": 1001,
+      "ExecutedUtc": "2026-08-27T13:05:01.799782Z",
+      "Status": "no-matching-events",
+      "Count": 0,
+      "Capped": false,
+      "ErrorId": "NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand",
+      "ExceptionType": "System.Exception"
+    },
+    {
+      "SourceKind": "saved-evtx",
+      "Source": "Microsoft-Windows-HelloForBusiness_Operational.evtx",
+      "XPath": "*[System[TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+      "MaximumEvents": 1001,
+      "ExecutedUtc": "2026-08-27T13:05:01.8290854Z",
+      "Status": "ok",
+      "Count": 1,
+      "Capped": false,
+      "ErrorId": null,
+      "ExceptionType": null
+    },
+    {
+      "SourceKind": "saved-evtx",
+      "Source": "Microsoft-Windows-HelloForBusiness_Debug.evtx",
+      "XPath": "*[System[TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+      "MaximumEvents": 1001,
+      "ExecutedUtc": "2026-08-27T13:05:01.8352196Z",
+      "Status": "no-matching-events",
+      "Count": 0,
+      "Capped": false,
+      "ErrorId": "NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand",
+      "ExceptionType": "System.Exception"
+    },
+    {
+      "SourceKind": "saved-evtx",
+      "Source": "Microsoft-Windows-Authentication_User_Interface_Operational.evtx",
+      "XPath": "*[System[TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+      "MaximumEvents": 1001,
+      "ExecutedUtc": "2026-08-27T13:05:01.8408504Z",
+      "Status": "no-matching-events",
+      "Count": 0,
+      "Capped": false,
+      "ErrorId": "NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand",
+      "ExceptionType": "System.Exception"
+    }
+  ],
+  "SeparateSecurityFollowup": {
+    "SourceKind": "separate-machine-followup",
+    "Source": "Security",
+    "XPath": "*[System[(EventID=4800 or EventID=4801) and TimeCreated[@SystemTime>='2026-08-27T12:57:11.2582075Z' and @SystemTime<='2026-08-27T12:58:06.9594963Z']]]",
+    "MaximumEvents": 101,
+    "ExecutedUtc": "2026-08-27T13:05:01.8530449Z",
+    "TokenIsAdministrator": false,
+    "Status": "unavailable-with-current-token",
+    "Count": null,
+    "Capped": false,
+    "ErrorId": "System.UnauthorizedAccessException,Microsoft.PowerShell.Commands.GetWinEventCommand",
+    "ExceptionType": "System.UnauthorizedAccessException",
+    "CountMeaning": "Unknown: the exact-window Security query was denied; no zero-event conclusion."
+  },
+  "Events": [
+    {
+      "Source": "Microsoft-Windows-Biometrics_Operational.evtx",
+      "Provider": "Microsoft-Windows-Biometrics",
+      "EventId": 1019,
+      "Version": 0,
+      "TimeUtc": "2026-08-27T12:57:19.3646085Z",
+      "SecondsAfterAuthStart": 8.106401,
+      "SecondsAfterLockRequestResult": 7.7605743,
+      "SensorRoleFromName": "face-virtual-sensor-name",
+      "StatusFields": {
+        "OperationStatus": "0x0"
+      },
+      "Meaning": "privileged-vendor-operation-completed; not an explicit match"
+    },
+    {
+      "Source": "Microsoft-Windows-Biometrics_Operational.evtx",
+      "Provider": "Microsoft-Windows-Biometrics",
+      "EventId": 1605,
+      "Version": 0,
+      "TimeUtc": "2026-08-27T12:57:20.1067138Z",
+      "SecondsAfterAuthStart": 8.8485063,
+      "SecondsAfterLockRequestResult": 8.5026796,
+      "SensorRoleFromName": "not-present",
+      "StatusFields": {},
+      "Meaning": "secure-component-user-authorization"
+    },
+    {
+      "Source": "Microsoft-Windows-Biometrics_Operational.evtx",
+      "Provider": "Microsoft-Windows-Biometrics",
+      "EventId": 1606,
+      "Version": 0,
+      "TimeUtc": "2026-08-27T12:57:20.1224936Z",
+      "SecondsAfterAuthStart": 8.8642861,
+      "SecondsAfterLockRequestResult": 8.5184594,
+      "SensorRoleFromName": "not-present",
+      "StatusFields": {},
+      "Meaning": "secure-component-authorization-redemption"
+    },
+    {
+      "Source": "Microsoft-Windows-HelloForBusiness_Operational.evtx",
+      "Provider": "Microsoft-Windows-HelloForBusiness",
+      "EventId": 5702,
+      "Version": 0,
+      "TimeUtc": "2026-08-27T12:57:20.1361446Z",
+      "SecondsAfterAuthStart": 8.8779371,
+      "SecondsAfterLockRequestResult": 8.5321104,
+      "SensorRoleFromName": "not-present",
+      "StatusFields": {
+        "Hr": "0x0"
+      },
+      "Meaning": "protector-properties-written; not a sign-in result"
+    }
+  ],
+  "SavedExplicitBiometricMatchSuccessCount": 0,
+  "SavedEnrollmentEventCount": 0,
+  "SavedExplicitHelloSigninSuccessCount": 0,
+  "UnlockAuditEventCount": null,
+  "CollectorTextCountDefect": {
+    "ReportedBiometricsCount": 0,
+    "ActualSavedBiometricsCount": 3,
+    "ReportedHelloForBusinessCount": 0,
+    "ActualSavedHelloForBusinessCount": 1,
+    "TextHeadersHaveColon": false,
+    "TextRenderedTimestampsDifferFromXmlUtcBySeconds": 3600,
+    "CorrectSource": "XML System/TimeCreated/@SystemTime",
+    "NoGuessedTimezoneCorrection": true
+  },
+  "Conclusion": "Operator-reported face success is supported by temporally correlated biometric authorization activity, not independently verified as face matching or completed workstation unlock by the reviewed event records.",
+  "Caveats": [
+    "During the saved-EVTX review underlying this projection, no provider ETL or image payload was opened. Separate later ETL audits are reported independently.",
+    "No numerical gesture/credential enum inferred.",
+    "No matching or enrollment event in this saved window does not establish absence of the operation.",
+    "Security audit availability and configuration can limit independent unlock corroboration.",
+    "Account identifiers, sensor paths, database identifiers and raw XML remain private outside the original capture."
+  ],
+  "SourceAuditSummarySHA256": "54C7DFDB49D6DBCFF65C8B7CFEDAF758A11F343E19F6B7E2DE9C1EFC49F00108"
+}

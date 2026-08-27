@@ -1,5 +1,7 @@
 # SP11 camera integration evidence — 2026-08-27
 
+This report preserves the earlier unprivileged run. The later [privileged RGB and Windows Hello follow-up](privileged-camera-followup.md) records five ETLs, the operator's Hello observation, recovered registry exports and the subsequent CCS correction. Results below remain scoped to the original capture.
+
 ## Result
 
 Windows delivered frame references in **22 of 22 selected RGB source-mode checks**: 7 front recording modes, 7 rear preview modes, and 8 rear recording modes. Each ran for at least the requested five seconds and negotiated the requested format. No image, video, audio, or IR sample was saved. All 158 capture artifacts passed length/SHA-256 verification; all six decoded static resources still match their installed source bytes.

@@ -65,6 +65,22 @@ error. Optional IR/VCSEL and privacy-indicator timing observations accept
 and event presence do not validate illuminator safety. The collector does not
 save IR frames, write illuminator registers or change enrollment.
 
+The event query ends when the operator reports the result, before the optional
+observation prompts. `IR_HELLO_OPERATOR_RESULT` records that exact UTC boundary;
+an accepted lock request does not itself confirm a completed lock or unlock.
+Timing observations should include units and distinguish duration from time
+after lock/unlock; they remain operator estimates.
+
+Discovered Biometrics and HelloForBusiness **Operational** channels are queried
+as XML with a 20-second limit per channel. The collector retains at most 128
+event records and requests one extra to detect truncation. It records UTC
+timestamps, event IDs, counts and truncation in `events/hello-auth-evidence.json`.
+Query failures, timeouts, missing fields or invalid XML mean **unknown**, not
+zero events. Raw `events/hello-auth-*.xml` and `*-query.json` files can contain
+account and sensor identifiers; keep them private. Counts do not establish
+successful face matching or unlock, and enrollment events are not matching
+evidence. The authentication outcome remains operator-reported.
+
 `-Phase full` without `-NonInteractive` guides Camera-app front/rear previews
 and the Hello phase. Preview and mode-switch results are operator reports, not
 automatic proofs. Samples remain disabled; explicit `-CaptureSamples` permits
@@ -78,6 +94,7 @@ switch. An unattended sample request is rejected unless samples are disabled.
 | `-SkipWpr` | Skips WPR and, by default, provider ETW. Does not skip RGB probing. |
 | `-SkipWpr -CaptureEtw` | Requests provider ETW only; requires elevation. |
 | `-SkipEtw` | Skips provider ETW without changing WPR selection. |
+| `-WprMode File\|Memory` | File is the existing default. Memory uses circular profile buffers, which can overwrite early events; saving and merging still need disk space. |
 | `-MaximumMegabytes 128..512` | Circular provider-ETL cap, default 256 MB. Does not cap WPR Video. |
 | `-PreviewSeconds 5..60` | Requested duration per tested RGB format, default 20 seconds. |
 | `-AllModes` | Attempts initialized RGB frame-source formats; does not exercise every advertised profile or still-photo mode. |
@@ -85,8 +102,13 @@ switch. An unattended sample request is rejected unless samples are disabled.
 | Ordinary WinRT child bound | `PreviewSeconds + 150` seconds for initialization/current-format operations. |
 | Recorder watchdog | 900 seconds for unattended AllModes phases; otherwise `PreviewSeconds + 240` seconds. A deadline makes the phase incomplete. |
 
-WPR uses the built-in `Video` profile in file mode, so allow disk space beyond
-the provider-ETL cap. The collector inventories the available profiles first.
+WPR uses the built-in `Video` profile, in file mode unless `-WprMode Memory`
+is selected. Allow disk space beyond the provider-ETL cap in both modes.
+Memory mode avoids an unbounded sequential recording file, but its buffers can
+overwrite early events without increasing loss counters. Compare retained event
+timestamps with phase markers before claiming complete phase coverage. The
+collector inventories the available profiles first. See Microsoft's
+[logging-mode guidance](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/logging-mode).
 Provider ETW discovers names and GUIDs from `logman query providers`; it does
 not guess Qualcomm GUIDs or enable broad packet-capture providers. Biometric
 providers are enabled only for the interactive Hello phase. A provider's

@@ -1,0 +1,411 @@
+{
+  "SchemaVersion": "1.0",
+  "GeneratedUtc": "2026-08-27T13:26:29.6253998Z",
+  "Etls": [
+    {
+      "CaptureRun": "20260827-133214832-camera-trace-privileged-rgb",
+      "AuditRun": "camera-etl-audit-20260827-140932-006-423dd2a4",
+      "File": "camera-front-providers.etl",
+      "Length": 23658496,
+      "SHA256": "EF27813333A85DED1707A9BFCADCDEF982D939B935C429E3933CB8AD6D2E7106",
+      "CaptureManifestMatches": true,
+      "SourceUnchangedDuringAudit": true,
+      "CaptureCollectionStatus": "partial-inventory",
+      "AuditStatus": "partial",
+      "NativeEventsProcessed": 129782,
+      "NativeEventsLost": 0,
+      "NativeBuffersProcessed": 361,
+      "NativeElapsedSeconds": 42,
+      "NativeProviderGuids": [
+        "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+        "{68fdd900-4a3e-11d1-84f4-0000f80464e3}",
+        "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+        "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+        "{b20e65ac-c905-4014-8f78-1b6a508142eb}",
+        "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+        "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+        "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}"
+      ],
+      "XmlStatus": "decoded",
+      "XmlEventElements": 129782,
+      "XmlParsedEvents": 129782,
+      "XmlProcessingErrors": 1,
+      "XmlCameraProviderProcessingErrors": 0,
+      "XmlTraceMetadataProcessingErrors": 1,
+      "HeaderEventsLost": [
+        0
+      ],
+      "HeaderBuffersLost": [
+        0
+      ],
+      "BuffersLostKnown": true,
+      "RequestedProviders": 9,
+      "RequestedEmittingProviders": 7,
+      "RequestedSilentProviders": 2,
+      "WinEventRecords": 129781,
+      "XmlSerializedTimeOffsets": [
+        "+00:59",
+        "+01:00"
+      ],
+      "XmlTimeCrossCheck": [
+        {
+          "ProviderGuid": "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 3.8326045,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 19.928197,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{b20e65ac-c905-4014-8f78-1b6a508142eb}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 8.7692071,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 16.4241688,
+          "XmlMinusWinEventLastSeconds": 60.0
+        }
+      ],
+      "RegisterTriageFieldNames": [],
+      "CciRegisterTransactionsEstablished": false,
+      "FullPhaseContinuityEstablished": false
+    },
+    {
+      "CaptureRun": "20260827-133214832-camera-trace-privileged-rgb",
+      "AuditRun": "camera-etl-audit-20260827-140932-006-423dd2a4",
+      "File": "camera-front-video.etl",
+      "Length": 721420288,
+      "SHA256": "5C9E7547BCF0B9B28FC61045EB8E23B272F47B75E332612421354F064E287525",
+      "CaptureManifestMatches": true,
+      "SourceUnchangedDuringAudit": true,
+      "CaptureCollectionStatus": "partial-inventory",
+      "AuditStatus": "completed",
+      "NativeEventsProcessed": 5445172,
+      "NativeEventsLost": 0,
+      "NativeBuffersProcessed": 688,
+      "NativeElapsedSeconds": 69,
+      "NativeProviderGuids": [
+        "{01853a65-418f-4f36-aefc-dc0f1d2fd235}",
+        "{0f67e49f-fe51-4e9f-b490-6f2948cc6027}",
+        "{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}",
+        "{36b6f488-aad7-48c2-afe3-d4ec2c8b46fa}",
+        "{3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d3-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{57277741-3638-4a4b-bdba-0ac6e45da56c}",
+        "{68fdd900-4a3e-11d1-84f4-0000f80464e3}",
+        "{802ec45a-1e99-4b83-9920-87c98277ba9d}",
+        "{90cbdc39-4a3e-11d1-84f4-0000f80464e3}",
+        "{9b79ee91-b5fd-41c0-a243-4248e266e9d0}",
+        "{9e9bba3c-2e38-40cb-99f4-9e8281425164}",
+        "{a669021c-c450-4609-a035-5af59af4df18}",
+        "{b3e675d7-2554-4f18-830b-2762732560de}",
+        "{bbccf6c1-6cd1-48c4-80ff-839482e37671}",
+        "{ce1dbfb4-137e-4da6-87b0-3f59aa102cbc}",
+        "{ce8dee0b-d539-4000-b0f8-77bed049c590}",
+        "{d49918cf-9489-4bf1-9d7b-014d864cf71f}",
+        "{def2fe46-7bd6-4b80-bd94-f57fe20d0ce3}",
+        "{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}",
+        "{e43445e0-0903-48c3-b878-ff0fccebdd04}",
+        "{e6835967-e0d2-41fb-bcec-58387404e25a}"
+      ],
+      "XmlStatus": "not-requested",
+      "XmlEventElements": null,
+      "XmlParsedEvents": null,
+      "XmlProcessingErrors": null,
+      "XmlCameraProviderProcessingErrors": null,
+      "XmlTraceMetadataProcessingErrors": null,
+      "HeaderEventsLost": [],
+      "HeaderBuffersLost": [],
+      "BuffersLostKnown": false,
+      "RequestedProviders": null,
+      "RequestedEmittingProviders": null,
+      "RequestedSilentProviders": null,
+      "WinEventRecords": null,
+      "XmlSerializedTimeOffsets": [],
+      "XmlTimeCrossCheck": [],
+      "RegisterTriageFieldNames": [],
+      "CciRegisterTransactionsEstablished": false,
+      "FullPhaseContinuityEstablished": false
+    },
+    {
+      "CaptureRun": "20260827-133214832-camera-trace-privileged-rgb",
+      "AuditRun": "camera-etl-audit-20260827-140932-006-423dd2a4",
+      "File": "camera-rear-providers.etl",
+      "Length": 30670848,
+      "SHA256": "EA3E62CFC8D2C4E5C342626920D2637D75777B1A5F7DED26BC5ADB19112B2E59",
+      "CaptureManifestMatches": true,
+      "SourceUnchangedDuringAudit": true,
+      "CaptureCollectionStatus": "partial-inventory",
+      "AuditStatus": "partial",
+      "NativeEventsProcessed": 52818,
+      "NativeEventsLost": 0,
+      "NativeBuffersProcessed": 468,
+      "NativeElapsedSeconds": 85,
+      "NativeProviderGuids": [
+        "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+        "{68fdd900-4a3e-11d1-84f4-0000f80464e3}",
+        "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+        "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+        "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+        "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+        "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}"
+      ],
+      "XmlStatus": "decoded",
+      "XmlEventElements": 52818,
+      "XmlParsedEvents": 52818,
+      "XmlProcessingErrors": 1,
+      "XmlCameraProviderProcessingErrors": 0,
+      "XmlTraceMetadataProcessingErrors": 1,
+      "HeaderEventsLost": [
+        0
+      ],
+      "HeaderBuffersLost": [
+        0
+      ],
+      "BuffersLostKnown": true,
+      "RequestedProviders": 9,
+      "RequestedEmittingProviders": 6,
+      "RequestedSilentProviders": 3,
+      "WinEventRecords": 52817,
+      "XmlSerializedTimeOffsets": [
+        "+00:59",
+        "+01:00"
+      ],
+      "XmlTimeCrossCheck": [
+        {
+          "ProviderGuid": "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 8.155126,
+          "XmlMinusWinEventLastSeconds": 60.0
+        }
+      ],
+      "RegisterTriageFieldNames": [],
+      "CciRegisterTransactionsEstablished": false,
+      "FullPhaseContinuityEstablished": false
+    },
+    {
+      "CaptureRun": "20260827-133214832-camera-trace-privileged-rgb",
+      "AuditRun": "camera-etl-audit-20260827-140932-006-423dd2a4",
+      "File": "camera-rear-video.etl",
+      "Length": 860880896,
+      "SHA256": "7528D08F9743AA9864031A66A89F2F00DA39124415AE7ACB3ED29B6D27486CDC",
+      "CaptureManifestMatches": true,
+      "SourceUnchangedDuringAudit": true,
+      "CaptureCollectionStatus": "partial-inventory",
+      "AuditStatus": "completed",
+      "NativeEventsProcessed": 6963080,
+      "NativeEventsLost": 0,
+      "NativeBuffersProcessed": 821,
+      "NativeElapsedSeconds": 109,
+      "NativeProviderGuids": [
+        "{01853a65-418f-4f36-aefc-dc0f1d2fd235}",
+        "{0f67e49f-fe51-4e9f-b490-6f2948cc6027}",
+        "{2cb15d1d-5fc1-11d2-abe1-00a0c911f518}",
+        "{36b6f488-aad7-48c2-afe3-d4ec2c8b46fa}",
+        "{3d6fa8d0-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d1-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d3-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{3d6fa8d4-fe05-11d0-9dda-00c04fd7ba7c}",
+        "{57277741-3638-4a4b-bdba-0ac6e45da56c}",
+        "{68fdd900-4a3e-11d1-84f4-0000f80464e3}",
+        "{802ec45a-1e99-4b83-9920-87c98277ba9d}",
+        "{8c416c79-d49b-4f01-a467-e56d3aa8234c}",
+        "{90cbdc39-4a3e-11d1-84f4-0000f80464e3}",
+        "{9b79ee91-b5fd-41c0-a243-4248e266e9d0}",
+        "{9e9bba3c-2e38-40cb-99f4-9e8281425164}",
+        "{a669021c-c450-4609-a035-5af59af4df18}",
+        "{b3e675d7-2554-4f18-830b-2762732560de}",
+        "{bbccf6c1-6cd1-48c4-80ff-839482e37671}",
+        "{ce1dbfb4-137e-4da6-87b0-3f59aa102cbc}",
+        "{ce8dee0b-d539-4000-b0f8-77bed049c590}",
+        "{d49918cf-9489-4bf1-9d7b-014d864cf71f}",
+        "{def2fe46-7bd6-4b80-bd94-f57fe20d0ce3}",
+        "{e13c0d23-ccbc-4e12-931b-d9cc2eee27e4}",
+        "{e43445e0-0903-48c3-b878-ff0fccebdd04}",
+        "{e6835967-e0d2-41fb-bcec-58387404e25a}"
+      ],
+      "XmlStatus": "not-requested",
+      "XmlEventElements": null,
+      "XmlParsedEvents": null,
+      "XmlProcessingErrors": null,
+      "XmlCameraProviderProcessingErrors": null,
+      "XmlTraceMetadataProcessingErrors": null,
+      "HeaderEventsLost": [],
+      "HeaderBuffersLost": [],
+      "BuffersLostKnown": false,
+      "RequestedProviders": null,
+      "RequestedEmittingProviders": null,
+      "RequestedSilentProviders": null,
+      "WinEventRecords": null,
+      "XmlSerializedTimeOffsets": [],
+      "XmlTimeCrossCheck": [],
+      "RegisterTriageFieldNames": [],
+      "CciRegisterTransactionsEstablished": false,
+      "FullPhaseContinuityEstablished": false
+    },
+    {
+      "CaptureRun": "20260827-135431422-camera-trace-privileged-hello-retry",
+      "AuditRun": "camera-etl-audit-20260827-140851-053-e55c24cf",
+      "File": "camera-ir-hello-providers.etl",
+      "Length": 2031616,
+      "SHA256": "80C164EC1A8212EE52421619787FD8F3D221067925618B722BEA8C004C1F3EBB",
+      "CaptureManifestMatches": true,
+      "SourceUnchangedDuringAudit": true,
+      "CaptureCollectionStatus": "partial-inventory",
+      "AuditStatus": "partial",
+      "NativeEventsProcessed": 3037,
+      "NativeEventsLost": 0,
+      "NativeBuffersProcessed": 31,
+      "NativeElapsedSeconds": 136,
+      "NativeProviderGuids": [
+        "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+        "{68fdd900-4a3e-11d1-84f4-0000f80464e3}",
+        "{906b8a99-63ce-58d7-86ab-10989bbd5567}",
+        "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+        "{a0e3d8ea-c34f-4419-a1db-90435b8b21d0}",
+        "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+        "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+        "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+        "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}"
+      ],
+      "XmlStatus": "decoded",
+      "XmlEventElements": 3037,
+      "XmlParsedEvents": 3037,
+      "XmlProcessingErrors": 1,
+      "XmlCameraProviderProcessingErrors": 0,
+      "XmlTraceMetadataProcessingErrors": 1,
+      "HeaderEventsLost": [
+        0
+      ],
+      "HeaderBuffersLost": [
+        0
+      ],
+      "BuffersLostKnown": true,
+      "RequestedProviders": 11,
+      "RequestedEmittingProviders": 8,
+      "RequestedSilentProviders": 3,
+      "WinEventRecords": 3036,
+      "XmlSerializedTimeOffsets": [
+        "+00:59"
+      ],
+      "XmlTimeCrossCheck": [
+        {
+          "ProviderGuid": "{4b7eac67-fc53-448c-a49d-7cc6db524da7}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{906b8a99-63ce-58d7-86ab-10989bbd5567}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{9e22a3ed-7b32-4b99-b6c2-21dd6ace01e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{a0e3d8ea-c34f-4419-a1db-90435b8b21d0}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{a4112d1a-6dfa-476e-bb75-e350d24934e1}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{b8197c10-845f-40ca-82ab-9341e98cfc2b}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{bc97b970-d001-482f-8745-b8d7d5759f99}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        },
+        {
+          "ProviderGuid": "{f404b94e-27e0-4384-bfe8-1d8d390b0aa3}",
+          "CountsMatch": true,
+          "XmlMinusWinEventFirstSeconds": 60.0,
+          "XmlMinusWinEventLastSeconds": 60.0
+        }
+      ],
+      "RegisterTriageFieldNames": [],
+      "CciRegisterTransactionsEstablished": false,
+      "FullPhaseContinuityEstablished": false
+    }
+  ],
+  "Limitations": [
+    "Only selected event metadata is exported. Raw payloads, device/account identifiers, paths and decoded XML remain private.",
+    "Native event loss is distinct from buffer loss, schema errors, circular history and camera success. Missing buffer counters remain unknown.",
+    "WPR is summary-only; vendor-register payload coverage there was not decoded.",
+    "Get-WinEvent and tracerpt can expose classic headers differently; counts are retained separately.",
+    "Hello has +00:59 serialization and all eight emitting-provider bounds differ by +60 seconds from Get-WinEvent. RGB mixes +00:59/+01:00 within each file, so its boundary differences are not a uniform shift. XML is retained without correction.",
+    "No validated CCI/register transactions or full phase continuity is established. Sparse emission, metadata and circular retention prevent parity claims."
+  ]
+}

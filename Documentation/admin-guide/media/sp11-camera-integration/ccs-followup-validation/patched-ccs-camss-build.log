@@ -1,0 +1,6 @@
+make: Entering directory '<kernel-source>'
+make[1]: Entering directory '<kernel-output>'
+  CC [M]  drivers/media/i2c/ccs/ccs-reg-access.o
+  LD [M]  drivers/media/i2c/ccs/ccs.o
+make[1]: Leaving directory '<kernel-output>'
+make: Leaving directory '<kernel-source>'

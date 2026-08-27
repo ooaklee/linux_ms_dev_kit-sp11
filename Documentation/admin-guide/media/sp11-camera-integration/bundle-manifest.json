@@ -5,18 +5,34 @@
   "kernel_base": "3fc7c5249f4aa9ef70d1f63e82201c8a21b33827",
   "code_commits": [
     "5954b481d83679d36d14f9198c5490df7ef9938d",
-    "4e82f0d2e74816b430438f544864233dc7010415"
+    "4e82f0d2e74816b430438f544864233dc7010415",
+    "e6fa5cb158b56330b41dda6eb299041b3a3d39f3"
   ],
-  "scope": "Experimental receiver fixes and reviewed evidence only; no enabled sensors, Linux hardware validation, full camera parity, raw captures, or private host paths.",
+  "scope": "Experimental receiver fixes, generic CCS arithmetic guard and reviewed evidence; no enabled sensors, Linux hardware validation, full camera parity, raw captures or private host paths.",
   "hash_algorithm": "SHA256",
   "hash_semantics": "sha256 and bytes describe transferred payload bytes and must match Git-staged blob bytes. source_sha256 identifies the source workspace file before the documented report-link rebasing. This manifest does not hash itself.",
   "notes": [
     "All retained portable validation evidence remains byte-for-byte identical to its reviewed portable export; that subdirectory records original evidence hashes and sanitizations.",
     "Relative private capture labels in the report identify retained evidence but are not included as downloadable data.",
     "The tracing guide describes commands for the separate Windows tracing workspace; collector/debugger scripts and raw captures are not included in this kernel bundle.",
-    "Existing licensing and source attribution are preserved; the bundle adds no third-party relicensing or fabricated sign-offs."
+    "Existing licensing and source attribution are preserved; the bundle adds no third-party relicensing or fabricated sign-offs.",
+    "The CCS follow-up includes source-derived arithmetic tests and focused native ARM64 builds, not camera hardware validation.",
+    "The raw OpenCode front-plan answer is preserved for audit; the reviewed note corrects its material errors and is the applicable interpretation.",
+    "Follow-up files are copied from an explicit public allowlist; raw traces, event XML, compiled binaries and private command/preflight logs are excluded.",
+    "The final privileged report distinguishes operator-reported face success from correlated event activity; reported 5-second/2-second observations do not establish duration versus delay or emitter safety.",
+    "Original captures retain the two registry-export failures and their partial-inventory status; separate shorter-path exports do not rewrite capture evidence.",
+    "The three added PowerShell ETL analysis helpers are reference source copies. Run them only from the original Windows tracing workspace analysis/camera-integration-20260827 layout; they are not kernel-build executables or a standalone capture kit.",
+    "The latest OpenCode raw response and approved input remain immutable. Its reviewed assessment and public metadata document corrections and the limited review inputs."
   ],
   "files": [
+    {
+      "path": "Audit-CameraEtls.ps1",
+      "source_path": "analysis/camera-integration-20260827/Audit-CameraEtls.ps1",
+      "source_sha256": "db31516275e981d02eb2df11bf55a1a1ffa1285874766fff8c48352bfbe7d7bd",
+      "sha256": "db31516275e981d02eb2df11bf55a1a1ffa1285874766fff8c48352bfbe7d7bd",
+      "bytes": 32873,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
     {
       "path": "Build-CameraEvidence.ps1",
       "source_path": "analysis/camera-integration-20260827/Build-CameraEvidence.ps1",
@@ -26,20 +42,318 @@
       "operation": "byte-for-byte copy"
     },
     {
+      "path": "Export-CameraEtlEvidence.ps1",
+      "source_path": "analysis/camera-integration-20260827/Export-CameraEtlEvidence.ps1",
+      "source_sha256": "847911d74aa1f56f14d5bdebdcfa74288529aa00ab04d7afbc8dd22ebbd6aea6",
+      "sha256": "847911d74aa1f56f14d5bdebdcfa74288529aa00ab04d7afbc8dd22ebbd6aea6",
+      "bytes": 15620,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "Test-CameraEtlAudit.ps1",
+      "source_path": "analysis/camera-integration-20260827/Test-CameraEtlAudit.ps1",
+      "source_sha256": "ba1aad76f4bce11ed92b4cd41ae09d1b338b69c0ef91cec25109c6e32c157b3c",
+      "sha256": "ba1aad76f4bce11ed92b4cd41ae09d1b338b69c0ef91cec25109c6e32c157b3c",
+      "bytes": 15368,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
       "path": "camera-integration-report.md",
       "source_path": "analysis/camera-integration-20260827/camera-integration-report.md",
-      "source_sha256": "95c3301955ef24c8018ffedc370b38987d8397031a6998222e9533a9e6c7822d",
-      "sha256": "dfcfe256c7207762d455a041972852f4cd86abd944a314cbcad80a265835d170",
-      "bytes": 16400,
-      "operation": "Rebase exactly one ../../camera-tracing-guide.md link to camera-tracing-guide.md; all other bytes preserved."
+      "source_sha256": "cb200132e7ce13f477eb134aec2ec05950e588194eece1fa12f31548bb93ae24",
+      "sha256": "556d152ade3174826029ceca82a5f97edc518b96dfe9e4922bf3cc2296c3bb5d",
+      "bytes": 16707,
+      "operation": "Rebase exactly one ../../camera-tracing-guide.md link to camera-tracing-guide.md; all other approved source bytes preserved. The source adds only an introductory link paragraph to the historical report.",
+      "previous_bundle_entry": {
+        "path": "camera-integration-report.md",
+        "source_path": "analysis/camera-integration-20260827/camera-integration-report.md",
+        "source_sha256": "95c3301955ef24c8018ffedc370b38987d8397031a6998222e9533a9e6c7822d",
+        "sha256": "dfcfe256c7207762d455a041972852f4cd86abd944a314cbcad80a265835d170",
+        "bytes": 16400,
+        "operation": "Rebase exactly one ../../camera-tracing-guide.md link to camera-tracing-guide.md; all other bytes preserved."
+      }
     },
     {
       "path": "camera-tracing-guide.md",
       "source_path": "camera-tracing-guide.md",
-      "source_sha256": "faaafcfe428d5529d9f02245a3499b299ad331e31672f61abc9376320fa2dbc5",
-      "sha256": "faaafcfe428d5529d9f02245a3499b299ad331e31672f61abc9376320fa2dbc5",
-      "bytes": 10414,
-      "operation": "byte-for-byte copy"
+      "source_sha256": "85e9104435937159928ac954cbbf8f00c8ba1f2e559ed62a18b6d3c225f5852e",
+      "sha256": "85e9104435937159928ac954cbbf8f00c8ba1f2e559ed62a18b6d3c225f5852e",
+      "bytes": 12034,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence",
+      "previous_bundle_entry": {
+        "path": "camera-tracing-guide.md",
+        "source_path": "camera-tracing-guide.md",
+        "source_sha256": "7d03f8b7ba37d88bff1f562dcabee4782121bc6e04cfd493d63033d3c12a9d55",
+        "sha256": "7d03f8b7ba37d88bff1f562dcabee4782121bc6e04cfd493d63033d3c12a9d55",
+        "bytes": 10982,
+        "operation": "byte-for-byte refresh of tracing guide; previous bytes retained in Git history and the private staging archive",
+        "previous_bundle_sha256": "faaafcfe428d5529d9f02245a3499b299ad331e31672f61abc9376320fa2dbc5",
+        "previous_bundle_bytes": 10414
+      }
+    },
+    {
+      "path": "ccs-followup-validation/0001-media-ccs-avoid-oversized-shifts.patch",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/0001-media-ccs-avoid-oversized-shifts.patch",
+      "source_sha256": "a790e6c8222aa308bdd637b4a08076d309a97527c327d9e0b768df776a14a710",
+      "sha256": "a790e6c8222aa308bdd637b4a08076d309a97527c327d9e0b768df776a14a710",
+      "bytes": 2048,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/arm64-camss-ccs.config",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/arm64-camss-ccs.config",
+      "source_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+      "bytes": 323088,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/baseline-0x00000001.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/baseline-0x00000001.log",
+      "source_sha256": "572d61282043539099d4af98da0beeb939c73a9512cc1ea505ed13cfa93efcb7",
+      "sha256": "572d61282043539099d4af98da0beeb939c73a9512cc1ea505ed13cfa93efcb7",
+      "bytes": 100,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/baseline-0x044f3000.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/baseline-0x044f3000.log",
+      "source_sha256": "db41a977b4ae3f87fb4e5f6484543655171899f031f3514affa2732158351538",
+      "sha256": "db41a977b4ae3f87fb4e5f6484543655171899f031f3514affa2732158351538",
+      "bytes": 100,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/baseline-0x1f800000.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/baseline-0x1f800000.log",
+      "source_sha256": "40bb9be406b15ad7dd424acd92ab0405faa93ec9755356b9976102563fc86b45",
+      "sha256": "40bb9be406b15ad7dd424acd92ab0405faa93ec9755356b9976102563fc86b45",
+      "bytes": 99,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/baseline-ccs-build.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/baseline-ccs-build.log",
+      "source_sha256": "2cc9cf9d6d6317f6411d46a81bf2ad55da8bdcfd9765b1b974758262cc6c43db",
+      "sha256": "2cc9cf9d6d6317f6411d46a81bf2ad55da8bdcfd9765b1b974758262cc6c43db",
+      "bytes": 438,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/baseline-objects.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/baseline-objects.json",
+      "source_sha256": "dff8e2a36d39ea8f54136119c0e0ee4b3bad2097171df852fb1f795dbb4584b3",
+      "sha256": "dff8e2a36d39ea8f54136119c0e0ee4b3bad2097171df852fb1f795dbb4584b3",
+      "bytes": 5741,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/candidate-tests.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/candidate-tests.log",
+      "source_sha256": "d4c934590ea15b13d8180f872f1feb37d18105f052904b455f858cef332df563",
+      "sha256": "d4c934590ea15b13d8180f872f1feb37d18105f052904b455f858cef332df563",
+      "bytes": 144,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/ccs-float-baseline-harness.c",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/ccs-float-baseline-harness.c",
+      "source_sha256": "b8108a2dee0376fdcd041384c255ac3d3e35bc27c6f1acbfb7264c7bf5f0742e",
+      "sha256": "b8108a2dee0376fdcd041384c255ac3d3e35bc27c6f1acbfb7264c7bf5f0742e",
+      "bytes": 1447,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/ccs-float-candidate-function.c",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/ccs-float-candidate-function.c",
+      "source_sha256": "4b466e79a38a516d386894c5864590042145f220280f55c05cbbd71886f99abc",
+      "sha256": "4b466e79a38a516d386894c5864590042145f220280f55c05cbbd71886f99abc",
+      "bytes": 975,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/ccs-float-candidate-harness.c",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/ccs-float-candidate-harness.c",
+      "source_sha256": "baa8850b1d152ef6ee3b0ff565afa0a91014a3eb7379fbb6fefb9c77ac7cec28",
+      "sha256": "baa8850b1d152ef6ee3b0ff565afa0a91014a3eb7379fbb6fefb9c77ac7cec28",
+      "bytes": 5595,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/ccs-float-guard.diff",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/ccs-float-guard.diff",
+      "source_sha256": "7bbbc359574f35f322907e40e7676bc08d2d00d9052d25cf17aa0b775e989091",
+      "sha256": "7bbbc359574f35f322907e40e7676bc08d2d00d9052d25cf17aa0b775e989091",
+      "bytes": 600,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/ccs-float-original-function.c",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/ccs-float-original-function.c",
+      "source_sha256": "70f4639142206ae042e6070b9070218a7c61974981ddba5db553bbdabd4368c7",
+      "sha256": "70f4639142206ae042e6070b9070218a7c61974981ddba5db553bbdabd4368c7",
+      "bytes": 887,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/commit-checkpatch.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/commit-checkpatch.log",
+      "source_sha256": "a7011fcea7e02776b18b80874ec8f98b7affca78053b2802fa354c5db1839b1d",
+      "sha256": "a7011fcea7e02776b18b80874ec8f98b7affca78053b2802fa354c5db1839b1d",
+      "bytes": 205,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/commit-diff-check.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/commit-diff-check.log",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/committed-ccs-camss-incremental-build.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/committed-ccs-camss-incremental-build.log",
+      "source_sha256": "af523a432a6567d6d70881ca75257acd034df87286e4907f3bad1b882e1369b3",
+      "sha256": "af523a432a6567d6d70881ca75257acd034df87286e4907f3bad1b882e1369b3",
+      "bytes": 176,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/committed-function-ubsan.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/committed-function-ubsan.log",
+      "source_sha256": "d4c934590ea15b13d8180f872f1feb37d18105f052904b455f858cef332df563",
+      "sha256": "d4c934590ea15b13d8180f872f1feb37d18105f052904b455f858cef332df563",
+      "bytes": 144,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/compiler-comparison.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/compiler-comparison.json",
+      "source_sha256": "f83c31b4034e402d1eeab85050289accb53e93b06c3fab05ea602174a2f7d91f",
+      "sha256": "f83c31b4034e402d1eeab85050289accb53e93b06c3fab05ea602174a2f7d91f",
+      "bytes": 144,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/manifest.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/manifest.json",
+      "source_sha256": "f1193d4dbdbb624a971f702843f10edef20f76546a455782f90a581071ba9d94",
+      "sha256": "f1193d4dbdbb624a971f702843f10edef20f76546a455782f90a581071ba9d94",
+      "bytes": 3282,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/patched-ccs-camss-build.log",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/patched-ccs-camss-build.log",
+      "source_sha256": "268fbbb0b6e27aa43aff0b2b37c969de7f239fc5de9af29f84e1e4ed1fd6076c",
+      "sha256": "268fbbb0b6e27aa43aff0b2b37c969de7f239fc5de9af29f84e1e4ed1fd6076c",
+      "bytes": 263,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/patched-objects.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/patched-objects.json",
+      "source_sha256": "f53ba60fed21537263aaec57a1406e9924c00c784ec210d290a8f27bc349aee6",
+      "sha256": "f53ba60fed21537263aaec57a1406e9924c00c784ec210d290a8f27bc349aee6",
+      "bytes": 5741,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/provenance.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/provenance.json",
+      "source_sha256": "7bead8d26f22f94cb9db50122df0bb8c83f75836675b8f6cc780666ce41dc53b",
+      "sha256": "7bead8d26f22f94cb9db50122df0bb8c83f75836675b8f6cc780666ce41dc53b",
+      "bytes": 11336,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/source-attribution.md",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/source-attribution.md",
+      "source_sha256": "0cbc3da11954914fdff85941b07c881d43cc0ed806ebf7780f557e2e5a0fbd31",
+      "sha256": "0cbc3da11954914fdff85941b07c881d43cc0ed806ebf7780f557e2e5a0fbd31",
+      "bytes": 1992,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/tool-versions.txt",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/tool-versions.txt",
+      "source_sha256": "b8882b4336226e7ac1ae1e1e53f0bdd10eb9d50a44e01535a1d12007fe3d1ea0",
+      "sha256": "b8882b4336226e7ac1ae1e1e53f0bdd10eb9d50a44e01535a1d12007fe3d1ea0",
+      "bytes": 842,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "ccs-followup-validation/validation.json",
+      "source_path": "analysis/camera-integration-20260827/ccs-followup-validation/validation.json",
+      "source_sha256": "4dd551a554ec6902fd1a699d04801f4b25f58fdf3efc42698eba3bf5c242fb94",
+      "sha256": "4dd551a554ec6902fd1a699d04801f4b25f58fdf3efc42698eba3bf5c242fb94",
+      "bytes": 3699,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "debugger-prerequisites-followup.json",
+      "source_path": "analysis/camera-integration-20260827/debugger-prerequisites-followup.json",
+      "source_sha256": "3b6452dcf87b5e180249e221c01a03b333695bd2982fc38e411be269f29084e3",
+      "sha256": "3b6452dcf87b5e180249e221c01a03b333695bd2982fc38e411be269f29084e3",
+      "bytes": 17472,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "debugger-prerequisites-followup.md",
+      "source_path": "analysis/camera-integration-20260827/debugger-prerequisites-followup.md",
+      "source_sha256": "22d613958ac7eeab60a9526ec178240ca234370b8d70d5b547178f243428b97b",
+      "sha256": "22d613958ac7eeab60a9526ec178240ca234370b8d70d5b547178f243428b97b",
+      "bytes": 4055,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "etl-projection-verification.json",
+      "source_path": "analysis/camera-integration-20260827/etl-projection-verification.json",
+      "source_sha256": "8f434332fbdcb974be26a57800691fe368092964b2b0db14f1dcc0d72275736d",
+      "sha256": "8f434332fbdcb974be26a57800691fe368092964b2b0db14f1dcc0d72275736d",
+      "bytes": 1784,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "etl-providers.sanitized.csv",
+      "source_path": "analysis/camera-integration-20260827/etl-providers.sanitized.csv",
+      "source_sha256": "680dc1caf8dcb40c4deea7e9a78a8a0a6d862b6fcc5119c67d3612178eebaf42",
+      "sha256": "680dc1caf8dcb40c4deea7e9a78a8a0a6d862b6fcc5119c67d3612178eebaf42",
+      "bytes": 14012,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "etl-summary.sanitized.json",
+      "source_path": "analysis/camera-integration-20260827/etl-summary.sanitized.json",
+      "source_sha256": "819751defe42ab1da9dc929f79332940ea3098236e8300b9f9e1fcd63a4d73fb",
+      "sha256": "819751defe42ab1da9dc929f79332940ea3098236e8300b9f9e1fcd63a4d73fb",
+      "bytes": 16360,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "etl-validation-workflow.md",
+      "source_path": "analysis/camera-integration-20260827/etl-validation-workflow.md",
+      "source_sha256": "370cf68d6e6bbd8f46e415e81500d9879bf5298f7a1bd87f1eb02dac53bc5313",
+      "sha256": "370cf68d6e6bbd8f46e415e81500d9879bf5298f7a1bd87f1eb02dac53bc5313",
+      "bytes": 9191,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence",
+      "previous_bundle_entry": {
+        "path": "etl-validation-workflow.md",
+        "source_path": "analysis/camera-integration-20260827/etl-validation-workflow.md",
+        "source_sha256": "4879f6784d2adf9085f259a70e96e189c7be681c74b5a4fc9444383b0d3bdbc9",
+        "sha256": "4879f6784d2adf9085f259a70e96e189c7be681c74b5a4fc9444383b0d3bdbc9",
+        "bytes": 7474,
+        "operation": "byte-for-byte copy of reviewed follow-up evidence"
+      }
+    },
+    {
+      "path": "etl-validation.sanitized.md",
+      "source_path": "analysis/camera-integration-20260827/etl-validation.sanitized.md",
+      "source_sha256": "e816e2faf94055d7575e4e7e4320abc16736aa1293dafe0dd56b65dd6e242ce9",
+      "sha256": "e816e2faf94055d7575e4e7e4320abc16736aa1293dafe0dd56b65dd6e242ce9",
+      "bytes": 2545,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
     },
     {
       "path": "evidence-verification.json",
@@ -48,6 +362,62 @@
       "sha256": "bd6ab6c42ca75d7333fd823039f3d2a75b99089ff5d197ae607790638084e9b0",
       "bytes": 5358,
       "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "opencode-front-plan-answer.raw.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-front-plan-answer.raw.md",
+      "source_sha256": "1107557bb2104718c86f1b58dab12c5398ec32719e41a80217e14562e01e7ec3",
+      "sha256": "1107557bb2104718c86f1b58dab12c5398ec32719e41a80217e14562e01e7ec3",
+      "bytes": 14871,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "opencode-front-plan-metadata.json",
+      "source_path": "analysis/camera-integration-20260827/opencode-front-plan-metadata.json",
+      "source_sha256": "8a0d808928097f32cf44c20b985dc37e4a7581e1325a07a54de16840ef9bbeab",
+      "sha256": "8a0d808928097f32cf44c20b985dc37e4a7581e1325a07a54de16840ef9bbeab",
+      "bytes": 3223,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "opencode-front-plan-review.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-front-plan-review.md",
+      "source_sha256": "27f8c74ac875aaad35bda4830d423478d664ab6beb0f8f9e5b6ef9982c32958b",
+      "sha256": "27f8c74ac875aaad35bda4830d423478d664ab6beb0f8f9e5b6ef9982c32958b",
+      "bytes": 10382,
+      "operation": "byte-for-byte copy of reviewed follow-up evidence"
+    },
+    {
+      "path": "opencode-privileged-answer.raw.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-privileged-answer.raw.md",
+      "source_sha256": "1e0e8d0b20daf640017bc0610026fc13d1fbf93f2730505305f048a776d4b2b5",
+      "sha256": "1e0e8d0b20daf640017bc0610026fc13d1fbf93f2730505305f048a776d4b2b5",
+      "bytes": 4861,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "opencode-privileged-review-assessment.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-privileged-review-assessment.md",
+      "source_sha256": "57d31b639a2272425ac514af4b7a7cd1750ba1ed6fb66c6e163f621af0167dd9",
+      "sha256": "57d31b639a2272425ac514af4b7a7cd1750ba1ed6fb66c6e163f621af0167dd9",
+      "bytes": 7101,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "opencode-privileged-review-input.md",
+      "source_path": "analysis/camera-integration-20260827/opencode-privileged-review-input.md",
+      "source_sha256": "e2fe3bcf6a9aa18b18196fe29d5d628bd8d0615859c0a8903df79bd9c03161ae",
+      "sha256": "e2fe3bcf6a9aa18b18196fe29d5d628bd8d0615859c0a8903df79bd9c03161ae",
+      "bytes": 9771,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "opencode-privileged-review-metadata.json",
+      "source_path": "analysis/camera-integration-20260827/opencode-privileged-review-metadata.json",
+      "source_sha256": "e0d449463318f7c9a43dba0099ae298c813833fa28042550b28b48499a21ca9e",
+      "sha256": "e0d449463318f7c9a43dba0099ae298c813833fa28042550b28b48499a21ca9e",
+      "bytes": 2693,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
     },
     {
       "path": "opencode-review-answer.md",
@@ -72,6 +442,30 @@
       "sha256": "66a301cae7ae791eeff66b0f1d1ea8e32befe5df289705eec3eda9daefa6dc49",
       "bytes": 1362,
       "operation": "byte-for-byte copy"
+    },
+    {
+      "path": "privileged-camera-followup.md",
+      "source_path": "analysis/camera-integration-20260827/privileged-camera-followup.md",
+      "source_sha256": "05c0d3efcf9f364b08d867da63e3dd4248000baaa6250db03236cdbc74833072",
+      "sha256": "05c0d3efcf9f364b08d867da63e3dd4248000baaa6250db03236cdbc74833072",
+      "bytes": 16809,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "privileged-evidence-verification.json",
+      "source_path": "analysis/camera-integration-20260827/privileged-evidence-verification.json",
+      "source_sha256": "475c85e5827607c38f19d1937132d31c505aec7e9d45c06eaddee643451d9779",
+      "sha256": "475c85e5827607c38f19d1937132d31c505aec7e9d45c06eaddee643451d9779",
+      "bytes": 3166,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "registry-export-followup.json",
+      "source_path": "analysis/camera-integration-20260827/registry-export-followup.json",
+      "source_sha256": "65452a12acc78d9ccc3b1e34b1d787dd83682bd23118c64d146cff733ac9c03e",
+      "sha256": "65452a12acc78d9ccc3b1e34b1d787dd83682bd23118c64d146cff733ac9c03e",
+      "bytes": 2052,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
     },
     {
       "path": "remote-kernel-validation/01-commit-checkpatch.log",
@@ -202,6 +596,30 @@
       "operation": "byte-for-byte copy"
     },
     {
+      "path": "windows-hello-observation.json",
+      "source_path": "analysis/camera-integration-20260827/windows-hello-observation.json",
+      "source_sha256": "a5afd77ba7d67d68a75302d58b130fbe965334849093f8f676485168f23406aa",
+      "sha256": "a5afd77ba7d67d68a75302d58b130fbe965334849093f8f676485168f23406aa",
+      "bytes": 7880,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "windows-privileged-rgb-stream-results.csv",
+      "source_path": "analysis/camera-integration-20260827/windows-privileged-rgb-stream-results.csv",
+      "source_sha256": "bf9bd57fe0ba6698f1cfade8927879075f2dbb5c91c58011c3b35292b60ec6ed",
+      "sha256": "bf9bd57fe0ba6698f1cfade8927879075f2dbb5c91c58011c3b35292b60ec6ed",
+      "bytes": 2063,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
+      "path": "windows-privileged-validation.json",
+      "source_path": "analysis/camera-integration-20260827/windows-privileged-validation.json",
+      "source_sha256": "eaee3f4148cde4ada67e86ae6ba59bee91a052b40dad6c3e315b004637dab116",
+      "sha256": "eaee3f4148cde4ada67e86ae6ba59bee91a052b40dad6c3e315b004637dab116",
+      "bytes": 13422,
+      "operation": "byte-for-byte copy of reviewed final follow-up evidence"
+    },
+    {
       "path": "windows-rgb-stream-results.csv",
       "source_path": "analysis/camera-integration-20260827/windows-rgb-stream-results.csv",
       "source_sha256": "d621528a43c8888bd794137f17575116c0c6cc45bd0a21dd77a4d2c8e804f535",
@@ -217,5 +635,9 @@
       "bytes": 3770,
       "operation": "byte-for-byte copy"
     }
-  ]
+  ],
+  "previous_bundle_manifest_sha256": "ba8947ddbec911920ed21073293ed1deb9e786dcbcc1058d10209fbf6e2144c8",
+  "historical_file_policy": "Prior bundle payloads are preserved except the approved report introduction and tracing-guide/ETL-workflow refreshes. Replaced entries retain their previous source/payload hashes. The original report body is byte-for-byte unchanged after its existing single-link rebasing.",
+  "initial_bundle_manifest_sha256": "4166f4cef87e6ff8f79404794a895e4e522b5b3a9d717be3a3f1345e7ad5f1e0",
+  "final_source_allowlist_sha256": "72a1601e7493b563afc49bb1437e79188070a8f5b0a79e14fa08a9382a5f19cf"
 }

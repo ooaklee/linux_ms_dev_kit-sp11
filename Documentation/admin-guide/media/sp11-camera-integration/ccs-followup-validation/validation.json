@@ -1,0 +1,83 @@
+{
+  "branch": "sp11/integration-7.2.x-ooaklee-karsies-wq-cams",
+  "parent_commit": "4c7cf3e7d96359b02eb7c2780dd32bda5927a6f5",
+  "commit": "e6fa5cb158b56330b41dda6eb299041b3a3d39f3",
+  "kernel_base": "3fc7c5249f4aa9ef70d1f63e82201c8a21b33827",
+  "reference_commit": "b08f76f40b8d7b715bd4da6aef484f86142cc147",
+  "source_path": "drivers/media/i2c/ccs/ccs-reg-access.c",
+  "original_source_sha256": "dbef4329c5f600b85153151828a7d763f71817cf337bb50bced7feb3ba66d31c",
+  "committed_source_sha256": "a6b0cfa26641d7bfcff9997981368c75592afc38ec9e70fcbd4a86ac7798bbc8",
+  "candidate_patch_sha256": "4fd5e9c26169ea37132b65de78bbb62cee111656afa5b4909d0e417f94b96398",
+  "change": "Three-line guard: unbiased exponent <= -64 returns zero before shifting the 64-bit mantissa; no sensor, firmware, DT, PHY or emitter changes",
+  "native_architecture": "AArch64",
+  "build_configuration": "arm64-camss-ccs.config",
+  "build_configuration_sha256": "7b3f955e71aecbdf2a31596c631494916e550a4ed513b3c5e1a4b5012f8002e9",
+  "build_scope": "Real CCS object and composite; CAMSS regression target was already current and passed incrementally with unchanged object hashes. Not a full-kernel image or module-install test.",
+  "baseline_ccs_build": {
+    "exit_code": 0,
+    "warnings": 0,
+    "log": "baseline-ccs-build.log"
+  },
+  "patched_ccs_and_camss_target_build": {
+    "exit_code": 0,
+    "warnings": 0,
+    "log": "patched-ccs-camss-build.log"
+  },
+  "committed_incremental_build": {
+    "exit_code": 0,
+    "log": "committed-ccs-camss-incremental-build.log"
+  },
+  "build_command": "make -C <kernel-source> O=<kernel-output> ARCH=arm64 -j4 drivers/media/i2c/ccs/ccs.o drivers/media/platform/qcom/camss/qcom-camss.o",
+  "ubsan_scope": "Exact extracted converter with device logging stubbed, compiled and run natively; not a kernel runtime or camera test",
+  "ubsan_compile_flags": "-std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined",
+  "baseline_undefined_shift_reproductions": [
+    {
+      "value": "0x044f3000",
+      "invalid_shift": 119,
+      "exit_code": 1,
+      "log": "baseline-0x044f3000.log"
+    },
+    {
+      "value": "0x00000001",
+      "invalid_shift": 127,
+      "exit_code": 1,
+      "log": "baseline-0x00000001.log"
+    },
+    {
+      "value": "0x1f800000",
+      "invalid_shift": 64,
+      "exit_code": 1,
+      "log": "baseline-0x1f800000.log"
+    }
+  ],
+  "guarded_tests": {
+    "exit_code": 0,
+    "explicit_cases": 25,
+    "exponent_sign_mantissa_cases": 1536,
+    "deterministic_patterns": 1000000,
+    "sampled_defined_results_preserved": 875617,
+    "tiny_underflows_returning_zero": 125919,
+    "log": "committed-function-ubsan.log",
+    "harness": "ccs-float-candidate-harness.c"
+  },
+  "strict_commit_checkpatch": {
+    "exit_code": 0,
+    "errors": 0,
+    "warnings": 0,
+    "checks": 0,
+    "command": "scripts/checkpatch.pl --no-tree --strict --show-types --no-signoff -g e6fa5cb158b56330b41dda6eb299041b3a3d39f3",
+    "signoff_requirement_excluded": true,
+    "log": "commit-checkpatch.log"
+  },
+  "code_commit_diff_check": {
+    "exit_code": 0,
+    "log": "commit-diff-check.log"
+  },
+  "worktree_clean_after_commit": true,
+  "original_checkout_branch_status_and_13_file_hashes_unchanged": true,
+  "broad_project_ci_rerun": false,
+  "broader_ci_caveat": "Prior broader validation remains non-clean; this follow-up did not rerun or resolve its inherited errors and inconsistent CHECK totals.",
+  "hardware_validation": false,
+  "push_or_deployment": false,
+  "evidence_patch_whitespace": "Exact diff and mail artifacts retain Git patch context/signature whitespace; do not rewrite them merely to silence whole-document whitespace checks."
+}

@@ -1,0 +1,40 @@
+{
+  "VerifiedUtc": "2026-08-27T13:26:29.7355845Z",
+  "ExporterSHA256": "847911D74AA1F56F14D5BDEBDCFA74288529AA00AB04D7AFBC8DD22EBBD6AEA6",
+  "Audits": [
+    {
+      "AuditRun": "camera-etl-audit-20260827-140932-006-423dd2a4",
+      "CaptureRun": "20260827-133214832-camera-trace-privileged-rgb",
+      "AuditPayloadsVerified": 16,
+      "AuditManifestSHA256": "D04190A466925CCCDD0A31A7D8D16804671E459E7F78F3DCDD0F3F94D730E942",
+      "CaptureManifestSHA256": "976E6D1D3C80402420413D86C68968ED8DF54DB0492A9F93284181569EAB43E3",
+      "CaptureManifestUnchanged": true,
+      "AuditorSHA256": "DB31516275E981D02EB2DF11BF55A1A1FFA1285874766FFF8C48352BFBE7D7BD",
+      "AuditFinishedUtc": "2026-08-27T13:18:03.0737480Z"
+    },
+    {
+      "AuditRun": "camera-etl-audit-20260827-140851-053-e55c24cf",
+      "CaptureRun": "20260827-135431422-camera-trace-privileged-hello-retry",
+      "AuditPayloadsVerified": 7,
+      "AuditManifestSHA256": "2DE7F7492C2D7E08AE9784DE285232F715D27C85ECA4A55CEF7AA94ED1F94A2A",
+      "CaptureManifestSHA256": "68A5610A7902709FAE059263CB254260D9A005A74337AC60B255FB74485B4D2F",
+      "CaptureManifestUnchanged": true,
+      "AuditorSHA256": "DB31516275E981D02EB2DF11BF55A1A1FFA1285874766FFF8C48352BFBE7D7BD",
+      "AuditFinishedUtc": "2026-08-27T13:08:57.2839097Z"
+    }
+  ],
+  "Outputs": [
+    {
+      "File": "etl-summary.sanitized.json",
+      "SHA256": "819751DEFE42AB1DA9DC929F79332940EA3098236E8300B9F9E1FCD63A4D73FB"
+    },
+    {
+      "File": "etl-providers.sanitized.csv",
+      "SHA256": "680DC1CAF8DCB40C4DEEA7E9A78A8A0A6D862B6FCC5119C67D3612178EEBAF42"
+    },
+    {
+      "File": "etl-validation.sanitized.md",
+      "SHA256": "E816E2FAF94055D7575E4E7E4320ABC16736AA1293DAFE0DD56B65DD6E242CE9"
+    }
+  ]
+}
