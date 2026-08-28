@@ -2327,8 +2327,13 @@ static int ccs_enable_streams(struct v4l2_subdev *subdev,
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_STREAMING);
 	if (rval)
 		goto err_pm_put;
-	if (ccs_is_imx681(sensor))
+	if (ccs_is_imx681(sensor)) {
 		ccs_imx681_log_stream_state(sensor, "post-streamon");
+
+		/* One expected frame is about 64 ms; keep this probe nonfatal. */
+		usleep_range(100000, 101000);
+		ccs_imx681_log_stream_state(sensor, "active-100ms");
+	}
 
 	sensor->streaming |= streams_mask;
 

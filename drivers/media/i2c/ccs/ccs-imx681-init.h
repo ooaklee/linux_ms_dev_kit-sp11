@@ -57,28 +57,12 @@ static const struct ccs_reg_8 imx681_mode_3844x2640_regs[] = {
 	{ 0x034e, 0x0a },
 	{ 0x034f, 0x50 },
 	/*
-	 * Program the complete effective clock tree instead of retaining branch
-	 * dividers from the firmware-less 0x3b60 CCS fallback.  The VT branch is
-	 * derived from the working reference's line timing and headroom:
-	 * 19.2 MHz / 2 * 225 / 1 / 5 = 432 MHz.  The C-PHY OP branch is
-	 * 19.2 MHz / 3 * 303 / 1 / 4,
-	 * corresponding to the 969.6-Msymbol/s link advertised by the endpoint.
-	 * Leave PLL_MODE at the sensor default, as the validated reference table
-	 * does; forcing dual-PLL mode is not part of that sequence.
+	 * Preserve the branch dividers selected by the CCS PLL calculator and
+	 * override only the multipliers from the hardware-proven Snapdragon
+	 * sequence.  The 0097c12-derived complete divider tuple produced no C-PHY
+	 * packets on this device.
 	 */
-	{ 0x0300, 0x00 },
-	{ 0x0301, 0x05 },
-	{ 0x0302, 0x00 },
-	{ 0x0303, 0x01 },
-	{ 0x0304, 0x00 },
-	{ 0x0305, 0x02 },
-	{ 0x0306, 0x00 },
 	{ 0x0307, 0xe1 },
-	{ 0x0308, 0x00 },
-	{ 0x0309, 0x04 },
-	{ 0x030a, 0x00 },
-	{ 0x030b, 0x01 },
-	{ 0x030c, 0x00 },
 	{ 0x030d, 0x03 },
 	{ 0x030e, 0x01 },
 	{ 0x030f, 0x2f },
