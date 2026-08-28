@@ -24,6 +24,11 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
   * Make failed opens recoverable: balance runtime-PM only on the IMX681
     source subdevice, schedule rail power-down even when standby is NACKed,
     and unwind already-started CAMSS subdevices when an upstream start fails.
+  * Match the same-machine Windows CSID680 C-PHY receiver value on X1E by
+    retaining TPG_NUM_SEL=1 while the TPG mux is disabled, producing
+    RX_CFG0=0x11300000 for the CSIPHY2 front-camera path. Report RX_CFG0 and
+    the received-packet counter at C-PHY stop so a zero-frame capture can be
+    separated from a downstream RDI/VFE buffer-completion failure.
 
  -- Leon Silcott <leon@boasi.io>  Fri, 28 Aug 2026 08:22:48 +0100
 

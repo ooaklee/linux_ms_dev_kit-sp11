@@ -105,6 +105,7 @@
 #define		CSI2_RX_CFG0_PHY_TYPE_SEL			24
 #define		CSI2_RX_CFG0_TPG_MUX_EN				BIT(27)
 #define		CSI2_RX_CFG0_TPG_MUX_SEL			GENMASK(29, 28)
+#define		CSI2_RX_CFG0_TPG_NUM_SEL			BIT(28)
 
 #define CSID_CSI2_RX_CFG1					0x204
 #define		CSI2_RX_CFG1_PACKET_ECC_CORRECTION_EN		BIT(0)
@@ -210,6 +211,16 @@ static void __csid_configure_rx(struct csid_device *csid,
 	} else {
 		val |= (phy->csiphy_id + CSI2_RX_CFG0_PHY_SEL_BASE_IDX)
 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
+
+		/*
+		 * Same-machine SP11 Windows programs TPG_NUM_SEL=1 for the
+		 * CSIPHY2 one-trio C-PHY receiver while leaving the TPG mux
+		 * disabled. Preserve that otherwise-inert field on X1E80100 so
+		 * the front-camera receiver uses RX_CFG0 == 0x11300000.
+		 */
+		if (camss->res->version == CAMSS_X1E80100 &&
+		    phy->bus_type == V4L2_MBUS_CSI2_CPHY)
+			val |= CSI2_RX_CFG0_TPG_NUM_SEL;
 	}
 
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);
@@ -254,9 +265,10 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	u32 val;
 
 	if (!enable && csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY)
-		dev_dbg(csid->camss->dev,
-			"CSID%u C-PHY stop: TOTAL_PKTS=%u RDI%u_CFG0=%#010x RDI%u_HCROP=%#010x\n",
-			csid->id, readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
+		dev_info(csid->camss->dev,
+			 "CSID%u C-PHY stop: RX_CFG0=%#010x TOTAL_PKTS=%u RDI%u_CFG0=%#010x RDI%u_HCROP=%#010x\n",
+			 csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
+			 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
 			port, readl(csid->base + CSID_RDI_CFG0(port)),
 			port, readl(csid->base + CSID_RDI_RPP_HCROP(port)));
 
