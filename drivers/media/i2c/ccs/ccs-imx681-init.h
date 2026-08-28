@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Sony IMX681 3844x2640 mode based on the Andre Gilerson table from
- * linux-surface-kernel. The Surface Pro 11 values were recovered from the
- * Windows sensor package and validated by the Snapdragon reference port.
- * Multi-byte registers remain byte-split to preserve the proven write order.
+ * Sony IMX681 3844x2640, 969.6-Msymbol/s Linux mode based on the Andre
+ * Gilerson table from linux-surface-kernel and validated by the Snapdragon
+ * reference port. It is distinct from the static Windows 3840x2640,
+ * 1.2-Gsymbol/s mode. Multi-byte registers remain byte-split to preserve the
+ * proven write order.
  */
 
 #ifndef __CCS_IMX681_INIT_H__
