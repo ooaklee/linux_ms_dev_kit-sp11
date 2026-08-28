@@ -83,6 +83,12 @@ struct csid_hw_ops {
 	void (*configure_stream)(struct csid_device *csid, u8 enable);
 
 	/*
+	 * log_status - Log a read-only hardware status snapshot while powered
+	 * @csid: CSID device
+	 */
+	void (*log_status)(struct csid_device *csid);
+
+	/*
 	 * configure_testgen_pattern - Validates and configures output pattern mode
 	 * of test pattern generator
 	 * @csid: CSID device
