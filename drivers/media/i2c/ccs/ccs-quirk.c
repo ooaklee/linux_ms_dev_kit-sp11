@@ -46,13 +46,28 @@ static int imx681_limits(struct ccs_sensor *sensor)
 	 * including IEEE-754 frequency limits.
 	 */
 	static const struct ccs_limit_override overrides[] = {
+		/* The 0x3b60 variant reports IREAL, but our overrides are IEEE-754. */
+		{ CCS_L_CLOCK_CAPA_TYPE_CAPABILITY, 0 },
 		{ CCS_L_MIN_OP_SYS_CLK_FREQ_REV_MHZ, 0x44834000 },
 		{ CCS_L_MAX_OP_SYS_CLK_FREQ_REV_MHZ, 0x451c4000 },
 		{ CCS_L_MIN_OP_PIX_CLK_FREQ_REV_MHZ, 0x41960000 },
 		{ CCS_L_MAX_OP_PIX_CLK_FREQ_REV_MHZ, 0x4332947b },
-		{ CCS_L_NUM_OF_OP_LANES, 0x04 },
+		{ CCS_L_NUM_OF_OP_LANES, 0x00 },
 		{ CCS_L_OP_BITS_PER_LANE, 0x0a },
 		{ CCS_L_MIN_PLL_OP_CLK_FREQ_MHZ, 0x4489e600 },
+		/* PLL front-branch limits — the 0x3b60 variant reports 0 for these. */
+		{ CCS_L_MIN_PLL_IP_CLK_FREQ_MHZ, 0x40000000 }, /* 2.0 MHz */
+		{ CCS_L_MAX_PLL_IP_CLK_FREQ_MHZ, 0x42000000 }, /* 32.0 MHz */
+		{ CCS_L_MAX_PLL_OP_CLK_FREQ_MHZ, 0x451c4000 }, /* ~2500 MHz */
+		{ CCS_L_MIN_OP_SYS_CLK_FREQ_MHZ, 0x44834000 }, /* ~1050 MHz */
+		{ CCS_L_MAX_OP_SYS_CLK_FREQ_MHZ, 0x451c4000 }, /* ~2500 MHz */
+		{ CCS_L_MIN_OP_PIX_CLK_FREQ_MHZ, 0x41960000 }, /* ~18.75 MHz */
+		{ CCS_L_MIN_PLL_MULTIPLIER, 1 },
+		{ CCS_L_MAX_PLL_MULTIPLIER, 511 },
+		{ CCS_L_MIN_OP_SYS_CLK_DIV, 1 },
+		{ CCS_L_MAX_OP_SYS_CLK_DIV, 16 },
+		{ CCS_L_MIN_OP_PIX_CLK_DIV, 1 },
+		{ CCS_L_MAX_OP_PIX_CLK_DIV, 16 },
 		/*
 		 * Bring-up-derived permissive limits. The Windows-derived mode
 		 * tables program the sensor PLL itself. The SP11 front camera's
@@ -63,7 +78,14 @@ static int imx681_limits(struct ccs_sensor *sensor)
 		 * 1080p120-class clocks.
 		 */
 		{ CCS_L_MAX_OP_PIX_CLK_FREQ_MHZ, 0x44160000 }, /* 600 MHz */
+		{ CCS_L_MIN_VT_SYS_CLK_DIV, 1 },
+		{ CCS_L_MAX_VT_SYS_CLK_DIV, 16 },
+		{ CCS_L_MIN_VT_PIX_CLK_DIV, 1 },
+		{ CCS_L_MAX_VT_PIX_CLK_DIV, 16 },
+		{ CCS_L_MIN_VT_SYS_CLK_FREQ_MHZ, 0x44834000 }, /* ~1050 MHz */
+		{ CCS_L_MAX_VT_SYS_CLK_FREQ_MHZ, 0x451c4000 }, /* ~2500 MHz */
 		{ CCS_L_MIN_VT_PIX_CLK_FREQ_MHZ, 0x43200000 }, /* 160 MHz */
+		{ CCS_L_MAX_VT_PIX_CLK_FREQ_MHZ, 0x44160000 }, /* 600 MHz */
 	};
 	unsigned int i;
 
