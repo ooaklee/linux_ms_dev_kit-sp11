@@ -261,9 +261,6 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	if (!lane_cnt)
 		lane_cnt = 4;
 
-	val = 0;
-	writel(val, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
-
 	/*
 	 * DT_ID is a two bit bitfield that is concatenated with
 	 * the four least significant bits of the five bit VC
@@ -277,6 +274,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	 * CID   : VC 3:0 << 2 | DT_ID 1:0
 	 */
 	dt_id = port & 0x03;
+	val = 0;
 
 	/* Decoding is required for the explicitly selected receiver crop. */
 	if (crop)
@@ -300,6 +298,14 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	}
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
+
+	/* Program an explicit keep-all state for every drop engine. */
+	writel(1, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
+	writel(0, csid->base + CSID_RDI_FRM_DROP_PATTERN(port));
+	writel(1, csid->base + CSID_RDI_PIX_DROP_PERIOD(port));
+	writel(0, csid->base + CSID_RDI_PIX_DROP_PATTERN(port));
+	writel(1, csid->base + CSID_RDI_LINE_DROP_PERIOD(port));
+	writel(0, csid->base + CSID_RDI_LINE_DROP_PATTERN(port));
 
 	val = 0;
 	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port));
