@@ -29,6 +29,11 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
     RX_CFG0=0x11300000 for the CSIPHY2 front-camera path. Report RX_CFG0 and
     the received-packet counter at C-PHY stop so a zero-frame capture can be
     separated from a downstream RDI/VFE buffer-completion failure.
+  * Move the IMX681 stop diagnostics onto the normal powered STREAMOFF path,
+    where the one-shot CSID configuration guard cannot suppress them. Capture
+    sensor stream/frame-count readback, receiver packet/error state, linked
+    RDI state, and matching VFE680 write-master/IRQ state without changing
+    stream configuration or teardown behavior.
 
  -- Leon Silcott <leon@boasi.io>  Fri, 28 Aug 2026 08:22:48 +0100
 

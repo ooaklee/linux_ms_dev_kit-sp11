@@ -264,14 +264,6 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	u8 dt_id;
 	u32 val;
 
-	if (!enable && csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY)
-		dev_info(csid->camss->dev,
-			 "CSID%u C-PHY stop: RX_CFG0=%#010x TOTAL_PKTS=%u RDI%u_CFG0=%#010x RDI%u_HCROP=%#010x\n",
-			 csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
-			 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
-			port, readl(csid->base + CSID_RDI_CFG0(port)),
-			port, readl(csid->base + CSID_RDI_RPP_HCROP(port)));
-
 	if (!lane_cnt)
 		lane_cnt = 4;
 
@@ -335,6 +327,44 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	else
 		val &= ~RDI_CFG0_ENABLE;
 	writel(val, csid->base + CSID_RDI_CFG0(port));
+}
+
+static void csid_log_status(struct csid_device *csid)
+{
+	struct v4l2_mbus_framefmt *sink_format =
+		&csid->fmt[MSM_CSID_PAD_SINK];
+	int i;
+
+	if (csid->camss->res->version != CAMSS_X1E80100 ||
+	    !csid_is_cphy_raw10_3844(csid, sink_format))
+		return;
+
+	dev_info(csid->camss->dev,
+		 "CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
+		 csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
+		 readl(csid->base + CSID_CSI2_RX_CFG1),
+		 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
+		 readl(csid->base + CSID_CSI2_RX_STATS_ECC),
+		 readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
+	dev_info(csid->camss->dev,
+		 "CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
+		 csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
+		 readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
+		 readl(csid->base + CSID_CSI2_RX_IRQ_STATUS));
+
+	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
+		if (!(csid->phy.en_vc & BIT(i)))
+			continue;
+
+		dev_info(csid->camss->dev,
+			 "CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
+			 csid->id, i,
+			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
+			 readl(csid->base + CSID_RDI_CFG0(i)),
+			 readl(csid->base + CSID_RDI_CTRL(i)),
+			 readl(csid->base + CSID_RDI_CFG1(i)),
+			 readl(csid->base + CSID_RDI_RPP_HCROP(i)));
+	}
 }
 
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
@@ -466,6 +496,7 @@ static void csid_subdev_init(struct csid_device *csid) {}
 const struct csid_hw_ops csid_ops_680 = {
 	.configure_testgen_pattern = NULL,
 	.configure_stream = csid_configure_stream,
+	.log_status = csid_log_status,
 	.hw_version = csid_hw_version,
 	.isr = csid_isr,
 	.reset = csid_reset,

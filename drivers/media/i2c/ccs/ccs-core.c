@@ -2146,6 +2146,25 @@ static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
 	return 0;
 }
 
+static void ccs_imx681_log_stream_state(struct ccs_sensor *sensor,
+					const char *phase)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
+	u32 frame_count = 0;
+	u32 mode_select = 0;
+	int frame_ret;
+	int mode_ret;
+
+	mode_ret = ccs_read_addr_noconv(sensor, CCS_R_MODE_SELECT,
+					&mode_select);
+	frame_ret = ccs_read_addr_noconv(sensor, CCS_R_FRAME_COUNT,
+					 &frame_count);
+
+	dev_info(&client->dev,
+		 "IMX681 %s: MODE_SELECT ret=%d val=%#04x FRAME_COUNT ret=%d val=%#04x\n",
+		 phase, mode_ret, mode_select, frame_ret, frame_count);
+}
+
 static int ccs_enable_streams(struct v4l2_subdev *subdev,
 			      struct v4l2_subdev_state *state, u32 pad,
 			      u64 streams_mask)
@@ -2301,11 +2320,15 @@ static int ccs_enable_streams(struct v4l2_subdev *subdev,
 		rval = ccs_imx681_start_streaming(sensor);
 		if (rval)
 			goto err_pm_put;
+
+		ccs_imx681_log_stream_state(sensor, "pre-streamon");
 	}
 
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_STREAMING);
 	if (rval)
 		goto err_pm_put;
+	if (ccs_is_imx681(sensor))
+		ccs_imx681_log_stream_state(sensor, "post-streamon");
 
 	sensor->streaming |= streams_mask;
 
@@ -2334,6 +2357,9 @@ static int ccs_disable_streams(struct v4l2_subdev *subdev,
 	sensor->streaming &= ~streams_mask;
 	if (sensor->streaming)
 		return 0;
+
+	if (ccs_is_imx681(sensor))
+		ccs_imx681_log_stream_state(sensor, "pre-streamoff");
 
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_SOFTWARE_STANDBY);
 	if (rval) {
