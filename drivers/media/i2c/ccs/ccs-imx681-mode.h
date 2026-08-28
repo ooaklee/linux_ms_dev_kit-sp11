@@ -23,7 +23,7 @@ static const struct ccs_imx681_mode imx681_mode = {
 	.height = 2640,
 	.line_length_pck = 8704,
 	.frame_length_lines = 3177,
-	.pixel_rate = 387840000,
+	.pixel_rate = 432000000,
 	/* Initial values from the hardware-proven Snapdragon stream recipe. */
 	.exposure_default = 3100,
 	/* Control value 192 maps to global U8.8 code 0x0400 (4x). */

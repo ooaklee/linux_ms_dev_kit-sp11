@@ -19,6 +19,7 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
@@ -700,11 +701,34 @@ static int ccs_imx681_set_digital_gain(struct ccs_sensor *sensor, s32 value)
 	return ccs_imx681_group_write(sensor, regs, ARRAY_SIZE(regs));
 }
 
+static int ccs_imx681_set_startup_controls(struct ccs_sensor *sensor,
+					   const struct ccs_imx681_mode *mode)
+{
+	u32 exposure = sensor->exposure->val;
+	u16 gain = 0x0100 + clamp(sensor->analogue_gain->val, 0, 960) * 4;
+	const struct ccs_reg_8 regs[] = {
+		/* Keep timing and the first exposure coherent when streaming starts. */
+		{ 0x033d, (mode->frame_length_lines >> 16) & 0xff },
+		{ 0x033e, (mode->frame_length_lines >> 8) & 0xff },
+		{ 0x033f, mode->frame_length_lines & 0xff },
+		{ 0x0229, (exposure >> 16) & 0xff },
+		{ 0x022a, (exposure >> 8) & 0xff },
+		{ 0x022b, exposure & 0xff },
+		/* Keep the analogue code at the reference sequence's zero value. */
+		{ 0x0204, 0x00 },
+		{ 0x0205, 0x00 },
+		{ 0x020e, gain >> 8 },
+		{ 0x020f, gain & 0xff },
+	};
+
+	return ccs_imx681_group_write(sensor, regs, ARRAY_SIZE(regs));
+}
+
 static u32 ccs_imx681_ticks_to_lines(const struct ccs_imx681_mode *mode,
 				     u32 ticks)
 {
-	return DIV_ROUND_CLOSEST_ULL((u64)ticks * mode->pixel_rate,
-				     10000000ULL * mode->line_length_pck);
+	return DIV64_U64_ROUND_CLOSEST((u64)ticks * mode->pixel_rate,
+				       10000000ULL * mode->line_length_pck);
 }
 
 static void ccs_imx681_exposure_range(struct ccs_sensor *sensor, int *min,
@@ -2112,11 +2136,7 @@ static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
 
 	usleep_range(10000, 11000);
 
-	ret = ccs_imx681_set_exposure(sensor, sensor->exposure->val);
-	if (ret)
-		return ret;
-
-	ret = ccs_imx681_set_digital_gain(sensor, sensor->analogue_gain->val);
+	ret = ccs_imx681_set_startup_controls(sensor, mode);
 	if (ret)
 		return ret;
 
@@ -2316,12 +2336,16 @@ static int ccs_disable_streams(struct v4l2_subdev *subdev,
 		return 0;
 
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_SOFTWARE_STANDBY);
-	if (rval)
-		return rval;
+	if (rval) {
+		dev_warn(&client->dev,
+			 "failed to enter standby: %d; scheduling power-down\n",
+			 rval);
+	} else {
+		int quirk_rval = ccs_call_quirk(sensor, post_streamoff);
 
-	rval = ccs_call_quirk(sensor, post_streamoff);
-	if (rval)
-		dev_err(&client->dev, "post_streamoff quirks failed\n");
+		if (quirk_rval)
+			dev_err(&client->dev, "post_streamoff quirks failed\n");
+	}
 
 	pm_runtime_put_autosuspend(&client->dev);
 
@@ -2333,6 +2357,9 @@ static int ccs_pre_streamon(struct v4l2_subdev *subdev, u32 flags)
 	struct ccs_sensor *sensor = to_ccs_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
 	int rval;
+
+	if (ccs_is_imx681(sensor) && subdev != &sensor->src->sd)
+		return 0;
 
 	if (flags & V4L2_SUBDEV_PRE_STREAMON_FL_MANUAL_LP) {
 		switch (sensor->hwcfg.csi_signalling_mode) {
@@ -2370,6 +2397,9 @@ static int ccs_post_streamoff(struct v4l2_subdev *subdev)
 {
 	struct ccs_sensor *sensor = to_ccs_sensor(subdev);
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
+
+	if (ccs_is_imx681(sensor) && subdev != &sensor->src->sd)
+		return 0;
 
 	pm_runtime_put(&client->dev);
 

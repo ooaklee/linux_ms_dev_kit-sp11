@@ -4592,7 +4592,7 @@ struct media_pad *camss_find_sensor_pad(struct media_entity *entity)
 }
 
 /**
- * camss_get_link_freq - Get link frequency from sensor
+ * camss_get_link_freq - Get link frequency from the upstream transmitter
  * @entity: Media entity in the current pipeline
  * @bpp: Number of bits per pixel for the current format
  * @lanes: Number of lanes in the link to the sensor
@@ -4602,13 +4602,38 @@ struct media_pad *camss_find_sensor_pad(struct media_entity *entity)
 s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
 			unsigned int lanes)
 {
-	struct media_pad *sensor_pad;
+	struct media_pad *sink_pad;
+	struct media_pad *source_pad;
+	s64 link_freq;
 
-	sensor_pad = camss_find_sensor_pad(entity);
-	if (!sensor_pad)
-		return -ENODEV;
+	/*
+	 * A sensor can expose multiple subdevices between its pixel array and
+	 * the receiver.  The link-frequency control belongs to the subdevice
+	 * driving the physical link (for example a CCS scaler), not necessarily
+	 * to the entity classified as MEDIA_ENT_F_CAM_SENSOR.  Walk upstream and
+	 * use the first transmitter source pad that advertises the frequency.
+	 */
+	while (1) {
+		if (WARN_ON(!entity->pads || !entity->num_pads))
+			return -ENODEV;
 
-	return v4l2_get_link_freq(sensor_pad, bpp, 2 * lanes);
+		sink_pad = &entity->pads[0];
+		if (!(sink_pad->flags & MEDIA_PAD_FL_SINK))
+			return -ENODEV;
+
+		source_pad = media_pad_remote_pad_first(sink_pad);
+		if (!source_pad ||
+		    !is_media_entity_v4l2_subdev(source_pad->entity))
+			return -ENODEV;
+
+		link_freq = v4l2_get_link_freq(source_pad, bpp, 2 * lanes);
+		if (link_freq != -ENOENT)
+			return link_freq;
+
+		entity = source_pad->entity;
+		if (entity->function == MEDIA_ENT_F_CAM_SENSOR)
+			return -ENODEV;
+	}
 }
 
 /*

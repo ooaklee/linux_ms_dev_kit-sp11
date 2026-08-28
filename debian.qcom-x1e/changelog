@@ -14,6 +14,16 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
     device-tree binding.
   * Preserve requested H/V flips and their Bayer layout across the fixed mode
     table, and propagate a failed final sensor STREAMON write to userspace.
+  * Resolve the receiver link frequency from the CCS transmitter subdevice
+    rather than the compound sensor's pixel-array entity, allowing CAMSS to
+    reach sensor STREAMON on the active scaler-to-CSIPHY link.
+  * Program the complete derived IMX681 clock tree for the Linux mode: a
+    432 MHz VT clock with 8704-pixel lines and a 969.6-Msymbol/s C-PHY OP
+    branch. Keep frame length, first exposure, and gain under one group hold,
+    and use 64-bit exposure conversion without intermediate truncation.
+  * Make failed opens recoverable: balance runtime-PM only on the IMX681
+    source subdevice, schedule rail power-down even when standby is NACKed,
+    and unwind already-started CAMSS subdevices when an upstream start fails.
 
  -- Leon Silcott <leon@boasi.io>  Fri, 28 Aug 2026 08:22:48 +0100
 
