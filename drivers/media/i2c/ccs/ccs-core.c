@@ -795,18 +795,23 @@ static const char *pixel_order_str[] = { "GRBG", "RGGB", "BGGR", "GBRG" };
 				 - (unsigned long)ccs_csi_data_formats) \
 				/ sizeof(*ccs_csi_data_formats))
 
+static u8 ccs_image_orientation(struct ccs_sensor *sensor)
+{
+	u8 orient = 0;
+
+	if (sensor->hflip && sensor->hflip->val)
+		orient |= CCS_IMAGE_ORIENTATION_HORIZONTAL_MIRROR;
+
+	if (sensor->vflip && sensor->vflip->val)
+		orient |= CCS_IMAGE_ORIENTATION_VERTICAL_FLIP;
+
+	return orient;
+}
+
 static u32 ccs_pixel_order(struct ccs_sensor *sensor)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(&sensor->src->sd);
-	int flip = 0;
-
-	if (sensor->hflip) {
-		if (sensor->hflip->val)
-			flip |= CCS_IMAGE_ORIENTATION_HORIZONTAL_MIRROR;
-
-		if (sensor->vflip->val)
-			flip |= CCS_IMAGE_ORIENTATION_VERTICAL_FLIP;
-	}
+	u8 flip = ccs_image_orientation(sensor);
 
 	dev_dbg(&client->dev, "flip %u\n", flip);
 	return sensor->default_pixel_order ^ flip;
@@ -854,7 +859,6 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 	struct v4l2_subdev_state *state;
 	const struct v4l2_rect *pa_src = NULL;
 	int pm_status;
-	u32 orient = 0;
 	unsigned int i;
 	int exposure;
 	int rval;
@@ -870,12 +874,6 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_VFLIP:
 		if (sensor->streaming)
 			return -EBUSY;
-
-		if (sensor->hflip->val)
-			orient |= CCS_IMAGE_ORIENTATION_HORIZONTAL_MIRROR;
-
-		if (sensor->vflip->val)
-			orient |= CCS_IMAGE_ORIENTATION_VERTICAL_FLIP;
 
 		ccs_update_mbus_formats(sensor);
 
@@ -983,7 +981,8 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_HFLIP:
 	case V4L2_CID_VFLIP:
-		rval = ccs_write(sensor, IMAGE_ORIENTATION, orient);
+		rval = ccs_write(sensor, IMAGE_ORIENTATION,
+				 ccs_image_orientation(sensor));
 
 		break;
 	case V4L2_CID_VBLANK:
@@ -1236,6 +1235,11 @@ gain_controls_done:
 	sensor->vflip = v4l2_ctrl_new_std(
 		&sensor->pixel_array->ctrl_handler, &ccs_ctrl_ops,
 		V4L2_CID_VFLIP, 0, 1, 1, 0);
+
+	if (sensor->hflip)
+		sensor->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+	if (sensor->vflip)
+		sensor->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 
 	sensor->vblank = v4l2_ctrl_new_std(
 		&sensor->pixel_array->ctrl_handler, &ccs_ctrl_ops,
@@ -2100,6 +2104,12 @@ static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
 	if (ret)
 		return ret;
 
+	/* The fixed mode table resets 0x0101; restore the requested Bayer layout. */
+	ret = ccs_write(sensor, IMAGE_ORIENTATION,
+			ccs_image_orientation(sensor));
+	if (ret)
+		return ret;
+
 	usleep_range(10000, 11000);
 
 	ret = ccs_imx681_set_exposure(sensor, sensor->exposure->val);
@@ -2274,6 +2284,8 @@ static int ccs_enable_streams(struct v4l2_subdev *subdev,
 	}
 
 	rval = ccs_write(sensor, MODE_SELECT, CCS_MODE_SELECT_STREAMING);
+	if (rval)
+		goto err_pm_put;
 
 	sensor->streaming |= streams_mask;
 

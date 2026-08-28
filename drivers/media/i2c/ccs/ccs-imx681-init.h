@@ -16,7 +16,7 @@ static const struct ccs_reg_8 imx681_mode_3844x2640_regs[] = {
 	{ 0x0137, 0x33 },
 	{ 0x002c, 0x05 },
 	{ 0x002d, 0x05 },
-	/* C-PHY, RAW10, one trio, no image orientation change. */
+	/* C-PHY, RAW10, one trio; the requested orientation is restored later. */
 	{ 0x0110, 0x00 },
 	{ 0x0111, 0x03 },
 	{ 0x0112, 0x0a },

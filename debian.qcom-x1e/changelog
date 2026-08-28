@@ -9,6 +9,8 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
   * Program every CSID680 RDI drop engine to an explicit keep-all state, and
     describe the V4L2-managed privacy LED and sensor orientation in the CCS
     device-tree binding.
+  * Preserve requested H/V flips and their Bayer layout across the fixed mode
+    table, and propagate a failed final sensor STREAMON write to userspace.
 
  -- Leon Silcott <leon@boasi.io>  Fri, 28 Aug 2026 08:22:48 +0100
 
