@@ -42,15 +42,9 @@
  * registers 0x0300..0x030f, and bit 2 skips the 361-row vendor table.
  */
 static unsigned int imx681_mode_skip;
-module_param(imx681_mode_skip, uint, 0644);
+module_param(imx681_mode_skip, uint, 0444);
 MODULE_PARM_DESC(imx681_mode_skip,
-		 "Bring-up: IMX681 skip mask, bit0 lane, bit1 PLL, bit2 vendor");
-
-/* Select the alternate Windows 3840x2160 table at the next stream start. */
-static bool imx681_windows;
-module_param(imx681_windows, bool, 0644);
-MODULE_PARM_DESC(imx681_windows,
-		 "Bring-up: select IMX681 Windows 3840x2160 at next stream");
+		 "Load-time bring-up: IMX681 skip mask, bit0 lane, bit1 PLL, bit2 vendor");
 
 #define CCS_ALIGN_DIM(dim, flags)	\
 	((flags) & V4L2_SEL_FLAG_GE	\
@@ -106,7 +100,8 @@ ccs_imx681_current_mode(const struct ccs_sensor *sensor)
 	if (!ccs_is_imx681(sensor))
 		return NULL;
 
-	return &imx681_modes[imx681_windows ? 1 : 0];
+	/* The 3844x2640 mode is the only mode validated on the SP11 C-PHY. */
+	return &imx681_mode;
 }
 
 #define CCS_DEVICE_FLAG_IS_SMIA		BIT(0)
@@ -684,6 +679,7 @@ static int ccs_imx681_group_write(struct ccs_sensor *sensor,
 
 static int ccs_imx681_set_exposure(struct ccs_sensor *sensor, u32 exposure)
 {
+	/* 0x0229 is a 24-bit line count; control bounds are converted to lines. */
 	const struct ccs_reg_8 regs[] = {
 		{ 0x0229, (exposure >> 16) & 0xff },
 		{ 0x022a, (exposure >> 8) & 0xff },
@@ -732,7 +728,7 @@ static void ccs_imx681_exposure_range(struct ccs_sensor *sensor, int *min,
 	min_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_MIN_TICKS);
 	max_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_MAX_TICKS);
 	step_lines = ccs_imx681_ticks_to_lines(mode, IMX681_EXPOSURE_STEP_TICKS);
-	default_lines = min_lines;
+	default_lines = mode->exposure_default;
 
 	*min = clamp_t(u32, min_lines, 1, mode_max);
 	*max = clamp_t(u32, max_lines, *min, mode_max);
@@ -922,7 +918,16 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	switch (ctrl->id) {
 	case V4L2_CID_ANALOGUE_GAIN:
-		rval = ccs_write(sensor, ANALOG_GAIN_CODE_GLOBAL, ctrl->val);
+		/*
+		 * The analogue gain register does not affect the Snapdragon IMX681,
+		 * while its global U8.8 digital gain does. Keep the standard
+		 * analogue-gain control that libcamera's simple IPA drives, but map
+		 * it to the effective register on this model.
+		 */
+		if (ccs_is_imx681(sensor))
+			rval = ccs_imx681_set_digital_gain(sensor, ctrl->val);
+		else
+			rval = ccs_write(sensor, ANALOG_GAIN_CODE_GLOBAL, ctrl->val);
 
 		break;
 
@@ -938,11 +943,6 @@ static int ccs_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 
 	case V4L2_CID_DIGITAL_GAIN:
-		if (ccs_is_imx681(sensor)) {
-			rval = ccs_imx681_set_digital_gain(sensor, ctrl->val);
-			break;
-		}
-
 		if (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
 		    CCS_DIGITAL_GAIN_CAPABILITY_GLOBAL) {
 			rval = ccs_write(sensor, DIGITAL_GAIN_GLOBAL,
@@ -1071,6 +1071,17 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 	if (rval)
 		return rval;
 
+	if (ccs_is_imx681(sensor)) {
+		const struct ccs_imx681_mode *mode =
+			ccs_imx681_current_mode(sensor);
+
+		sensor->analogue_gain =
+			v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
+					  &ccs_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
+					  0, 960, 1, mode->gain_default);
+		goto gain_controls_done;
+	}
+
 	switch (CCS_LIM(sensor, ANALOG_GAIN_CAPABILITY)) {
 	case CCS_ANALOG_GAIN_CAPABILITY_GLOBAL: {
 		struct {
@@ -1105,13 +1116,14 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 					     &ctrl_cfg, NULL);
 		}
 
-		v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
-				  &ccs_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
-				  CCS_LIM(sensor, ANALOG_GAIN_CODE_MIN),
-				  CCS_LIM(sensor, ANALOG_GAIN_CODE_MAX),
-				  max(CCS_LIM(sensor, ANALOG_GAIN_CODE_STEP),
-				      1U),
-				  CCS_LIM(sensor, ANALOG_GAIN_CODE_MIN));
+		sensor->analogue_gain =
+			v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
+					  &ccs_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
+					  CCS_LIM(sensor, ANALOG_GAIN_CODE_MIN),
+					  CCS_LIM(sensor, ANALOG_GAIN_CODE_MAX),
+					  max(CCS_LIM(sensor,
+						      ANALOG_GAIN_CODE_STEP), 1U),
+					  CCS_LIM(sensor, ANALOG_GAIN_CODE_MIN));
 	}
 		break;
 
@@ -1159,6 +1171,8 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 	}
 	}
 
+gain_controls_done:
+
 	if (CCS_LIM(sensor, SHADING_CORRECTION_CAPABILITY) &
 	    (CCS_SHADING_CORRECTION_CAPABILITY_COLOR_SHADING |
 	     CCS_SHADING_CORRECTION_CAPABILITY_LUMINANCE_CORRECTION)) {
@@ -1192,23 +1206,19 @@ static int ccs_init_controls(struct ccs_sensor *sensor)
 					     &ctrl_cfg, NULL);
 	}
 
-	if (ccs_is_imx681(sensor)) {
-		/* Input 0..960 maps to U8.8 codes 0x0100..0x1000 (1x..16x). */
+	if (!ccs_is_imx681(sensor) &&
+	    (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
+	     CCS_DIGITAL_GAIN_CAPABILITY_GLOBAL ||
+	     CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
+	     SMIAPP_DIGITAL_GAIN_CAPABILITY_PER_CHANNEL))
 		sensor->digital_gain =
 			v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
 					  &ccs_ctrl_ops, V4L2_CID_DIGITAL_GAIN,
-					  0, 960, 1, 0);
-	} else if (CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
-	    CCS_DIGITAL_GAIN_CAPABILITY_GLOBAL ||
-	    CCS_LIM(sensor, DIGITAL_GAIN_CAPABILITY) ==
-	    SMIAPP_DIGITAL_GAIN_CAPABILITY_PER_CHANNEL)
-		v4l2_ctrl_new_std(&sensor->pixel_array->ctrl_handler,
-				  &ccs_ctrl_ops, V4L2_CID_DIGITAL_GAIN,
-				  CCS_LIM(sensor, DIGITAL_GAIN_MIN),
-				  CCS_LIM(sensor, DIGITAL_GAIN_MAX),
-				  max(CCS_LIM(sensor, DIGITAL_GAIN_STEP_SIZE),
-				      1U),
-				  0x100);
+					  CCS_LIM(sensor, DIGITAL_GAIN_MIN),
+					  CCS_LIM(sensor, DIGITAL_GAIN_MAX),
+					  max(CCS_LIM(sensor,
+						      DIGITAL_GAIN_STEP_SIZE), 1U),
+					  0x100);
 
 	if (ccs_is_imx681(sensor))
 		ccs_imx681_exposure_range(sensor, &exposure_min, &exposure_max,
@@ -2079,8 +2089,7 @@ static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
 	if (!mode)
 		return -EINVAL;
 
-	/* Windows mode retains the reference semantics of forcing vendor init. */
-	if (imx681_windows || !(imx681_mode_skip & BIT(2))) {
+	if (!(imx681_mode_skip & BIT(2))) {
 		ret = ccs_imx681_write_regs(sensor, imx681_vendor_init,
 					    ARRAY_SIZE(imx681_vendor_init), false);
 		if (ret)
@@ -2097,7 +2106,7 @@ static int ccs_imx681_start_streaming(struct ccs_sensor *sensor)
 	if (ret)
 		return ret;
 
-	ret = ccs_imx681_set_digital_gain(sensor, sensor->digital_gain->val);
+	ret = ccs_imx681_set_digital_gain(sensor, sensor->analogue_gain->val);
 	if (ret)
 		return ret;
 
@@ -2424,13 +2433,13 @@ static int ccs_enum_frame_size(struct v4l2_subdev *subdev,
 	const struct ccs_imx681_mode *mode;
 
 	if (!ccs_is_imx681(sensor) || fse->pad != ssd->source_pad ||
-	    fse->index >= ARRAY_SIZE(imx681_modes))
+	    fse->index)
 		return -EINVAL;
 
 	if (fse->code != ccs_get_mbus_code(subdev, fse->pad))
 		return -EINVAL;
 
-	mode = &imx681_modes[fse->index];
+	mode = ccs_imx681_current_mode(sensor);
 	fse->min_width = mode->width;
 	fse->max_width = mode->width;
 	fse->min_height = mode->height;

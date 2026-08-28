@@ -69,13 +69,11 @@ static int imx681_limits(struct ccs_sensor *sensor)
 		{ CCS_L_MIN_OP_PIX_CLK_DIV, 1 },
 		{ CCS_L_MAX_OP_PIX_CLK_DIV, 16 },
 		/*
-		 * Bring-up-derived permissive limits. The Windows-derived mode
-		 * tables program the sensor PLL itself. The SP11 front camera's
-		 * 4K30 RAW10 mode at the 1 Gsym/s C-PHY link computes an op pixel
-		 * clock of exactly 500 MHz, so 450 MHz rejects it with "no valid
-		 * link frequencies" / "no supported mbus code found" during probe.
-		 * 600 MHz provides margin and also covers approximately 587.5 MHz
-		 * 1080p120-class clocks.
+		 * Bring-up-derived permissive limit. The mode table programs the
+		 * sensor PLL itself; its validated 3844x2640 mode emits a 969.6
+		 * Msymbol/s C-PHY stream and uses a 387.84 MHz pixel rate. Keep the
+		 * calculator ceiling at 600 MHz so this fixed mode passes probe even
+		 * when the sensor's reported limits are incomplete.
 		 */
 		{ CCS_L_MAX_OP_PIX_CLK_FREQ_MHZ, 0x44160000 }, /* 600 MHz */
 		{ CCS_L_MIN_VT_SYS_CLK_DIV, 1 },

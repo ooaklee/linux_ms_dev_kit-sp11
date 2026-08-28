@@ -249,6 +249,7 @@ struct ccs_sensor {
 
 	/* Pixel array controls */
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *analogue_gain;
 	struct v4l2_ctrl *digital_gain;
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *vflip;
