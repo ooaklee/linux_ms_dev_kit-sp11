@@ -347,15 +347,19 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	}
 
 	if (is_cphy) {
+		if (!num_lanes)
+			return -EINVAL;
+
 		/*
 		 * V4L2 exposes half the C-PHY symbol rate as LINK_FREQ.  Until
 		 * generic C-PHY options exist, carry the actual symbol rate to the
-		 * X1E PHY in hs_clk_rate.
+		 * X1E PHY in hs_clk_rate and the physical trio in the PHY submode.
 		 */
 		dphy_cfg->hs_clk_rate = link_freq * 2;
-		dphy_cfg->lanes = 1;
+		dphy_cfg->lanes = num_lanes;
 
-		ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_CPHY);
+		ret = phy_set_mode_ext(csiphy->phy, PHY_MODE_MIPI_CPHY,
+				       csiphy->cfg.csi2->lane_cfg.data[0].pos);
 		if (ret) {
 			dev_err(dev, "failed to set MIPI C-PHY mode\n");
 			goto error;

@@ -11,23 +11,8 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/module.h>
 
 #include "phy-qcom-mipi-csi2.h"
-
-static unsigned int mipi_csi2phy_cphy_trio;
-module_param_named(cphy_trio, mipi_csi2phy_cphy_trio, uint, 0644);
-MODULE_PARM_DESC(cphy_trio, "C-PHY bring-up tuning: receive trio (0..2)");
-
-static unsigned int mipi_csi2phy_cphy_settle;
-module_param_named(cphy_settle, mipi_csi2phy_cphy_settle, uint, 0644);
-MODULE_PARM_DESC(cphy_settle,
-		 "C-PHY bring-up tuning: settle override (0=table default)");
-
-static unsigned int mipi_csi2phy_cphy_cdr;
-module_param_named(cphy_cdr, mipi_csi2phy_cphy_cdr, uint, 0644);
-MODULE_PARM_DESC(cphy_cdr,
-		 "C-PHY bring-up tuning: CDR override (0=table default)");
 
 #define CSIPHY_3PH_LNn_CFG1(n)				(0x000 + 0x100 * (n))
 #define CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG		(BIT(7) | BIT(6))
@@ -70,17 +55,17 @@ MODULE_PARM_DESC(cphy_cdr,
 #define CSIPHY_2PH_REGS					5
 #define CSIPHY_3PH_REGS					6
 #define CSIPHY_SKEW_CAL					7
-#define CSIPHY_CDR_LN_SETTINGS				8
 
-#include "phy-qcom-mipi-csi2-cphy-x1e80100-observed.h"
+#include "phy-qcom-mipi-csi2-cphy-x1e80100.h"
 
-#define SP11_IMX681_CPHY_SYMBOL_RATE	2406000000LL
+#define X1E80100_CPHY_SYMBOL_RATE	2406000000UL
 
-static bool
-phy_qcom_mipi_csi2_uses_sp11_observed_cphy(struct mipi_csi2phy_device *csi2phy);
-static void write_sp11_cphy(struct mipi_csi2phy_device *csi2phy,
-			    const struct x1e80100_cphy_reg *table,
-			    unsigned int num_entries);
+static bool is_x1e80100_cphy(struct mipi_csi2phy_device *csi2phy,
+			     const struct mipi_csi2phy_stream_cfg *cfg);
+static void x1e80100_cphy_write(struct mipi_csi2phy_device *csi2phy,
+				const struct x1e80100_cphy_reg *table,
+				unsigned int num_entries);
+static void x1e80100_cphy_clear_irq(struct mipi_csi2phy_device *csi2phy);
 
 /* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode */
 static const struct
@@ -248,9 +233,8 @@ static irqreturn_t phy_qcom_mipi_csi2_isr(int irq, void *dev)
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 	int i;
 
-	if (phy_qcom_mipi_csi2_uses_sp11_observed_cphy(csi2phy)) {
-		write_sp11_cphy(csi2phy, x1e80100_cphy_irq_clear,
-				ARRAY_SIZE(x1e80100_cphy_irq_clear));
+	if (is_x1e80100_cphy(csi2phy, &csi2phy->stream_cfg)) {
+		x1e80100_cphy_clear_irq(csi2phy);
 		return IRQ_HANDLED;
 	}
 
@@ -371,21 +355,24 @@ static void phy_qcom_mipi_csi2_gen1_config_lanes(struct mipi_csi2phy_device *csi
 	writel_relaxed(val, csi2phy->base + CSIPHY_3PH_LNn_MISC1(l));
 }
 
-#include "phy-qcom-mipi-csi2-cphy-x1e80100.h"
-
-static bool
-phy_qcom_mipi_csi2_uses_sp11_observed_cphy(struct mipi_csi2phy_device *csi2phy)
+static bool is_x1e80100_cphy(struct mipi_csi2phy_device *csi2phy,
+			     const struct mipi_csi2phy_stream_cfg *cfg)
 {
 	return csi2phy->soc_cfg == &mipi_csi2_dphy_4nm_x1e &&
-	       csi2phy->stream_cfg.mode == PHY_MODE_MIPI_CPHY &&
-	       csi2phy->stream_cfg.link_freq == SP11_IMX681_CPHY_SYMBOL_RATE;
+	       cfg->mode == PHY_MODE_MIPI_CPHY &&
+	       cfg->cphy_trio == 0 &&
+	       cfg->num_data_lanes == 1 &&
+	       cfg->link_freq ==
+		       (s64)csi2phy->soc_cfg->cphy_symbol_rate;
 }
 
-static void write_sp11_cphy(struct mipi_csi2phy_device *csi2phy,
-			    const struct x1e80100_cphy_reg *table,
-			    unsigned int num_entries)
+static void x1e80100_cphy_write(struct mipi_csi2phy_device *csi2phy,
+				const struct x1e80100_cphy_reg *table,
+				unsigned int num_entries)
 {
 	unsigned int i;
+
+	might_sleep();
 
 	for (i = 0; i < num_entries; i++) {
 		u32 delay_us;
@@ -406,80 +393,24 @@ static void write_sp11_cphy(struct mipi_csi2phy_device *csi2phy,
 	}
 }
 
-static const struct x1e80100_cphy_rate *
-phy_qcom_mipi_csi2_cphy_select_rate(struct mipi_csi2phy_device *csi2phy,
-				    s64 symbol_rate)
+static void x1e80100_cphy_clear_irq(struct mipi_csi2phy_device *csi2phy)
 {
-	const struct x1e80100_cphy_rate *rate = &x1e_cphy_rates[0];
-	u64 requested_rate;
 	unsigned int i;
 
-	if (symbol_rate <= 0) {
-		dev_dbg(csi2phy->dev,
-			"C-PHY symbol rate unavailable, defaulting to %llu Hz\n",
-			(unsigned long long)rate->symbol_rate);
-		return rate;
-	}
+	/* The IRQ-clear table contains only zero or 100 ns observed delays. */
+	for (i = 0; i < ARRAY_SIZE(x1e80100_cphy_irq_clear); i++) {
+		u32 delay_us;
 
-	requested_rate = symbol_rate;
-	if (requested_rate >= x1e_cphy_rates[ARRAY_SIZE(x1e_cphy_rates) - 1].symbol_rate) {
-		rate = &x1e_cphy_rates[ARRAY_SIZE(x1e_cphy_rates) - 1];
-	} else if (requested_rate > rate->symbol_rate) {
-		for (i = 1; i < ARRAY_SIZE(x1e_cphy_rates); i++) {
-			if (requested_rate > x1e_cphy_rates[i].symbol_rate)
-				continue;
+		writel(x1e80100_cphy_irq_clear[i].reg_data,
+		       csi2phy->base + x1e80100_cphy_irq_clear[i].reg_addr);
 
-			if (x1e_cphy_rates[i].symbol_rate - requested_rate <
-			    requested_rate - x1e_cphy_rates[i - 1].symbol_rate)
-				rate = &x1e_cphy_rates[i];
-			else
-				rate = &x1e_cphy_rates[i - 1];
-			break;
-		}
-	}
-
-	dev_dbg(csi2phy->dev,
-		"C-PHY symbol rate %llu Hz selects %llu Hz table\n",
-		(unsigned long long)requested_rate,
-		(unsigned long long)rate->symbol_rate);
-
-	return rate;
-}
-
-static void
-phy_qcom_mipi_csi2_gen2_config_cphy_lanes(struct mipi_csi2phy_device *csi2phy,
-					  s64 symbol_rate)
-{
-	const struct x1e80100_cphy_rate *rate;
-	const struct mipi_csi2phy_lane_regs *r;
-	unsigned int i;
-	u32 val;
-
-	rate = phy_qcom_mipi_csi2_cphy_select_rate(csi2phy, symbol_rate);
-
-	for (i = 0, r = rate->regs; i < rate->num_regs; i++, r++) {
-		switch (r->mipi_csi2phy_param_type) {
-		case CSIPHY_SETTLE_CNT_LOWER_BYTE:
-			val = mipi_csi2phy_cphy_settle ?
-				mipi_csi2phy_cphy_settle : r->reg_data;
-			break;
-		case CSIPHY_CDR_LN_SETTINGS:
-			val = mipi_csi2phy_cphy_cdr ?
-				mipi_csi2phy_cphy_cdr : r->reg_data;
-			break;
-		case CSIPHY_SKEW_CAL:
-		case CSIPHY_DNP_PARAMS:
+		if (!x1e80100_cphy_irq_clear[i].delay_ns)
 			continue;
-		default:
-			val = r->reg_data;
-			break;
-		}
 
-		writel_relaxed(val & 0xff, csi2phy->base + r->reg_addr);
-		/* Complete the analog write before any required delay. */
-		mb();
-		if (r->delay_us)
-			udelay(r->delay_us);
+		delay_us = max_t(u32,
+				 x1e80100_cphy_irq_clear[i].delay_ns /
+				 NSEC_PER_USEC, 1);
+		udelay(delay_us);
 	}
 }
 
@@ -523,61 +454,27 @@ static int
 phy_qcom_mipi_csi2_cphy_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 				     struct mipi_csi2phy_stream_cfg *cfg)
 {
-	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
-	unsigned int trio = min(mipi_csi2phy_cphy_trio, 2U);
-	u8 val = BIT((trio * 2) + 1);
-	int i;
+	if (!is_x1e80100_cphy(csi2phy, cfg))
+		return -EOPNOTSUPP;
 
-	if (phy_qcom_mipi_csi2_uses_sp11_observed_cphy(csi2phy)) {
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_reset) != 2);
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_toggle) != 6);
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_common) != 9);
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_config) != 121);
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_irq_clear) != 24);
-		BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_shutdown) != 3);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_reset) != 2);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_toggle) != 6);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_common) != 9);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_config) != 121);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_irq_clear) != 24);
+	BUILD_BUG_ON(ARRAY_SIZE(x1e80100_cphy_shutdown) != 3);
 
-		dev_dbg(csi2phy->dev,
-			"enable SP11 observed C-PHY sequence at %lld symbols/s\n",
-			SP11_IMX681_CPHY_SYMBOL_RATE);
-		write_sp11_cphy(csi2phy, x1e80100_cphy_reset,
-				ARRAY_SIZE(x1e80100_cphy_reset));
-		write_sp11_cphy(csi2phy, x1e80100_cphy_toggle,
-				ARRAY_SIZE(x1e80100_cphy_toggle));
-		write_sp11_cphy(csi2phy, x1e80100_cphy_common,
-				ARRAY_SIZE(x1e80100_cphy_common));
-		write_sp11_cphy(csi2phy, x1e80100_cphy_config,
-				ARRAY_SIZE(x1e80100_cphy_config));
-		return 0;
-	}
-
-	dev_dbg(csi2phy->dev, "enable C-PHY trio %u with lane mask %#x\n",
-		trio, val);
-
-	writel_relaxed(0x01, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
-	udelay(2);
-	writel_relaxed(val, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
-	writel_relaxed(0x00, csi2phy->base + regs->offset + 0x84);
-	writel_relaxed(0x00, csi2phy->base + regs->offset + 0x8c);
-	udelay(2);
-	writel_relaxed(0x7a, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
-	writel_relaxed(0x01, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
-	/* Commit the common settings before programming the analog table. */
-	mb();
-
-	phy_qcom_mipi_csi2_gen2_config_cphy_lanes(csi2phy, cfg->link_freq);
-
-	writel_relaxed(0x0e, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
-	usleep_range(3048, 3200);
-
-	/* IRQ_MASK registers - disable all interrupts */
-	for (i = 11; i < 22; i++)
-		writel_relaxed(0, csi2phy->base +
-			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
+	dev_dbg(csi2phy->dev,
+		"enable X1E80100 C-PHY sequence at %lu symbols/s\n",
+		csi2phy->soc_cfg->cphy_symbol_rate);
+	x1e80100_cphy_write(csi2phy, x1e80100_cphy_reset,
+			    ARRAY_SIZE(x1e80100_cphy_reset));
+	x1e80100_cphy_write(csi2phy, x1e80100_cphy_toggle,
+			    ARRAY_SIZE(x1e80100_cphy_toggle));
+	x1e80100_cphy_write(csi2phy, x1e80100_cphy_common,
+			    ARRAY_SIZE(x1e80100_cphy_common));
+	x1e80100_cphy_write(csi2phy, x1e80100_cphy_config,
+			    ARRAY_SIZE(x1e80100_cphy_config));
 
 	return 0;
 }
@@ -639,9 +536,9 @@ phy_qcom_mipi_csi2_lanes_disable(struct mipi_csi2phy_device *csi2phy,
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 
-	if (phy_qcom_mipi_csi2_uses_sp11_observed_cphy(csi2phy)) {
-		write_sp11_cphy(csi2phy, x1e80100_cphy_shutdown,
-				ARRAY_SIZE(x1e80100_cphy_shutdown));
+	if (is_x1e80100_cphy(csi2phy, cfg)) {
+		x1e80100_cphy_write(csi2phy, x1e80100_cphy_shutdown,
+				    ARRAY_SIZE(x1e80100_cphy_shutdown));
 		return;
 	}
 
@@ -690,7 +587,8 @@ const struct mipi_csi2phy_soc_cfg mipi_csi2_dphy_4nm_x1e = {
 		.offset = 0x1000,
 		.generation = GEN2,
 	},
-	.supports_cphy = true,
+	.cphy_symbol_rate = X1E80100_CPHY_SYMBOL_RATE,
+	.cphy_trio_mask = BIT(0),
 	.supply_names = (const char *[]){
 		"vdda-0p8",
 		"vdda-1p2"

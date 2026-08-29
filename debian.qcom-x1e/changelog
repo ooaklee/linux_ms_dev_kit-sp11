@@ -12,7 +12,11 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
   * Replay the hardware-observed X1E C-PHY reset, trio toggle, common, analogue,
     IRQ-clear, and shutdown sequences only for the matching X1E80100 2.406-
     Gsymbol/s C-PHY mode. Run receiver shutdown before its clocks and supplies
-    are disabled; preserve the generic PHY path for every other mode.
+    are disabled; preserve the generic D-PHY path.
+  * Remove the superseded eight-rate X1E C-PHY table experiment and its global
+    trio, settle, and CDR tuning parameters. Accept only the exact hardware-
+    validated trio-0, 2.406-Gsymbol/s X1E profile and reject every other C-PHY
+    topology or rate before receiver power or register programming.
   * Record turbineBMW source provenance at repository b1f5237957b9 and camera
     bundle 675d89b381d8: standalone sensor 00cece0b87c4, Denali wiring
     8915ca862de4, X1E C-PHY/CSID plumbing b1eae4e60169, and the observed

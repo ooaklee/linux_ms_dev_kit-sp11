@@ -101,14 +101,18 @@ static int phy_qcom_mipi_csi2_set_mode(struct phy *phy, enum phy_mode mode,
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
 
-	if (submode)
-		return -EINVAL;
-
 	switch (mode) {
 	case PHY_MODE_MIPI_DPHY:
-		return 0;
+		return submode ? -EINVAL : 0;
 	case PHY_MODE_MIPI_CPHY:
-		return csi2phy->soc_cfg->supports_cphy ? 0 : -EOPNOTSUPP;
+		if (submode < 0 || submode >= BITS_PER_LONG)
+			return -EINVAL;
+		if (!csi2phy->soc_cfg->cphy_symbol_rate ||
+		    !(csi2phy->soc_cfg->cphy_trio_mask & BIT(submode)))
+			return -EOPNOTSUPP;
+
+		csi2phy->stream_cfg.cphy_trio = submode;
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -129,8 +133,11 @@ static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 		 * Until generic C-PHY options exist, the consumer carries the
 		 * symbol rate in hs_clk_rate and the number of trios in lanes.
 		 */
-		if (dphy_cfg_opts->lanes != 1)
+		if (dphy_cfg_opts->lanes != 1 || !dphy_cfg_opts->hs_clk_rate)
 			return -EINVAL;
+		if (dphy_cfg_opts->hs_clk_rate !=
+		    csi2phy->soc_cfg->cphy_symbol_rate)
+			return -EOPNOTSUPP;
 
 		stream_cfg->mode = mode;
 		stream_cfg->combo_mode = 1;

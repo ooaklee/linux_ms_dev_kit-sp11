@@ -4779,10 +4779,6 @@ static int camss_parse_endpoint_node(struct device *dev,
 	if (bus_type == V4L2_MBUS_CSI2_DPHY) {
 		lncfg->clk.pos = mipi_csi2->clock_lane;
 		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
-	} else if (mipi_csi2->num_data_lanes != 1 ||
-		   mipi_csi2->data_lanes[0] / 2 > 2) {
-		dev_err(dev, "C-PHY requires one valid trio\n");
-		return -EINVAL;
 	}
 
 	lncfg->num_data = mipi_csi2->num_data_lanes;
