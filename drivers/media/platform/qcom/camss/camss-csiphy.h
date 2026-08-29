@@ -12,6 +12,7 @@
 
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/mutex.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-mediabus.h>
@@ -41,6 +42,7 @@ struct csiphy_lanes_cfg {
 };
 
 struct csiphy_csi2_cfg {
+	enum v4l2_mbus_type bus_type;
 	struct csiphy_lanes_cfg lane_cfg;
 };
 
@@ -100,6 +102,12 @@ struct csiphy_device {
 	struct camss *camss;
 	/* Only used by the guarded Denali external-PHY adapter. */
 	struct phy *external_phy;
+	struct mutex external_phy_lock;
+	/* Logical stream users share exactly one owned PHY power reference. */
+	bool external_phy_powered;
+	unsigned int external_phy_stream_users;
+	bool external_phy_stopping;
+	int external_phy_stop_error;
 	bool external_phy_initialized;
 	bool external_phy_registered;
 	u8 id;

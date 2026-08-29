@@ -65,6 +65,7 @@ struct csid_testgen_config {
 };
 
 struct csid_phy_config {
+	enum v4l2_mbus_type bus_type;
 	u8 csiphy_id;
 	u8 lane_cnt;
 	u32 lane_assign;
@@ -195,6 +196,8 @@ u32 csid_find_code(u32 *codes, unsigned int ncode,
 const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info *formats,
 						  unsigned int nformats,
 						  u32 code);
+
+bool csid_is_denali_cphy(struct csid_device *csid);
 
 int msm_csid_subdev_init(struct camss *camss, struct csid_device *csid,
 			 const struct camss_subdev_resources *res, u8 id);

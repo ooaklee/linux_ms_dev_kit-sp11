@@ -4756,11 +4756,15 @@ static int camss_parse_endpoint_node(struct device *dev,
 	if (ret)
 		return ret;
 
-	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
-	 */
-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
+	if (camss->denali_external_phys &&
+	    vep.bus_type != V4L2_MBUS_CSI2_CPHY)
+		return dev_err_probe(dev, -EOPNOTSUPP,
+				     "Denali external PHY requires C-PHY\n");
+
+	/* Only the guarded Denali external-PHY adapter additionally admits C-PHY. */
+	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY &&
+	    !(camss->denali_external_phys &&
+	      vep.bus_type == V4L2_MBUS_CSI2_CPHY)) {
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
@@ -4773,10 +4777,23 @@ static int camss_parse_endpoint_node(struct device *dev,
 				     "endpoint has no initialized Denali PHY\n");
 
 	csd->interface.csiphy_id = vep.base.port;
+	csd->interface.csi2.bus_type = vep.bus_type;
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
-	lncfg->clk.pos = mipi_csi2->clock_lane;
-	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	if (vep.bus_type == V4L2_MBUS_CSI2_CPHY &&
+	    (mipi_csi2->num_data_lanes != 1 ||
+	     mipi_csi2->data_lanes[0] != 0 ||
+	     mipi_csi2->lane_polarities[0] ||
+	     mipi_csi2->lane_polarities[1] ||
+	     mipi_csi2->line_orders[0] != V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC ||
+	     mipi_csi2->flags))
+		return dev_err_probe(dev, -EOPNOTSUPP,
+				     "unsupported Denali C-PHY topology\n");
+
+	if (vep.bus_type == V4L2_MBUS_CSI2_DPHY) {
+		lncfg->clk.pos = mipi_csi2->clock_lane;
+		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	}
 	lncfg->num_data = mipi_csi2->num_data_lanes;
 
 	lncfg->data = devm_kcalloc(dev,

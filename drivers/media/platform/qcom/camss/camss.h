@@ -43,6 +43,7 @@
 
 #define CAMSS_RES_MAX 17
 #define CAMSS_INIT_BUF_COUNT 2
+#define CAMSS_DENALI_CPHY_LINK_FREQ 1203000000LL
 
 struct camss_subdev_resources {
 	struct regulator_bulk_data regulators[CAMSS_RES_MAX];

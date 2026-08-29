@@ -12,8 +12,10 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
+#include <linux/phy/phy-mipi-dphy.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <media/media-entity.h>
@@ -716,25 +718,66 @@ static int msm_csiphy_subdev_init_legacy(struct camss *camss,
  * PHY API design source: Bryan O'Donoghue's CAMSS PHY API support:
  * https://patch.msgid.link/20250711-b4-linux-next-25-03-13-dtsi-x1e80100-camss-v7-4-0bc5da82f526@linaro.org
  */
+static int csiphy_external_stop_locked(struct csiphy_device *csiphy)
+{
+	int ret;
+
+	lockdep_assert_held(&csiphy->external_phy_lock);
+
+	if (!csiphy->external_phy_powered)
+		return 0;
+
+	ret = phy_power_off(csiphy->external_phy);
+	if (ret) {
+		/* The PHY core retains the power reference on failure. */
+		csiphy->external_phy_stop_error = ret;
+		return ret;
+	}
+
+	csiphy->external_phy_powered = false;
+	csiphy->external_phy_stream_users = 0;
+	csiphy->external_phy_stop_error = 0;
+	return 0;
+}
+
 static void csiphy_external_exit(void *data)
 {
 	struct csiphy_device *csiphy = data;
 	int ret;
 
-	if (!csiphy->external_phy_initialized)
-		return;
+	mutex_lock(&csiphy->external_phy_lock);
+	if (csiphy->external_phy_stopping)
+		goto unlock;
+	csiphy->external_phy_stopping = true;
 
-	/*
-	 * The managed action runs before devm_phy_get() releases its reference.
-	 * This prerequisite cannot start a stream; the C-PHY follow-on must stop
-	 * its powered PHY before this action is reached.
-	 */
+	if (!csiphy->external_phy_initialized)
+		goto unlock;
+	if (csiphy->external_phy_stop_error) {
+		/* Do not automatically repeat a failed, possibly partial stop. */
+		dev_err(csiphy->camss->dev,
+			"csiphy%u retains PHY power after failed stop: %d\n",
+			csiphy->id, csiphy->external_phy_stop_error);
+		goto unlock;
+	}
+
+	ret = csiphy_external_stop_locked(csiphy);
+	if (ret) {
+		dev_err(csiphy->camss->dev,
+			"csiphy%u power-off failed during cleanup: %d\n",
+			csiphy->id, ret);
+		goto unlock;
+	}
+
+	/* Exit is valid only after this consumer's power reference is gone. */
 	ret = phy_exit(csiphy->external_phy);
 	if (ret)
-		dev_warn(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
-			 csiphy->id, ret);
+		dev_err(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
+			csiphy->id, ret);
+	else
+		csiphy->external_phy_initialized = false;
 
-	csiphy->external_phy_initialized = false;
+unlock:
+	mutex_unlock(&csiphy->external_phy_lock);
 }
 
 static int csiphy_external_init(struct camss *camss,
@@ -751,6 +794,7 @@ static int csiphy_external_init(struct camss *camss,
 	csiphy->camss = camss;
 	csiphy->id = id;
 	csiphy->res = &res->csiphy;
+	mutex_init(&csiphy->external_phy_lock);
 
 	snprintf(name, sizeof(name), "csiphy%u", id);
 	index = of_property_match_string(np, "phy-names", name);
@@ -789,12 +833,13 @@ static int csiphy_external_init(struct camss *camss,
 bool msm_csiphy_is_available(const struct csiphy_device *csiphy)
 {
 	return !csiphy->camss->denali_external_phys ||
-	       csiphy->external_phy_initialized;
+	       READ_ONCE(csiphy->external_phy_initialized);
 }
 
 void msm_csiphy_subdev_cleanup(struct csiphy_device *csiphy)
 {
-	if (csiphy->external_phy_initialized)
+	if (READ_ONCE(csiphy->external_phy_initialized) &&
+	    !READ_ONCE(csiphy->external_phy_stopping))
 		devm_release_action(csiphy->camss->dev, csiphy_external_exit, csiphy);
 }
 
@@ -872,15 +917,17 @@ static const struct media_entity_operations csiphy_media_ops = {
 	.link_validate = v4l2_subdev_link_validate,
 };
 
-static int csiphy_external_validate_pad(struct v4l2_subdev *sd,
+static int csiphy_external_validate_pad_locked(struct v4l2_subdev *sd,
 					struct v4l2_subdev_state *state,
 					unsigned int pad,
 					enum v4l2_subdev_format_whence which)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 
+	lockdep_assert_held(&csiphy->external_phy_lock);
+
 	if (!csiphy->external_phy_initialized ||
-	    !csiphy->external_phy_registered)
+	    !csiphy->external_phy_registered || csiphy->external_phy_stopping)
 		return -ENODEV;
 	if (pad >= MSM_CSIPHY_PADS_NUM ||
 	    (which != V4L2_SUBDEV_FORMAT_ACTIVE &&
@@ -892,67 +939,179 @@ static int csiphy_external_validate_pad(struct v4l2_subdev *sd,
 }
 
 static int csiphy_external_enum_mbus_code(struct v4l2_subdev *sd,
-					  struct v4l2_subdev_state *state,
-					  struct v4l2_subdev_mbus_code_enum *code)
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_mbus_code_enum *code)
 {
-	int ret = csiphy_external_validate_pad(sd, state, code->pad, code->which);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
 
-	return ret ?: csiphy_enum_mbus_code(sd, state, code);
+	mutex_lock(&csiphy->external_phy_lock);
+	ret = csiphy_external_validate_pad_locked(sd, state, code->pad, code->which);
+	if (!ret)
+		ret = csiphy_enum_mbus_code(sd, state, code);
+	mutex_unlock(&csiphy->external_phy_lock);
+
+	return ret;
 }
 
 static int csiphy_external_enum_frame_size(struct v4l2_subdev *sd,
-					   struct v4l2_subdev_state *state,
-					   struct v4l2_subdev_frame_size_enum *fse)
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_frame_size_enum *fse)
 {
-	int ret = csiphy_external_validate_pad(sd, state, fse->pad, fse->which);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
 
-	return ret ?: csiphy_enum_frame_size(sd, state, fse);
+	mutex_lock(&csiphy->external_phy_lock);
+	ret = csiphy_external_validate_pad_locked(sd, state, fse->pad, fse->which);
+	if (!ret)
+		ret = csiphy_enum_frame_size(sd, state, fse);
+	mutex_unlock(&csiphy->external_phy_lock);
+
+	return ret;
 }
 
 static int csiphy_external_get_format(struct v4l2_subdev *sd,
 				       struct v4l2_subdev_state *state,
 				       struct v4l2_subdev_format *fmt)
 {
-	int ret = csiphy_external_validate_pad(sd, state, fmt->pad, fmt->which);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
 
-	return ret ?: csiphy_get_format(sd, state, fmt);
+	mutex_lock(&csiphy->external_phy_lock);
+	ret = csiphy_external_validate_pad_locked(sd, state, fmt->pad, fmt->which);
+	if (!ret)
+		ret = csiphy_get_format(sd, state, fmt);
+	mutex_unlock(&csiphy->external_phy_lock);
+
+	return ret;
 }
 
 static int csiphy_external_set_format(struct v4l2_subdev *sd,
 				       struct v4l2_subdev_state *state,
 				       struct v4l2_subdev_format *fmt)
 {
-	int ret = csiphy_external_validate_pad(sd, state, fmt->pad, fmt->which);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
 
-	return ret ?: csiphy_set_format(sd, state, fmt);
+	mutex_lock(&csiphy->external_phy_lock);
+	ret = csiphy_external_validate_pad_locked(sd, state, fmt->pad, fmt->which);
+	if (!ret && fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
+	    csiphy->external_phy_powered)
+		ret = -EBUSY;
+	if (!ret)
+		ret = csiphy_set_format(sd, state, fmt);
+	mutex_unlock(&csiphy->external_phy_lock);
+
+	return ret;
 }
 
 static int csiphy_external_open(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_fh *fh)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
 
+	mutex_lock(&csiphy->external_phy_lock);
 	if (!csiphy->external_phy_initialized ||
-	    !csiphy->external_phy_registered)
-		return -ENODEV;
+	    !csiphy->external_phy_registered || csiphy->external_phy_stopping)
+		ret = -ENODEV;
+	else
+		ret = csiphy_init_formats(sd, fh);
+	mutex_unlock(&csiphy->external_phy_lock);
 
-	return csiphy_init_formats(sd, fh);
+	return ret;
 }
 
 /*
- * Prerequisite only: a separate corrected C-PHY route must implement its
- * constrained configure/power-on/off sequence before any sensor is enabled.
- * Do not send this provider through the legacy register implementation.
+ * Corrected port of 97675a153aee4d8f38d924c3ba7218890b1d9668:
+ * retain its exact one-trio/1.203-GHz contract through the guarded adapter.
+ * This is not the old generic external D-PHY dispatch path.
  */
+static int csiphy_external_start_cphy_locked(struct csiphy_device *csiphy)
+{
+	union phy_configure_opts opts = { 0 };
+	struct csiphy_csi2_cfg *csi2 = csiphy->cfg.csi2;
+	struct csiphy_lanes_cfg *lanes;
+	s64 link_freq;
+	int ret;
+
+	lockdep_assert_held(&csiphy->external_phy_lock);
+
+	if (!csiphy->camss->denali_external_phys ||
+	    csiphy->camss->res->version != CAMSS_X1E80100 || !csi2 ||
+	    csi2->bus_type != V4L2_MBUS_CSI2_CPHY)
+		return -EOPNOTSUPP;
+
+	lanes = &csi2->lane_cfg;
+	if (lanes->num_data != 1 || !lanes->data ||
+	    lanes->data[0].pos != 0 || lanes->data[0].pol)
+		return -EOPNOTSUPP;
+
+	link_freq = camss_get_link_freq(&csiphy->subdev.entity, 0, 0);
+	if (link_freq < 0)
+		return link_freq;
+	if (link_freq != CAMSS_DENALI_CPHY_LINK_FREQ)
+		return -EOPNOTSUPP;
+
+	/* This pinned PHY API carries C-PHY symbol rate in D-PHY options. */
+	opts.mipi_dphy.hs_clk_rate = link_freq * 2;
+	opts.mipi_dphy.lanes = 1;
+
+	ret = phy_set_mode_ext(csiphy->external_phy, PHY_MODE_MIPI_CPHY, 0);
+	if (ret)
+		return ret;
+	ret = phy_configure(csiphy->external_phy, &opts);
+	if (ret)
+		return ret;
+
+	/*
+	 * The pinned provider unwinds a failed C-PHY power-on. The PHY core
+	 * acquires no power reference on failure; do not call power_off then.
+	 */
+	return phy_power_on(csiphy->external_phy);
+}
+
 static int csiphy_external_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret = 0;
 
+	mutex_lock(&csiphy->external_phy_lock);
 	if (!csiphy->external_phy_initialized ||
-	    !csiphy->external_phy_registered)
-		return -ENODEV;
+	    !csiphy->external_phy_registered || csiphy->external_phy_stopping) {
+		ret = -ENODEV;
+		goto unlock;
+	}
 
-	return enable ? -EOPNOTSUPP : 0;
+	if (enable) {
+		if (csiphy->external_phy_stop_error) {
+			ret = csiphy->external_phy_stop_error;
+			goto unlock;
+		}
+		if (csiphy->external_phy_stream_users == UINT_MAX) {
+			ret = -EOVERFLOW;
+			goto unlock;
+		}
+		if (csiphy->external_phy_powered) {
+			csiphy->external_phy_stream_users++;
+			goto unlock;
+		}
+
+		ret = csiphy_external_start_cphy_locked(csiphy);
+		if (!ret) {
+			csiphy->external_phy_powered = true;
+			csiphy->external_phy_stream_users = 1;
+		}
+	} else if (csiphy->external_phy_stream_users > 1) {
+		csiphy->external_phy_stream_users--;
+	} else {
+		/* A later explicit stop may retry the still-owned power reference. */
+		ret = csiphy_external_stop_locked(csiphy);
+	}
+
+unlock:
+	mutex_unlock(&csiphy->external_phy_lock);
+	return ret;
 }
 
 static int csiphy_external_link_setup(struct media_entity *entity,
@@ -963,33 +1122,44 @@ static int csiphy_external_link_setup(struct media_entity *entity,
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	struct camss *camss = csiphy->camss;
 	unsigned int i;
+	int ret = -EINVAL;
 
+	mutex_lock(&csiphy->external_phy_lock);
 	if (!csiphy->external_phy_initialized ||
-	    !csiphy->external_phy_registered)
-		return -ENODEV;
+	    !csiphy->external_phy_registered || csiphy->external_phy_stopping) {
+		ret = -ENODEV;
+		goto unlock;
+	}
+	if (csiphy->external_phy_powered) {
+		ret = -EBUSY;
+		goto unlock;
+	}
 	if (local->entity != entity || local->index >= MSM_CSIPHY_PADS_NUM ||
 	    local != &csiphy->pads[local->index] ||
 	    remote->index >= remote->entity->num_pads ||
 	    remote != &remote->entity->pads[remote->index] ||
 	    !is_media_entity_v4l2_subdev(remote->entity))
-		return -EINVAL;
+		goto unlock;
 
 	if (local->index == MSM_CSIPHY_PAD_SRC) {
 		if (remote->index != MSM_CSID_PAD_SINK)
-			return -EINVAL;
+			goto unlock;
 		for (i = 0; i < camss->res->csid_num; i++)
 			if (remote->entity == &camss->csid[i].subdev.entity)
 				break;
 		if (i == camss->res->csid_num)
-			return -EINVAL;
+			goto unlock;
 	} else {
 		sd = media_entity_to_v4l2_subdev(remote->entity);
 		if (!(remote->flags & MEDIA_PAD_FL_SOURCE) ||
 		    sd->host_priv != csiphy)
-			return -EINVAL;
+			goto unlock;
 	}
 
-	return csiphy_link_setup(entity, local, remote, flags);
+	ret = csiphy_link_setup(entity, local, remote, flags);
+unlock:
+	mutex_unlock(&csiphy->external_phy_lock);
+	return ret;
 }
 
 static const struct v4l2_subdev_video_ops csiphy_external_video_ops = {
@@ -1086,9 +1256,13 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 void msm_csiphy_unregister_entity(struct csiphy_device *csiphy)
 {
 	if (csiphy->camss->denali_external_phys) {
-		if (!csiphy->external_phy_registered)
+		mutex_lock(&csiphy->external_phy_lock);
+		if (!csiphy->external_phy_registered) {
+			mutex_unlock(&csiphy->external_phy_lock);
 			return;
+		}
 		csiphy->external_phy_registered = false;
+		mutex_unlock(&csiphy->external_phy_lock);
 	}
 
 	v4l2_device_unregister_subdev(&csiphy->subdev);
