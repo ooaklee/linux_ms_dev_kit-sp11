@@ -55,6 +55,12 @@ linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
     full divider tuple produced no CSID packets. Preserve the branch dividers
     selected by the CCS calculator and sample sensor stream/frame state after
     100 ms while the complete downstream pipeline remains active.
+  * Correct the standalone IMX681 coarse-integration control to the 24-bit
+    0x0229 register used by its imported mode table, the prior model-scoped
+    CCS path, and the public IMX681 reference driver. A fixed-light runtime
+    matrix proved that the inherited 16-bit 0x0202 write was inert while gain
+    changes remained visible. Keep frame-length programming unchanged for a
+    separate timing experiment so the exposure correction has one variable.
 
  -- Leon Silcott <leon@boasi.io>  Sat, 29 Aug 2026 00:12:56 +0100
 
