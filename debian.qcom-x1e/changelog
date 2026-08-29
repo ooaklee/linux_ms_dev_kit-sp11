@@ -1,72 +1,33 @@
 linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
 
-  * Supersede the zero-packet CCS IMX681 experiment with the matched front-
-    camera stack that turbineBMW validated with changing 3840x2640 RAW10
-    frames: the standalone sensor transaction table and its observed X1E80100
-    C-PHY receiver lifecycle. Retain this device's proven CCI address 0x10
-    rather than copying the reference machine's 0x1a address.
-  * Add the standalone Sony IMX681 driver and its complete global/mode tables,
-    advertise one C-PHY trio and a 1.203 GHz V4L2 link frequency representing
-    the observed 2.406-Gsymbol/s rate, and select the corresponding X1E CSID
-    clock votes. Keep the existing 3844x2640 CCS work as superseded history.
-  * Replay the hardware-observed X1E C-PHY reset, trio toggle, common, analogue,
-    IRQ-clear, and shutdown sequences only for the matching X1E80100 2.406-
-    Gsymbol/s C-PHY mode. Run receiver shutdown before its clocks and supplies
-    are disabled; preserve the generic D-PHY path.
-  * Remove the superseded eight-rate X1E C-PHY table experiment and its global
-    trio, settle, and CDR tuning parameters. Accept only the exact hardware-
-    validated trio-0, 2.406-Gsymbol/s X1E profile and reject every other C-PHY
-    topology or rate before receiver power or register programming.
-  * Record turbineBMW source provenance at repository b1f5237957b9 and camera
-    bundle 675d89b381d8: standalone sensor 00cece0b87c4, Denali wiring
-    8915ca862de4, X1E C-PHY/CSID plumbing b1eae4e60169, and the observed
-    receiver sequence 8c1731648d04.
-  * Earlier superseded v14 experiment: adopt the Karsies-derived IMX681
-    3844x2640 RAW10 mode at 969.6 Msymbol/s, selecting the x1e80100 1.0 Gsps
-    AFE row and stable 0x4a CDR setting. Remove the global mode switch that
-    coupled the distinct static Windows 3840x2640 mode at 1.2 Gsymbol/s to an
-    incorrect doubled 2.4-Gsymbol/s receiver rate. Runtime testing later
-    showed zero received packets and the matched turbine profile above now
-    supersedes this experiment.
-  * Map the standard analogue-gain control used by libcamera's simple IPA to
-    the IMX681's effective U8.8 gain register, and start with the proven
-    3100-line exposure and 4x gain values.
-  * Program every CSID680 RDI drop engine to an explicit keep-all state, and
-    describe the V4L2-managed privacy LED and sensor orientation in the CCS
-    device-tree binding.
-  * Preserve requested H/V flips and their Bayer layout across the fixed mode
-    table, and propagate a failed final sensor STREAMON write to userspace.
-  * Resolve the receiver link frequency from the CCS transmitter subdevice
-    rather than the compound sensor's pixel-array entity, allowing CAMSS to
-    reach sensor STREAMON on the active scaler-to-CSIPHY link.
-  * Keep the measured 432 MHz VT timing metadata for the 8704-pixel lines.
-    Hold frame length, first exposure, and gain in one group write, and use
-    64-bit exposure conversion without intermediate truncation.
-  * Make failed opens recoverable: balance runtime-PM only on the IMX681
-    source subdevice, schedule rail power-down even when standby is NACKed,
-    and unwind already-started CAMSS subdevices when an upstream start fails.
-  * Match the same-machine Windows CSID680 C-PHY receiver value on X1E by
-    retaining TPG_NUM_SEL=1 while the TPG mux is disabled, producing
-    RX_CFG0=0x11300000 for the CSIPHY2 front-camera path. Report RX_CFG0 and
-    the received-packet counter at C-PHY stop so a zero-frame capture can be
-    separated from a downstream RDI/VFE buffer-completion failure.
-  * Move the IMX681 stop diagnostics onto the normal powered STREAMOFF path,
-    where the one-shot CSID configuration guard cannot suppress them. Capture
-    sensor stream/frame-count readback, receiver packet/error state, linked
-    RDI state, and matching VFE680 write-master/IRQ state without changing
-    stream configuration or teardown behavior.
-  * Restore the hardware-proven sparse IMX681 PLL overrides after the derived
-    full divider tuple produced no CSID packets. Preserve the branch dividers
-    selected by the CCS calculator and sample sensor stream/frame state after
-    100 ms while the complete downstream pipeline remains active.
-  * Correct the standalone IMX681 coarse-integration control to the 24-bit
-    0x0229 register used by its imported mode table, the prior model-scoped
-    CCS path, and the public IMX681 reference driver. A fixed-light runtime
-    matrix proved that the inherited 16-bit 0x0202 write was inert while gain
-    changes remained visible. Keep frame-length programming unchanged for a
-    separate timing experiment so the exposure correction has one variable.
+  * Surface Pro 11 v14: enable the runtime-validated Sony IMX681 front camera
+    with a standalone driver and complete 3840x2640 RAW10 mode tables at
+    approximately 30 fps. Retain Denali's proven CCI address 0x10 and expose
+    one 1.203 GHz V4L2 link frequency, representing 2.406 Gsymbol/s on the
+    wire.
+  * Add the exact X1E80100 trio-0, 2.406-Gsymbol/s C-PHY profile and its
+    observed reset, toggle, common, analogue, IRQ-clear, and shutdown
+    lifecycle. Reject unvalidated C-PHY rates and topologies before receiver
+    power or register programming while preserving the generic D-PHY path.
+  * Complete CAMSS C-PHY routing through CSIPHY2, CSID0, and VFE0 RDI0, with
+    link-derived CSID clock votes, the matched CSID680 receiver configuration,
+    keep-all RDI handling, and VFE680 MIPI RAW mode. Propagate stream failures,
+    unwind partial starts, and shut down the receiver before its clocks and
+    supplies.
+  * Wire the Denali sensor with MCLK4, reset and power rails, user-facing
+    orientation, and the V4L2-managed privacy LED. Preserve Bayer order across
+    flip controls; expose grouped frame-length, 24-bit 0x0229 exposure, and
+    analogue/digital gain controls; and enable CONFIG_VIDEO_IMX681=m in the
+    ARM64 package policy.
+  * Preserve matched-stack provenance from turbineBMW repository b1f5237957b9
+    and camera bundle 675d89b381d8: sensor 00cece0b87c4, Denali wiring
+    8915ca862de4, X1E C-PHY/CSID plumbing b1eae4e60169, and observed receiver
+    sequence 8c1731648d04.
+    [karsies-wq https://github.com/karsies-wq]
+    [geocausa https://github.com/geocausa]
+    [turbineBMW https://github.com/turbineBMW]
 
- -- Leon Silcott <leon@boasi.io>  Sat, 29 Aug 2026 00:12:56 +0100
+ -- Leon Silcott <leon@boasi.io>  Sat, 29 Aug 2026 08:59:29 +0100
 
 linux-qcom-x1e (7.2.0-jg-0sp11v13) resolute; urgency=medium
 
