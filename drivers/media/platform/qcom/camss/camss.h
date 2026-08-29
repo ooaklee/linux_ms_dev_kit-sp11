@@ -43,6 +43,7 @@
 
 #define CAMSS_RES_MAX 17
 #define CAMSS_INIT_BUF_COUNT 2
+#define CAMSS_DENALI_CPHY_LINK_FREQ 1203000000LL
 
 struct camss_subdev_resources {
 	struct regulator_bulk_data regulators[CAMSS_RES_MAX];
@@ -169,6 +170,7 @@ int camss_enable_clocks(int nclocks, struct camss_clock *clock,
 			struct device *dev);
 void camss_disable_clocks(int nclocks, struct camss_clock *clock);
 int camss_denali_phy_available(struct camss *camss, unsigned int slot);
+bool camss_has_denali_cphy(const struct camss *camss);
 struct media_pad *camss_find_sensor_pad(struct media_entity *entity);
 s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
 			unsigned int lanes);

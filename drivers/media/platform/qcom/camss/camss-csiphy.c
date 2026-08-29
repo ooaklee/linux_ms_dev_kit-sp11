@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
@@ -935,6 +936,27 @@ static bool csiphy_denali_ready(const struct csiphy_device *csiphy)
 	       !csiphy->denali_phy_stopping;
 }
 
+static int csiphy_denali_stop_locked(struct csiphy_device *csiphy)
+{
+	int ret;
+
+	lockdep_assert_held(&csiphy->denali_phy_lock);
+	if (!csiphy->denali_phy_powered)
+		return 0;
+
+	ret = phy_power_off(csiphy->phy);
+	if (ret) {
+		/* The PHY core retains the power reference on failure. */
+		csiphy->denali_phy_stop_error = ret;
+		return ret;
+	}
+
+	csiphy->denali_phy_powered = false;
+	csiphy->denali_phy_stream_users = 0;
+	csiphy->denali_phy_stop_error = 0;
+	return 0;
+}
+
 static void csiphy_denali_exit(void *data)
 {
 	struct csiphy_device *csiphy = data;
@@ -947,11 +969,26 @@ static void csiphy_denali_exit(void *data)
 	csiphy->denali_phy_stopping = true;
 	if (!csiphy->denali_phy_initialized)
 		goto unlock;
+	if (csiphy->denali_phy_stop_error) {
+		/* Do not automatically repeat a failed, possibly partial stop. */
+		dev_err(csiphy->camss->dev,
+			"csiphy%u retains PHY power after failed stop: %d\n",
+			csiphy->id, csiphy->denali_phy_stop_error);
+		goto unlock;
+	}
+	ret = csiphy_denali_stop_locked(csiphy);
+	if (ret) {
+		dev_err(csiphy->camss->dev,
+			"csiphy%u power-off failed during cleanup: %d\n",
+			csiphy->id, ret);
+		goto unlock;
+	}
 
+	/* Exit only after this consumer's power reference is gone. */
 	ret = phy_exit(csiphy->phy);
 	if (ret)
-		dev_warn(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
-			 csiphy->id, ret);
+		dev_err(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
+			csiphy->id, ret);
 	else
 		csiphy->denali_phy_initialized = false;
 unlock:
@@ -981,6 +1018,9 @@ int msm_csiphy_subdev_init_denali(struct camss *camss,
 	csiphy->denali_phy_registered = false;
 	csiphy->denali_phy_action_pending = false;
 	csiphy->denali_phy_stopping = false;
+	csiphy->denali_phy_powered = false;
+	csiphy->denali_phy_stream_users = 0;
+	csiphy->denali_phy_stop_error = 0;
 	snprintf(csiphy->name, sizeof(csiphy->name), "csiphy%u", csiphy->id);
 
 	/* Revalidate the same mixed tuple contract; only disabled returns zero. */
@@ -1123,6 +1163,9 @@ static int csiphy_denali_set_format(struct v4l2_subdev *sd,
 
 	mutex_lock(&csiphy->denali_phy_lock);
 	ret = csiphy_denali_validate_pad(csiphy, state, fmt->pad, fmt->which);
+	if (!ret && fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
+	    csiphy->denali_phy_powered)
+		ret = -EBUSY;
 	if (!ret)
 		ret = csiphy_set_format(sd, state, fmt);
 	mutex_unlock(&csiphy->denali_phy_lock);
@@ -1141,17 +1184,80 @@ static int csiphy_denali_open(struct v4l2_subdev *sd,
 	return ret;
 }
 
-/* No PHY hardware operation until the separate constrained C-PHY route. */
+/* Retain the original one-trio/1.203-GHz contract on the private route. */
+static int csiphy_denali_start_cphy_locked(struct csiphy_device *csiphy)
+{
+	union phy_configure_opts opts = { 0 };
+	struct csiphy_csi2_cfg *csi2 = csiphy->cfg.csi2;
+	struct csiphy_lanes_cfg *lanes;
+	s64 link_freq;
+	int ret;
+
+	lockdep_assert_held(&csiphy->denali_phy_lock);
+	if (!csiphy->denali_cphy ||
+	    csiphy->camss->res->version != CAMSS_X1E80100 || !csi2 ||
+	    csi2->bus_type != V4L2_MBUS_CSI2_CPHY)
+		return -EOPNOTSUPP;
+	lanes = &csi2->lane_cfg;
+	if (lanes->num_data != 1 || !lanes->data ||
+	    lanes->data[0].pos != 0 || lanes->data[0].pol)
+		return -EOPNOTSUPP;
+
+	link_freq = camss_get_link_freq(&csiphy->subdev.entity, 0, 0);
+	if (link_freq < 0)
+		return link_freq;
+	if (link_freq != CAMSS_DENALI_CPHY_LINK_FREQ)
+		return -EOPNOTSUPP;
+
+	/* This private provider carries C-PHY symbol rate in D-PHY options. */
+	opts.mipi_dphy.hs_clk_rate = link_freq * 2;
+	opts.mipi_dphy.lanes = 1;
+	ret = phy_set_mode_ext(csiphy->phy, PHY_MODE_MIPI_CPHY, 0);
+	if (ret)
+		return ret;
+	ret = phy_configure(csiphy->phy, &opts);
+	if (ret)
+		return ret;
+
+	/* A failed start acquires no core power reference; do not power it off. */
+	return phy_power_on(csiphy->phy);
+}
+
 static int csiphy_denali_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
-	int ret;
+	int ret = 0;
 
 	mutex_lock(&csiphy->denali_phy_lock);
-	if (!csiphy_denali_ready(csiphy))
+	if (!csiphy_denali_ready(csiphy)) {
 		ret = -ENODEV;
-	else
-		ret = enable ? -EOPNOTSUPP : 0;
+		goto unlock;
+	}
+	if (enable) {
+		if (csiphy->denali_phy_stop_error) {
+			ret = csiphy->denali_phy_stop_error;
+			goto unlock;
+		}
+		if (csiphy->denali_phy_stream_users == UINT_MAX) {
+			ret = -EOVERFLOW;
+			goto unlock;
+		}
+		if (csiphy->denali_phy_powered) {
+			csiphy->denali_phy_stream_users++;
+			goto unlock;
+		}
+		ret = csiphy_denali_start_cphy_locked(csiphy);
+		if (!ret) {
+			csiphy->denali_phy_powered = true;
+			csiphy->denali_phy_stream_users = 1;
+		}
+	} else if (csiphy->denali_phy_stream_users > 1) {
+		csiphy->denali_phy_stream_users--;
+	} else {
+		/* A direct callback-level stop may retry a still-owned reference. */
+		ret = csiphy_denali_stop_locked(csiphy);
+	}
+unlock:
 	mutex_unlock(&csiphy->denali_phy_lock);
 	return ret;
 }
@@ -1169,6 +1275,10 @@ static int csiphy_denali_link_setup(struct media_entity *entity,
 	mutex_lock(&csiphy->denali_phy_lock);
 	if (!csiphy_denali_ready(csiphy)) {
 		ret = -ENODEV;
+		goto unlock;
+	}
+	if (csiphy->denali_phy_powered) {
+		ret = -EBUSY;
 		goto unlock;
 	}
 	if (!local || !remote || !remote->entity ||

@@ -532,6 +532,29 @@ const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info 
 	return &formats[0];
 }
 
+bool csid_is_denali_cphy(struct csid_device *csid)
+{
+	struct camss *camss = csid->camss;
+	const struct csid_phy_config *phy = &csid->phy;
+	struct csiphy_device *csiphy = csid->denali_csiphy;
+	unsigned int i;
+
+	if (!csiphy || camss->res->version != CAMSS_X1E80100 ||
+	    phy->bus_type != V4L2_MBUS_CSI2_CPHY || csid->tpg_linked ||
+	    phy->lane_cnt != 1 || phy->lane_assign)
+		return false;
+
+	/* Prove array membership before dereferencing the borrowed peer. */
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		if (csiphy == &camss->csiphy[i])
+			return csiphy->denali_cphy && csiphy->camss == camss &&
+			       csiphy->res == &camss->res->csiphy_res[i].csiphy &&
+			       csiphy->id == 2 && csiphy->res->id == 2 &&
+			       phy->csiphy_id == csiphy->id;
+
+	return false;
+}
+
 /*
  * csid_set_clock_rates - Calculate and set clock rates on CSID module
  * @csiphy: CSID device
@@ -546,10 +569,20 @@ static int csid_set_clock_rates(struct csid_device *csid)
 
 	fmt = csid_get_fmt_entry(csid->res->formats->formats, csid->res->formats->nformats,
 				 csid->fmt[MSM_CSIPHY_PAD_SINK].code);
-	link_freq = camss_get_link_freq(&csid->subdev.entity, fmt->bpp,
-					csid->phy.lane_cnt);
-	if (link_freq < 0)
-		link_freq = 0;
+	if (csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY) {
+		if (!csid_is_denali_cphy(csid))
+			return -EOPNOTSUPP;
+		link_freq = camss_get_link_freq(&csid->subdev.entity, 0, 0);
+		if (link_freq < 0)
+			return link_freq;
+		if (link_freq != CAMSS_DENALI_CPHY_LINK_FREQ)
+			return -EOPNOTSUPP;
+	} else {
+		link_freq = camss_get_link_freq(&csid->subdev.entity, fmt->bpp,
+						csid->phy.lane_cnt);
+		if (link_freq < 0)
+			link_freq = 0;
+	}
 
 	for (i = 0; i < csid->nclocks; i++) {
 		struct camss_clock *clock = &csid->clock[i];
@@ -557,7 +590,10 @@ static int csid_set_clock_rates(struct csid_device *csid)
 		if (!strcmp(clock->name, "csi0") ||
 		    !strcmp(clock->name, "csi1") ||
 		    !strcmp(clock->name, "csi2") ||
-		    !strcmp(clock->name, "csi3")) {
+		    !strcmp(clock->name, "csi3") ||
+		    (csid_is_denali_cphy(csid) &&
+		     (!strcmp(clock->name, "csid") ||
+		      !strcmp(clock->name, "csid_csiphy_rx")))) {
 			u64 min_rate = link_freq / 4;
 			long rate;
 
@@ -761,6 +797,10 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct csid_device *csid = v4l2_get_subdevdata(sd);
 	int ret;
+
+	if (enable && csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
+	    !csid_is_denali_cphy(csid))
+		return -EOPNOTSUPP;
 
 	if (enable) {
 		if (csid->testgen.nmodes != CSID_PAYLOAD_MODE_DISABLED) {
@@ -1237,6 +1277,80 @@ static u32 csid_get_lane_assign(struct csiphy_lanes_cfg *lane_cfg, int num_lanes
 	return lane_assign;
 }
 
+static struct csiphy_device *
+csid_find_csiphy(struct csid_device *csid, const struct media_pad *remote)
+{
+	struct camss *camss = csid->camss;
+	unsigned int i;
+
+	if (!remote)
+		return NULL;
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		if (remote->entity == &camss->csiphy[i].subdev.entity)
+			return &camss->csiphy[i];
+
+	return NULL;
+}
+
+static int csid_link_denali(struct csid_device *csid,
+			    struct csiphy_device *csiphy,
+			    const struct media_pad *local,
+			    const struct media_pad *remote, bool enable)
+{
+	struct camss *camss = csid->camss;
+	struct csiphy_csi2_cfg *csi2;
+	unsigned int i;
+	int ret = -ENODEV;
+
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		if (csiphy == &camss->csiphy[i])
+			break;
+	if (i == camss->res->csiphy_num ||
+	    local != &csid->pads[MSM_CSID_PAD_SINK] ||
+	    remote != &csiphy->pads[MSM_CSIPHY_PAD_SRC])
+		return -EINVAL;
+	if (camss->res->version != CAMSS_X1E80100 ||
+	    !csiphy->denali_cphy || csiphy->camss != camss ||
+	    csiphy->res != &camss->res->csiphy_res[i].csiphy ||
+	    csiphy->id != 2 || csiphy->res->id != 2)
+		return -EOPNOTSUPP;
+	if (!READ_ONCE(csiphy->denali_phy_action_pending))
+		return -ENODEV;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	if (!csiphy->denali_phy_initialized || !csiphy->denali_phy_registered ||
+	    csiphy->denali_phy_stopping)
+		goto unlock;
+	if (csiphy->denali_phy_powered) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	if (!enable) {
+		csid->denali_csiphy = NULL;
+		csid->phy.bus_type = V4L2_MBUS_CSI2_DPHY;
+		ret = 0;
+		goto unlock;
+	}
+	ret = -EOPNOTSUPP;
+	csi2 = csiphy->cfg.csi2;
+	if (!csi2 || csi2->bus_type != V4L2_MBUS_CSI2_CPHY ||
+	    csi2->lane_cfg.num_data != 1 || !csi2->lane_cfg.data ||
+	    csi2->lane_cfg.data[0].pos || csi2->lane_cfg.data[0].pol)
+		goto unlock;
+
+	/* Publish the complete private route only after all admission checks. */
+	csid->phy.csiphy_id = csiphy->id;
+	csid->phy.bus_type = csi2->bus_type;
+	csid->phy.lane_cnt = 1;
+	csid->phy.lane_assign = 0;
+	csid->tpg_linked = false;
+	csid->denali_csiphy = csiphy;
+	ret = 0;
+unlock:
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
 /*
  * csid_link_setup - Setup CSID connections
  * @entity: Pointer to media entity structure
@@ -1250,20 +1364,26 @@ static int csid_link_setup(struct media_entity *entity,
 			   const struct media_pad *local,
 			   const struct media_pad *remote, u32 flags)
 {
+	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
+	struct csid_device *csid = v4l2_get_subdevdata(sd);
+	bool private_instance = camss_has_denali_cphy(csid->camss);
+
+	if (csid->denali_csiphy && (local->flags & MEDIA_PAD_FL_SINK) &&
+	    !(flags & MEDIA_LNK_FL_ENABLED)) {
+		if (csid_find_csiphy(csid, remote) != csid->denali_csiphy)
+			return -EINVAL;
+		return csid_link_denali(csid, csid->denali_csiphy, local, remote, false);
+	}
+
 	if (flags & MEDIA_LNK_FL_ENABLED)
 		if (media_pad_remote_pad_first(local))
 			return -EBUSY;
 
 	if ((local->flags & MEDIA_PAD_FL_SINK) &&
 	    (flags & MEDIA_LNK_FL_ENABLED)) {
-		struct v4l2_subdev *sd;
 		struct tpg_device *tpg;
-		struct csid_device *csid;
 		struct csiphy_device *csiphy;
 		struct csiphy_lanes_cfg *lane_cfg;
-
-		sd = media_entity_to_v4l2_subdev(entity);
-		csid = v4l2_get_subdevdata(sd);
 
 		/* If test generator is enabled */
 		/* do not allow a link from CSIPHY to CSID */
@@ -1271,22 +1391,40 @@ static int csid_link_setup(struct media_entity *entity,
 		    csid->testgen_mode->cur.val != 0)
 			return -EBUSY;
 
+		if (private_instance &&
+		    (!remote || !remote->entity ||
+		     !is_media_entity_v4l2_subdev(remote->entity)))
+			return -EINVAL;
 		sd = media_entity_to_v4l2_subdev(remote->entity);
 		if (sd->grp_id == TPG_GRP_ID) {
 			tpg = v4l2_get_subdevdata(sd);
 
+			csid->phy.bus_type = V4L2_MBUS_CSI2_DPHY;
+			csid->denali_csiphy = NULL;
 			csid->phy.lane_cnt = tpg->res->lane_cnt;
 			csid->phy.csiphy_id = tpg->id;
 			csid->phy.lane_assign = csid_get_lane_assign(NULL, csid->phy.lane_cnt);
 			csid->tpg_linked = true;
 		} else {
-			csiphy = v4l2_get_subdevdata(sd);
+			if (private_instance) {
+				csiphy = csid_find_csiphy(csid, remote);
+				if (!csiphy)
+					return -EINVAL;
+				if (csiphy->denali_cphy)
+					return csid_link_denali(csid, csiphy, local, remote, true);
+			} else {
+				csiphy = v4l2_get_subdevdata(sd);
+			}
 
 			/* If a sensor is not linked to CSIPHY */
 			/* do no allow a link from CSIPHY to CSID */
 			if (!csiphy->cfg.csi2)
 				return -EPERM;
+			if (csiphy->cfg.csi2->bus_type == V4L2_MBUS_CSI2_CPHY)
+				return -EOPNOTSUPP;
 
+			csid->phy.bus_type = csiphy->cfg.csi2->bus_type;
+			csid->denali_csiphy = NULL;
 			csid->phy.csiphy_id = csiphy->id;
 
 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
@@ -1297,8 +1435,6 @@ static int csid_link_setup(struct media_entity *entity,
 	}
 	/* Decide which virtual channels to enable based on which source pads are enabled */
 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
-		struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
-		struct csid_device *csid = v4l2_get_subdevdata(sd);
 		struct device *dev = csid->camss->dev;
 
 		if (flags & MEDIA_LNK_FL_ENABLED)
