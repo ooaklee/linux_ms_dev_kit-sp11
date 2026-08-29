@@ -67,7 +67,7 @@
 			csiphy2_ep: endpoint@4 {
 				reg = <4>;
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
-				data-lanes = <1>;
+				data-lanes = <0>;
 				remote-endpoint = <&imx681_ep>;
 			};
 		};
@@ -82,7 +82,7 @@
 	clock-frequency = <400000>;
 
 	imx681: camera@10 {
-		compatible = "mipi-ccs-1.1", "mipi-ccs";
+		compatible = "sony,imx681";
 		reg = <0x10>;
 
 		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
@@ -93,8 +93,8 @@
 		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
 		assigned-clock-rates = <19200000>;
 
-		vana-supply = <&vreg_l7b_2p8>;
-		vio-supply = <&vreg_l3m_1p8>;
+		avdd-supply = <&vreg_l7b_2p8>;
+		dovdd-supply = <&vreg_l3m_1p8>;
 
 		leds = <&privacy_led>;
 		led-names = "privacy";
@@ -105,9 +105,9 @@
 		port {
 			imx681_ep: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
-				data-lanes = <1>;
-				/* PLL2 19.2 MHz / 3 * 303 / 2 = 969.6 Msymbol/s. */
-				link-frequencies = /bits/ 64 <969600000>;
+				data-lanes = <0>;
+				/* Half of the observed 2406-Msymbol/s C-PHY rate. */
+				link-frequencies = /bits/ 64 <1203000000>;
 				remote-endpoint = <&csiphy2_ep>;
 			};
 		};

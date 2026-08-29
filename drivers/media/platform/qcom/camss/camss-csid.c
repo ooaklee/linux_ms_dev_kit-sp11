@@ -535,14 +535,22 @@ const struct csid_format_info *csid_get_fmt_entry(const struct csid_format_info 
 bool csid_is_cphy_raw10_3844(struct csid_device *csid,
 			     const struct v4l2_mbus_framefmt *format)
 {
+	return format->width == 3844 &&
+	       csid_is_sp11_imx681_format(csid, format);
+}
+
+bool csid_is_sp11_imx681_format(struct csid_device *csid,
+				const struct v4l2_mbus_framefmt *format)
+{
 	const struct csid_format_info *fmt;
 
 	fmt = csid_get_fmt_entry(csid->res->formats->formats,
 				 csid->res->formats->nformats, format->code);
 
-	/* This explicit transport/format signature is unique to the IMX681. */
+	/* These explicit transport/geometry signatures are unique to the IMX681. */
 	return csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
-	       format->width == 3844 && fmt->data_type == MIPI_CSI2_DT_RAW10;
+	       (format->width == 3840 || format->width == 3844) &&
+	       format->height == 2640 && fmt->data_type == MIPI_CSI2_DT_RAW10;
 }
 
 /*
@@ -570,7 +578,10 @@ static int csid_set_clock_rates(struct csid_device *csid)
 		if (!strcmp(clock->name, "csi0") ||
 		    !strcmp(clock->name, "csi1") ||
 		    !strcmp(clock->name, "csi2") ||
-		    !strcmp(clock->name, "csi3")) {
+		    !strcmp(clock->name, "csi3") ||
+		    (csid->camss->res->version == CAMSS_X1E80100 &&
+		     (!strcmp(clock->name, "csid") ||
+		      !strcmp(clock->name, "csid_csiphy_rx")))) {
 			u64 min_rate = link_freq / 4;
 			long rate;
 

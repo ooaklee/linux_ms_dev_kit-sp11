@@ -1,11 +1,29 @@
 linux-qcom-x1e (7.2.0-jg-0sp11v14) resolute; urgency=medium
 
-  * Surface Pro 11 v14: restore the hardware-proven Linux IMX681 3844x2640
-    RAW10 mode at 969.6 Msymbol/s, selecting the x1e80100 1.0 Gsps AFE row
-    and stable 0x4a CDR setting. Remove the global mode switch that coupled
-    the distinct static Windows 3840x2640 mode at 1.2 Gsymbol/s to an
-    incorrect doubled 2.4-Gsymbol/s receiver rate; retain that Windows mode
-    only as future per-state work.
+  * Supersede the zero-packet CCS IMX681 experiment with the matched front-
+    camera stack that turbineBMW validated with changing 3840x2640 RAW10
+    frames: the standalone sensor transaction table and its observed X1E80100
+    C-PHY receiver lifecycle. Retain this device's proven CCI address 0x10
+    rather than copying the reference machine's 0x1a address.
+  * Add the standalone Sony IMX681 driver and its complete global/mode tables,
+    advertise one C-PHY trio and a 1.203 GHz V4L2 link frequency representing
+    the observed 2.406-Gsymbol/s rate, and select the corresponding X1E CSID
+    clock votes. Keep the existing 3844x2640 CCS work as superseded history.
+  * Replay the hardware-observed X1E C-PHY reset, trio toggle, common, analogue,
+    IRQ-clear, and shutdown sequences only for the matching X1E80100 2.406-
+    Gsymbol/s C-PHY mode. Run receiver shutdown before its clocks and supplies
+    are disabled; preserve the generic PHY path for every other mode.
+  * Record turbineBMW source provenance at repository b1f5237957b9 and camera
+    bundle 675d89b381d8: standalone sensor 00cece0b87c4, Denali wiring
+    8915ca862de4, X1E C-PHY/CSID plumbing b1eae4e60169, and the observed
+    receiver sequence 8c1731648d04.
+  * Earlier superseded v14 experiment: adopt the Karsies-derived IMX681
+    3844x2640 RAW10 mode at 969.6 Msymbol/s, selecting the x1e80100 1.0 Gsps
+    AFE row and stable 0x4a CDR setting. Remove the global mode switch that
+    coupled the distinct static Windows 3840x2640 mode at 1.2 Gsymbol/s to an
+    incorrect doubled 2.4-Gsymbol/s receiver rate. Runtime testing later
+    showed zero received packets and the matched turbine profile above now
+    supersedes this experiment.
   * Map the standard analogue-gain control used by libcamera's simple IPA to
     the IMX681's effective U8.8 gain register, and start with the proven
     3100-line exposure and 4x gain values.

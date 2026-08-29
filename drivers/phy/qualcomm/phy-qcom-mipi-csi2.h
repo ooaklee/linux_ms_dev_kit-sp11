@@ -87,6 +87,7 @@ struct mipi_csi2phy_device {
 
 	struct phy *phy;
 	void __iomem *base;
+	int irq;
 
 	struct clk_bulk_data *clks;
 	struct regulator_bulk_data *supplies;

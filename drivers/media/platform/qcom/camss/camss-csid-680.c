@@ -336,7 +336,7 @@ static void csid_log_status(struct csid_device *csid)
 	int i;
 
 	if (csid->camss->res->version != CAMSS_X1E80100 ||
-	    !csid_is_cphy_raw10_3844(csid, sink_format))
+	    !csid_is_sp11_imx681_format(csid, sink_format))
 		return;
 
 	dev_info(csid->camss->dev,

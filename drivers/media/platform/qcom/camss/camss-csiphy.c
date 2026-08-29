@@ -347,8 +347,12 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	}
 
 	if (is_cphy) {
-		/* The X1E generic PHY consumes the C-PHY symbol rate here. */
-		dphy_cfg->hs_clk_rate = link_freq;
+		/*
+		 * V4L2 exposes half the C-PHY symbol rate as LINK_FREQ.  Until
+		 * generic C-PHY options exist, carry the actual symbol rate to the
+		 * X1E PHY in hs_clk_rate.
+		 */
+		dphy_cfg->hs_clk_rate = link_freq * 2;
 		dphy_cfg->lanes = 1;
 
 		ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_CPHY);

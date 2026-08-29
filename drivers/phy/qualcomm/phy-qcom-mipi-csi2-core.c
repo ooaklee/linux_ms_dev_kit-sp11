@@ -6,6 +6,7 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -188,20 +189,28 @@ static int phy_qcom_mipi_csi2_power_on(struct phy *phy)
 
 	ret = phy_qcom_mipi_csi2_set_clock_rates(csi2phy, csi2phy->stream_cfg.link_freq);
 	if (ret)
-		goto poweroff_phy;
+		goto disable_regulators;
 
 	ret = clk_bulk_prepare_enable(csi2phy->soc_cfg->num_clk,
 				      csi2phy->clks);
 	if (ret) {
 		dev_err(dev, "failed to enable clocks, %d\n", ret);
-		goto poweroff_phy;
+		goto disable_regulators;
 	}
 
+	enable_irq(csi2phy->irq);
+	ops->reset(csi2phy);
 	ops->hw_version_read(csi2phy);
 
-	return ops->lanes_enable(csi2phy, &csi2phy->stream_cfg);
+	ret = ops->lanes_enable(csi2phy, &csi2phy->stream_cfg);
+	if (!ret)
+		return 0;
 
-poweroff_phy:
+	disable_irq(csi2phy->irq);
+	clk_bulk_disable_unprepare(csi2phy->soc_cfg->num_clk,
+				   csi2phy->clks);
+
+disable_regulators:
 	regulator_bulk_disable(csi2phy->soc_cfg->num_supplies,
 			       csi2phy->supplies);
 
@@ -211,6 +220,11 @@ poweroff_phy:
 static int phy_qcom_mipi_csi2_power_off(struct phy *phy)
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
+	const struct mipi_csi2phy_hw_ops *ops = csi2phy->soc_cfg->ops;
+
+	/* Shut the receiver down while its register interface is still clocked. */
+	ops->lanes_disable(csi2phy, &csi2phy->stream_cfg);
+	disable_irq(csi2phy->irq);
 
 	clk_bulk_disable_unprepare(csi2phy->soc_cfg->num_clk,
 				   csi2phy->clks);
@@ -261,12 +275,6 @@ static int phy_qcom_mipi_csi2_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = clk_bulk_prepare_enable(num_clk, csi2phy->clks);
-	if (ret) {
-		dev_err(dev, "apq8016 clk_enable failed\n");
-		return ret;
-	}
-
 	num_supplies = csi2phy->soc_cfg->num_supplies;
 	csi2phy->supplies = devm_kzalloc(dev, sizeof(*csi2phy->supplies) * num_supplies,
 					 GFP_KERNEL);
@@ -285,6 +293,16 @@ static int phy_qcom_mipi_csi2_probe(struct platform_device *pdev)
 	if (IS_ERR(csi2phy->base))
 		return PTR_ERR(csi2phy->base);
 
+	csi2phy->irq = platform_get_irq(pdev, 0);
+	if (csi2phy->irq < 0)
+		return csi2phy->irq;
+
+	ret = devm_request_irq(dev, csi2phy->irq, csi2phy->soc_cfg->ops->isr,
+			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
+			       dev_name(dev), csi2phy);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to request IRQ\n");
+
 	generic_phy = devm_phy_create(dev, NULL, &phy_qcom_mipi_csi2_ops);
 	if (IS_ERR(generic_phy)) {
 		ret = PTR_ERR(generic_phy);
@@ -298,8 +316,6 @@ static int phy_qcom_mipi_csi2_probe(struct platform_device *pdev)
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	if (!IS_ERR(phy_provider))
 		dev_dbg(dev, "Registered MIPI CSI2 PHY device\n");
-	else
-		pm_runtime_disable(dev);
 
 	return PTR_ERR_OR_ZERO(phy_provider);
 }
