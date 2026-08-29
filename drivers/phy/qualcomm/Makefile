@@ -9,6 +9,7 @@ obj-$(CONFIG_PHY_QCOM_M31_EUSB)		+= phy-qcom-m31-eusb2.o
 
 phy-qcom-mipi-csi2-objs			+= phy-qcom-mipi-csi2-core.o \
 					   phy-qcom-mipi-csi2-3ph-dphy.o
+phy-qcom-mipi-csi2-objs += phy-qcom-mipi-csi2-x1e-cphy.o
 
 obj-$(CONFIG_PHY_QCOM_MIPI_CSI2)	+= phy-qcom-mipi-csi2.o
 

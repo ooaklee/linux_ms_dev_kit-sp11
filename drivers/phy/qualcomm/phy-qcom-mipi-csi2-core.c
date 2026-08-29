@@ -21,6 +21,7 @@
 #include <linux/slab.h>
 
 #include "phy-qcom-mipi-csi2.h"
+#include "phy-qcom-mipi-csi2-cphy.h"
 
 static int
 phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
@@ -268,14 +269,22 @@ static int phy_qcom_mipi_csi2_probe(struct platform_device *pdev)
 	return PTR_ERR_OR_ZERO(phy_provider);
 }
 
+static int phy_qcom_mipi_csi2_probe_dispatch(struct platform_device *pdev)
+{
+	if (device_get_match_data(&pdev->dev) == &x1e80100_cphy_match)
+		return phy_qcom_mipi_csi2_x1e_cphy_probe(pdev);
+	return phy_qcom_mipi_csi2_probe(pdev);
+}
+
 static const struct of_device_id phy_qcom_mipi_csi2_of_match_table[] = {
 	{ .compatible	= "qcom,x1e80100-csi2-phy", .data = &mipi_csi2_dphy_4nm_x1e },
+	{ .compatible	= "qcom,x1e80100-mipi-csi2-combo-phy", .data = &x1e80100_cphy_match },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, phy_qcom_mipi_csi2_of_match_table);
 
 static struct platform_driver phy_qcom_mipi_csi2_driver = {
-	.probe		= phy_qcom_mipi_csi2_probe,
+	.probe		= phy_qcom_mipi_csi2_probe_dispatch,
 	.driver = {
 		.name	= "qcom-mipi-csi2-phy",
 		.of_match_table = phy_qcom_mipi_csi2_of_match_table,
