@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Copyright (c) 2026 Leon Silcott <leon@boasi.io>
+ */
+
+#include "x1e80100-microsoft-denali-oled.dts"
+
+/ {
+	model = "Microsoft Surface Pro 11th Edition (OLED, top-port USB4 retimer experiment)";
+};
+
+/*
+ * The production DT keeps USB4 disabled on both PS8830 retimers. This variant
+ * permits Enter_USB only on the physical top port so the retimer-to-QMP path
+ * can be qualified independently of the missing Linux USB4 host router.
+ */
+&i2c7 {
+	typec-mux@8 {
+		/delete-property/ parade,disable-usb4;
+	};
+};
