@@ -137,7 +137,9 @@ $(stampdir)/stamp-install-%: MODHASHALGO=sha512
 $(stampdir)/stamp-install-%: MODSECKEY=$(build_dir)/certs/signing_key.pem
 $(stampdir)/stamp-install-%: MODPUBKEY=$(build_dir)/certs/signing_key.x509
 $(stampdir)/stamp-install-%: dkms_dir=$(call dkms_dir_prefix,$(build_dir))
-$(stampdir)/stamp-install-%: STUBBLEDTBS = $(shell /usr/libexec/stubble/finddtbs.py $(build_dir)/arch/arm64/boot/dts /usr/share/stubble/hwids 2>/dev/null | sed 's|.*|--devicetree-auto=&|' | tr '\n' ' ')
+$(stampdir)/stamp-install-%: sp11_usb4_experiment_dtb = qcom/x1e80100-microsoft-denali-oled-usb4-top-experimental.dtb
+$(stampdir)/stamp-install-%: sp11_usb4_experiment_name = sp11-usb4-top-experimental
+$(stampdir)/stamp-install-%: STUBBLEDTBS = $(shell /usr/libexec/stubble/finddtbs.py $(build_dir)/arch/arm64/boot/dts /usr/share/stubble/hwids 2>/dev/null | grep -Fv '/$(sp11_usb4_experiment_dtb)' | sed 's|.*|--devicetree-auto=&|' | tr '\n' ' ')
 $(foreach _m,$(all_dkms_modules), \
   $(eval $$(stampdir)/stamp-install-%: enable_$(_m) = $$(filter true,$$(call custom_override,do_$(_m),$$*))) \
   $(eval $$(stampdir)/stamp-install-%: dkms_$(_m)_pkgdir = $$(CURDIR)/debian/$(dkms_$(_m)_pkg_name)-$$*) \
@@ -177,6 +179,12 @@ endif
 		$(pkgdir)/boot/System.map-$(abi_release)-$*
 
 ifeq ($(do_stubble),true)
+	@if printf '%s\n' '$(STUBBLEDTBS)' | \
+	    grep -Fq '/$(sp11_usb4_experiment_dtb)'; then \
+		echo 'Refusing to include the SP11 USB4 experiment in the normal Stubble image' >&2; \
+		exit 1; \
+	fi
+
 	# Build kernel+stub image
 	/usr/bin/ukify build --linux=$(build_dir)/$(kernfile) \
 	        --stub=/usr/lib/stubble/stubble.efi \
@@ -184,6 +192,20 @@ ifeq ($(do_stubble),true)
 	        --sbat="@/usr/share/stubble/sbat" \
 		$(STUBBLEDTBS) \
 	        --output=$(build_dir)/$(kernfile).stubble
+
+	# Build the SP11 top-port USB4 retimer experiment outside dtb-y so it
+	# cannot enter the normal Stubble auto-selection set. Package a second,
+	# explicitly named EFI image without placing it in /boot.
+	$(kmake) O=$(build_dir) $(conc_level) $(sp11_usb4_experiment_dtb)
+	/usr/bin/ukify build --linux=$(build_dir)/$(kernfile) \
+	        --stub=/usr/lib/stubble/stubble.efi \
+	        --hwids=/usr/share/stubble/hwids \
+	        --sbat="@/usr/share/stubble/sbat" \
+	        --devicetree-auto=$(build_dir)/arch/arm64/boot/dts/$(sp11_usb4_experiment_dtb) \
+	        --output=$(build_dir)/$(kernfile).$(sp11_usb4_experiment_name).stubble
+	install -m644 -D \
+		$(build_dir)/$(kernfile).$(sp11_usb4_experiment_name).stubble \
+		$(pkgdir)/usr/lib/linux-image-$(abi_release)-$*/$(sp11_usb4_experiment_name).efi
 
 	# The main image
 	install -m600 -D $(build_dir)/$(kernfile).stubble \

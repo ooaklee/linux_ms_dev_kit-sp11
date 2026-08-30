@@ -12,6 +12,8 @@ linux-qcom-x1e (7.2.0-jg-0sp11v20) resolute; urgency=medium
     negotiation only through the physical top-port PS8830. Keep the normal
     Denali DTB byte-for-byte guarded on both ports; selecting the experimental
     DTB qualifies retimer acceptance and does not claim a working USB4 domain.
+    Package it only inside a separately named Stubble EFI image under
+    /usr/lib/linux-image-* so the normal /boot image cannot select it.
   * Make the qualification result observable: reject malformed Enter_USB data,
     report successful PS8830 USB4 programming without implying router success,
     and warn when QMP ignores a USB4/TBT mux request because no host-router

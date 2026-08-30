@@ -13,6 +13,10 @@
  * The production DT keeps USB4 disabled on both PS8830 retimers. This variant
  * permits Enter_USB only on the physical top port so the retimer-to-QMP path
  * can be qualified independently of the missing Linux USB4 host router.
+ *
+ * Keep this target out of dtb-y. The qcom-x1e package builds it explicitly
+ * for a separately named Stubble image, preventing firmware from considering
+ * it during normal automatic DTB selection.
  */
 &i2c7 {
 	typec-mux@8 {
