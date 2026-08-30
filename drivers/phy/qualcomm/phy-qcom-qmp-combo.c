@@ -5120,8 +5120,12 @@ static int qmp_combo_typec_mux_set_locked(struct typec_mux_dev *mux,
 	 * initialized, either due to the USB4 drivers being disabled or due to this PHY instance
 	 * lacking USB4 support.
 	 */
-	if (svid == USB_TYPEC_TBT_SID || (!state->alt && state->mode == TYPEC_MODE_USB4))
+	if (svid == USB_TYPEC_TBT_SID || (!state->alt && state->mode == TYPEC_MODE_USB4)) {
+		if (qmp->usb4_phy)
+			dev_warn_once(qmp->dev,
+				      "USB4/TBT mux request ignored: no active host-router PHY consumer\n");
 		return 0;
+	}
 
 	if (svid == USB_TYPEC_DP_SID) {
 		switch (state->mode) {
