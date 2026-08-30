@@ -216,6 +216,7 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 	int cfg0 = CONN_STATUS_0_CONNECTION_PRESENT;
 	int cfg1 = 0x00;
 	int cfg2 = 0x00;
+	int ret;
 	bool reset = false;
 
 	if (retimer->orientation == TYPEC_ORIENTATION_REVERSE)
@@ -264,8 +265,12 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 				return -EOPNOTSUPP;
 			}
 
-			/* Normal USB4 handling */
 			eudo_data = state->data;
+			if (!eudo_data) {
+				dev_err(&retimer->client->dev,
+					"USB4 mode request is missing Enter_USB data\n");
+				return -EINVAL;
+			}
 
 			cfg2 |= CONN_STATUS_2_USB4_CONNECTED;
 
@@ -279,7 +284,12 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 		}
 	}
 
-	return ps883x_configure(retimer, cfg0, cfg1, cfg2, reset);
+	ret = ps883x_configure(retimer, cfg0, cfg1, cfg2, reset);
+	if (!ret && !state->alt && state->mode == TYPEC_MODE_USB4)
+		dev_info_once(&retimer->client->dev,
+			      "USB4 mode accepted by retimer; host-router state not established\n");
+
+	return ret;
 }
 
 static int ps883x_sw_set(struct typec_switch_dev *sw,
