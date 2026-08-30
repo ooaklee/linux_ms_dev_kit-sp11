@@ -5,11 +5,11 @@ linux-qcom-x1e (7.2.0-jg-0sp11v20) resolute; urgency=medium
     series, including the USB4/TBT3 PHY mode, X1E80100 electrical tables, and
     Hamoa PHY-to-router clock description.
   * Keep Denali's production PS8830 retimers in parade,disable-usb4 fallback
-    mode. This build adds PHY groundwork only; USB4 router enumeration and
-    DisplayPort tunnelling remain blocked on the unpublished Qualcomm host
-    router and the unresolved PS8830-to-UC sideband connection.
+    mode. This build adds PHY groundwork only and does not enable a USB4
+    host-router consumer. Production USB4 and DisplayPort tunnelling remain
+    gated on the unresolved PS8830-to-UC sideband connection.
   * Preserve the existing USB4, Type-C, PS8830, and QMP package configuration.
-    Direct USB-C DisplayPort Alt Mode remains the supported display path while
+    The existing direct USB-C DisplayPort Alt Mode path remains unchanged while
     the USB4 path is hardware-qualified.
 
  -- Leon Silcott <leon@boasi.io>  Sun, 30 Aug 2026 01:35:45 +0100
