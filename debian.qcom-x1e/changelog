@@ -1,3 +1,10 @@
+linux-qcom-x1e (7.2.2-jg-0sp11v1) resolute; urgency=medium
+
+  * Publish sp11-qcom-x1e-7.2.2-jg-0sp11v1
+  * Enable the MSHW0485 heat-frame and IPTSD userspace interfaces
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 01 Sep 2026 17:02:41 +0100
+
 linux-qcom-x1e (7.2.2-jg-0) resolute; urgency=medium
 
   * arm64: dts: qcom: x1-lenovo-ideacentre-mini-01q8x10: discriminate compatible strings
