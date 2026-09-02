@@ -831,8 +831,6 @@ static int setup_gsi_xfer(struct spi_transfer *xfer, struct spi_geni_master *mas
 
 	spi_gsi_fill_config(mas, spi_slv, &peripheral, peripheral.rx_len,
 			    peripheral.cmd);
-	if (mas->is_qspi)
-		spi_geni_sp11_qspi_arm_live(mas);
 
 	ret = get_spi_clk_cfg(mas->cur_speed_hz, mas,
 			      &peripheral.clk_src, &peripheral.clk_div);
