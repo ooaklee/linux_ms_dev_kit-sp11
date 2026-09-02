@@ -1,3 +1,11 @@
+linux-qcom-x1e (7.2.2-jg-0sp11v2) resolute; urgency=medium
+
+  * Accept valid AudioReach modules with more than eight input ports.
+  * Publish the complete Denali QSPI event-ring doorbell before activation.
+  * Scope the SP11 QSPI completion workarounds to Microsoft Denali.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 02 Sep 2026 10:58:07 +0100
+
 linux-qcom-x1e (7.2.2-jg-0) resolute; urgency=medium
 
   * arm64: dts: qcom: x1-lenovo-ideacentre-mini-01q8x10: discriminate compatible strings
