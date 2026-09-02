@@ -665,7 +665,13 @@ static phys_addr_t gpi_read_ev_rp(struct gpii *gpii)
 	u32 lsb = gpi_read_reg(gpii, gpii->ev_ring_rp_lsb_reg);
 	u32 msb;
 
-	if (!gpii_has_active_qspi(gpii))
+	/*
+	 * Denali publishes and may inspect the event ring before either QSPI
+	 * channel reaches ACTIVE_STATE, and again while recovery transitions the
+	 * paired channels. Keep the complete pointer available for that entire
+	 * configured lifetime without changing the common GPI path.
+	 */
+	if (!gpii_has_denali_qspi(gpii))
 		return lsb;
 
 	msb = gpi_read_reg(gpii, gpii->ev_ring_rp_lsb_reg + 4);
