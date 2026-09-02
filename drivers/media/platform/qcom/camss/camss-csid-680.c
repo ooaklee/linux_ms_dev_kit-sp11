@@ -253,6 +253,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	const struct csid_format_info *format = csid_get_fmt_entry(csid->res->formats->formats,
 								   csid->res->formats->nformats,
 								   input_format->code);
+	bool sp11_imx681 = csid_is_sp11_imx681_format(csid, sink_format);
 	bool crop = csid_is_cphy_raw10_3844(csid, sink_format);
 	u8 lane_cnt = csid->phy.lane_cnt;
 	u8 dt_id;
@@ -260,6 +261,10 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 	if (!lane_cnt)
 		lane_cnt = 4;
+
+	/* Preserve the existing reset-value path outside the qualified route. */
+	if (!sp11_imx681)
+		writel(0, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
 
 	/*
 	 * DT_ID is a two bit bitfield that is concatenated with
@@ -289,6 +294,12 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val = RDI_CFG1_TIMESTAMP_STB_FRAME;
 	val |= RDI_CFG1_BYTE_CNTR_EN;
 	val |= RDI_CFG1_TIMESTAMP_EN;
+	if (!sp11_imx681) {
+		val |= RDI_CFG1_DROP_H_EN;
+		val |= RDI_CFG1_DROP_V_EN;
+		val |= RDI_CFG1_CROP_H_EN;
+		val |= RDI_CFG1_CROP_V_EN;
+	}
 	val |= RDI_CFG1_PACKING_MIPI;
 	if (crop) {
 		/* C-PHY RAW10 3844 is the IMX681 route: crop to 4800-byte rows. */
@@ -298,13 +309,15 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
 
-	/* Program an explicit keep-all state for every drop engine. */
-	writel(1, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
-	writel(0, csid->base + CSID_RDI_FRM_DROP_PATTERN(port));
-	writel(1, csid->base + CSID_RDI_PIX_DROP_PERIOD(port));
-	writel(0, csid->base + CSID_RDI_PIX_DROP_PATTERN(port));
-	writel(1, csid->base + CSID_RDI_LINE_DROP_PERIOD(port));
-	writel(0, csid->base + CSID_RDI_LINE_DROP_PATTERN(port));
+	if (sp11_imx681) {
+		/* Program an explicit keep-all state for every drop engine. */
+		writel(1, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_FRM_DROP_PATTERN(port));
+		writel(1, csid->base + CSID_RDI_PIX_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_PIX_DROP_PATTERN(port));
+		writel(1, csid->base + CSID_RDI_LINE_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_LINE_DROP_PATTERN(port));
+	}
 
 	val = 0;
 	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port));

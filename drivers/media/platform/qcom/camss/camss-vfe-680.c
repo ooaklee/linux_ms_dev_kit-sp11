@@ -153,12 +153,15 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 rdi, u32 addr,
 	writel(addr, vfe->base + VFE_BUS_IMAGE_ADDR(vfe, wm));
 }
 
+static bool vfe_is_imx681_raw(struct vfe_device *vfe, u8 rdi);
+
 static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 {
 	struct v4l2_pix_format_mplane *pix =
 		&line->video_out.active_fmt.fmt.pix_mp;
 	u32 stride = pix->plane_fmt[0].bytesperline;
 	u32 cfg;
+	u32 wm_cfg = VFE_BUS_WRITE_CLIENT_CFG_EN;
 	u8 wm;
 
 	cfg = VFE_BUS_IMAGE_CFG0_DATA(pix->height, stride);
@@ -186,9 +189,11 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 rdi, struct vfe_line *line)
 	/* We don't process IRQs for VFE in RDI mode at the moment */
 	vfe_disable_irq(vfe);
 
-	/* Enable WM */
-	writel(VFE_BUS_WRITE_CLIENT_CFG_EN |
-	       VFE_BUS_WRITE_CLIENT_CFG_MODE_MIPI_RAW,
+	if (vfe_is_imx681_raw(vfe, rdi))
+		wm_cfg |= VFE_BUS_WRITE_CLIENT_CFG_MODE_MIPI_RAW;
+
+	/* Enable WM, selecting MIPI RAW only for the qualified IMX681 route. */
+	writel(wm_cfg,
 	       vfe->base + VFE_BUS_WRITE_CLIENT_CFG(vfe, wm));
 
 	dev_dbg(vfe->camss->dev, "RDI%d WM:%d width %d height %d stride %d\n",
