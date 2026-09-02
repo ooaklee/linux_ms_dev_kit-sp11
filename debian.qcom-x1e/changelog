@@ -1,3 +1,9 @@
+linux-qcom-x1e (7.2.2-jg-0sp11v4) resolute; urgency=medium
+
+  * Restore Denali QSPI register programming after runtime power resume.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 02 Sep 2026 18:42:07 +0100
+
 linux-qcom-x1e (7.2.2-jg-0sp11v3) resolute; urgency=medium
 
   * Keep generic Denali QSPI transfers on the hardware-validated IRQ masks.
