@@ -53,6 +53,12 @@ static struct audioreach_module *
 __q6apm_find_module_by_mid(struct q6apm *apm,
 			   struct audioreach_graph_info *info, u32 mid);
 
+static bool q6apm_is_graph_position_token(u32 token)
+{
+	return (token & ~APM_MMAP_TOKEN_GID_MASK) ==
+		APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS;
+}
+
 bool q6apm_graph_user_get(struct q6apm_graph *graph)
 {
 	unsigned long flags;
@@ -211,11 +217,14 @@ static u32 q6apm_next_mmap_token(u32 graph_id, u32 map_type)
 {
 	u32 sequence;
 
-	sequence = (u32)atomic_inc_return(&q6apm_mmap_token_seq) <<
-		   APM_MMAP_TOKEN_OOB_SEQ_SHIFT;
+	do {
+		sequence = (u32)atomic_inc_return(&q6apm_mmap_token_seq) <<
+			   APM_MMAP_TOKEN_OOB_SEQ_SHIFT;
+		sequence &= APM_MMAP_TOKEN_OOB_SEQ_MASK;
+	} while (sequence == APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS);
 
 	return (graph_id & APM_MMAP_TOKEN_GID_MASK) | map_type |
-		(sequence & APM_MMAP_TOKEN_OOB_SEQ_MASK);
+		sequence;
 }
 
 static int q6apm_map_position_buffer(struct audioreach_graph *graph)
@@ -2657,8 +2666,7 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			if (expected && result->status) {
 				graph_id = hdr->token & APM_MMAP_TOKEN_GID_MASK;
 				is_oob = hdr->token & APM_MMAP_TOKEN_MAP_TYPE_OOB;
-				is_graph_pos = !is_oob &&
-					(hdr->token & APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS);
+				is_graph_pos = q6apm_is_graph_position_token(hdr->token);
 				spin_lock(&apm->graph_lock);
 				graph = idr_find(&apm->graph_idr, graph_id);
 				if (graph && is_oob && graph->oob_token == hdr->token)
@@ -2714,8 +2722,7 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			is_oob = hdr->token & APM_MMAP_TOKEN_MAP_TYPE_OOB;
 			is_pos_buf =
 				hdr->token & APM_MMAP_TOKEN_MAP_TYPE_POS_BUF;
-			is_graph_pos = !is_oob &&
-				(hdr->token & APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS);
+			is_graph_pos = q6apm_is_graph_position_token(hdr->token);
 			spin_lock(&apm->result_lock);
 			expected = __q6apm_cmd_response_expected(apm, hdr,
 								 result->opcode,
@@ -2766,8 +2773,7 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 		graph_id = hdr->token & APM_MMAP_TOKEN_GID_MASK;
 		is_oob = hdr->token & APM_MMAP_TOKEN_MAP_TYPE_OOB;
 		is_pos_buf = hdr->token & APM_MMAP_TOKEN_MAP_TYPE_POS_BUF;
-		is_graph_pos = !is_oob &&
-			(hdr->token & APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS);
+		is_graph_pos = q6apm_is_graph_position_token(hdr->token);
 
 		spin_lock(&apm->result_lock);
 		expected = __q6apm_cmd_response_expected(apm, hdr, hdr->opcode,
