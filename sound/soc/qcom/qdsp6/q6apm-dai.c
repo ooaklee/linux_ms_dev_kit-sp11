@@ -112,6 +112,10 @@ struct q6apm_dai_data {
 	DECLARE_BITMAP(protected_graphs, APM_PORT_MAX);
 };
 
+static int q6apm_dai_sp11_soft_pause(struct snd_soc_component *component,
+				     struct q6apm_dai_rtd *prtd,
+				     bool pause);
+
 static bool q6apm_denali_rtd(const struct snd_soc_pcm_runtime *rtd)
 {
 	return rtd && rtd->card &&
@@ -393,6 +397,12 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	}
 	if (protected_pull && prtd->pull_started &&
 	    prtd->state != Q6APM_STREAM_UNCERTAIN) {
+		if (prtd->soft_paused) {
+			ret = q6apm_dai_sp11_soft_pause(component, prtd, false);
+			if (ret)
+				return ret;
+			prtd->soft_paused = false;
+		}
 		prtd->state = Q6APM_STREAM_RUNNING;
 		dev_dbg(dev, "reusing persistent Denali pull graph\n");
 		return 0;
