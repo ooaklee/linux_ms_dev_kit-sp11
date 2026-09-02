@@ -107,7 +107,7 @@ if [[ "${kernel_changed}" == true ]]; then
 	# nominal author while carrying only the submitter's authorized sign-off;
 	# provenance for those commits is audited separately in the PR body.
 	git diff --no-ext-diff "${SP11_RANGE}" -- "${kernel_pathspecs[@]}" |
-		scripts/checkpatch.pl --strict --show-types \
+		scripts/checkpatch.pl --no-tree --strict --show-types \
 			--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF -
 else
 	printf 'No kernel-source changes require checkpatch.pl.\n'
