@@ -548,7 +548,8 @@ bool csid_is_sp11_imx681_format(struct csid_device *csid,
 				 csid->res->formats->nformats, format->code);
 
 	/* These explicit transport/geometry signatures are unique to the IMX681. */
-	return csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
+	return csid->camss->res->version == CAMSS_X1E80100 &&
+	       csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY &&
 	       (format->width == 3840 || format->width == 3844) &&
 	       format->height == 2640 && fmt->data_type == MIPI_CSI2_DT_RAW10;
 }
