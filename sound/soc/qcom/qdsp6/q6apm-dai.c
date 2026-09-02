@@ -620,7 +620,14 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		if (protected_pull) {
-			if (prtd->soft_paused) {
+			if (prtd->state == Q6APM_STREAM_UNCERTAIN) {
+				ret = q6apm_graph_stop(prtd->graph);
+				if (ret)
+					break;
+				prtd->pull_started = false;
+				prtd->push_pull_size = 0;
+				prtd->soft_paused = false;
+			} else if (prtd->soft_paused) {
 				ret = q6apm_dai_sp11_soft_pause(component, prtd, false);
 				if (ret)
 					break;
@@ -830,6 +837,7 @@ static int q6apm_dai_hw_free(struct snd_soc_component *component,
 	if (q6apm_denali_pull_runtime(substream, prtd->graph)) {
 		prtd->pull_started = false;
 		prtd->push_pull_size = 0;
+		prtd->soft_paused = false;
 	}
 	return 0;
 }
