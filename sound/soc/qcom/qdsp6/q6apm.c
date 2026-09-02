@@ -233,6 +233,8 @@ static int q6apm_map_position_buffer(struct audioreach_graph *graph)
 
 	if (!graph->dma_dev)
 		return -ENODEV;
+	if (graph->position_virt)
+		return -EBUSY;
 
 	graph->position_token = (graph->id & APM_MMAP_TOKEN_GID_MASK) |
 		APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS;
@@ -2652,13 +2654,18 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			expected = __q6apm_cmd_response_expected(apm, hdr,
 								 result->opcode,
 								 result->status, true);
-			if (expected && result->status &&
-			    (hdr->token & APM_MMAP_TOKEN_MAP_TYPE_OOB)) {
+			if (expected && result->status) {
 				graph_id = hdr->token & APM_MMAP_TOKEN_GID_MASK;
+				is_oob = hdr->token & APM_MMAP_TOKEN_MAP_TYPE_OOB;
+				is_graph_pos = !is_oob &&
+					(hdr->token & APM_MMAP_TOKEN_MAP_TYPE_GRAPH_POS);
 				spin_lock(&apm->graph_lock);
 				graph = idr_find(&apm->graph_idr, graph_id);
-				if (graph && graph->oob_token == hdr->token)
+				if (graph && is_oob && graph->oob_token == hdr->token)
 					graph->oob_map_uncertain = false;
+				else if (graph && is_graph_pos &&
+					 graph->position_token == hdr->token)
+					graph->position_map_uncertain = false;
 				spin_unlock(&apm->graph_lock);
 			}
 			if (expected) {
