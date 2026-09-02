@@ -106,9 +106,15 @@ if [[ "${kernel_changed}" == true ]]; then
 	# not a style defect. Some extracted commits preserve a contributor as
 	# nominal author while carrying only the submitter's authorized sign-off;
 	# provenance for those commits is audited separately in the PR body.
-	git diff --no-ext-diff "${SP11_RANGE}" -- "${kernel_pathspecs[@]}" |
-		scripts/checkpatch.pl --no-tree --strict --show-types \
-			--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF -
+	checkpatch_output="$(
+		git diff --no-ext-diff "${SP11_RANGE}" -- "${kernel_pathspecs[@]}" |
+			scripts/checkpatch.pl --no-tree --strict --show-types \
+				--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF - || true
+	)"
+	printf '%s\n' "${checkpatch_output}"
+	if grep -qE '^ERROR:' <<<"${checkpatch_output}"; then
+		die "checkpatch.pl reported ERROR-level findings"
+	fi
 else
 	printf 'No kernel-source changes require checkpatch.pl.\n'
 fi
