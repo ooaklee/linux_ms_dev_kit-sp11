@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -301,7 +302,9 @@
 #define WSA884X_PA_FSM_TIMER1		(WSA884X_DIG_CTRL0_BASE + 0x34)
 #define WSA884X_PA_FSM_STA0		(WSA884X_DIG_CTRL0_BASE + 0x35)
 #define WSA884X_PA_FSM_STA1		(WSA884X_DIG_CTRL0_BASE + 0x36)
+#define WSA884X_PA_FSM_RESET_MASK	BIT(4)
 #define WSA884X_PA_ERROR_MASK		GENMASK(4, 0)
+#define WSA884X_PA_RECOVERY_RETRIES	3
 #define WSA884X_PA_FSM_ERR_CTL		(WSA884X_DIG_CTRL0_BASE + 0x37)
 #define WSA884X_PA_FSM_ERR_COND0	(WSA884X_DIG_CTRL0_BASE + 0x38)
 #define WSA884X_PA_FSM_ERR_COND1	(WSA884X_DIG_CTRL0_BASE + 0x39)
@@ -1648,6 +1651,117 @@ static void wsa884x_apply_2s_4ohm_profile(struct wsa884x_priv *wsa884x)
 			   WSA884X_TOP_CTRL1_OCP_LOWVBAT_ITH_EN_MASK, 0);
 }
 
+/*
+ * Shipping Denali firmware programs this ordered WSA8845 transaction once
+ * after SoundWire attachment.  Ordinary playback uses the shorter start and
+ * stop transactions below.  The write order is part of the observed hardware
+ * contract and therefore must not be reduced to final-value overrides.
+ */
+static const struct reg_sequence denali_wsa8845_cold_init[] = {
+	{ WSA884X_PWRSTG_DBG, 0x0c },
+	{ WSA884X_PDRV_HS_CTL, 0x5a },
+	{ WSA884X_SWR_RESET_EN, 0x07 },
+	{ WSA884X_INTR_MASK0, 0xff },
+	{ WSA884X_INTR_MASK1, 0x03 },
+	{ WSA884X_PA_FSM_BYP_CTL, 0x00 },
+	{ WSA884X_VBAT_SNS, 0x20 },
+	{ WSA884X_CKWD_CTL_1, 0x1b },
+	{ WSA884X_CDC_SPK_DSM_A2_0, 0x0a },
+	{ WSA884X_CDC_SPK_DSM_A2_1, 0x08 },
+	{ WSA884X_CDC_SPK_DSM_A3_0, 0xf3 },
+	{ WSA884X_CDC_SPK_DSM_A3_1, 0x07 },
+	{ WSA884X_CDC_SPK_DSM_A4_0, 0x79 },
+	{ WSA884X_CDC_SPK_DSM_A4_1, 0x02 },
+	{ WSA884X_CDC_SPK_DSM_A5_0, 0x0b },
+	{ WSA884X_CDC_SPK_DSM_A5_1, 0x02 },
+	{ WSA884X_CDC_SPK_DSM_A6_0, 0x8a },
+	{ WSA884X_CDC_SPK_DSM_A7_0, 0x9b },
+	{ WSA884X_CDC_SPK_DSM_C_0, 0x68 },
+	{ WSA884X_CDC_SPK_DSM_C_2, 0xf2 },
+	{ WSA884X_CDC_SPK_DSM_C_3, 0x20 },
+	{ WSA884X_CDC_SPK_DSM_R1, 0x83 },
+	{ WSA884X_CDC_SPK_DSM_R2, 0x7f },
+	{ WSA884X_CDC_SPK_DSM_R3, 0x9d },
+	{ WSA884X_CDC_SPK_DSM_R4, 0x82 },
+	{ WSA884X_CDC_SPK_DSM_R5, 0x8b },
+	{ WSA884X_CDC_SPK_DSM_R6, 0x9b },
+	{ WSA884X_CDC_SPK_DSM_R7, 0x3f },
+	{ WSA884X_DRE_IDLE_DET_CTL, 0x0f },
+	{ WSA884X_PDM_WD_CTL, 0x01 },
+	{ WSA884X_DRE_CTL_0, 0xf0 },
+	{ WSA884X_DRE_CTL_1, 0x00 },
+	{ WSA884X_BOP_DEGLITCH_CTL, 0x11 },
+	{ WSA884X_VBAT_CAL_CTL, 0x05 },
+	{ WSA884X_VBAT_THRM_FLT_CTL, 0x79 },
+	{ WSA884X_GAIN_RAMPING_MIN, 0x0e },
+	{ WSA884X_CLSH_CTL_0, 0x00 },
+	{ WSA884X_CLSH_V_HD_PA, 0x13 },
+	{ WSA884X_CLSH_SOFT_MAX, 0xff },
+	{ WSA884X_ANA_WO_CTL_0, 0x9d },
+	{ WSA884X_ANA_WO_CTL_1, 0x00 },
+	{ WSA884X_OTP_REG_38, 0x08 },
+	{ WSA884X_OTP_REG_40, 0x20 },
+	{ WSA884X_REF_CTRL, 0xd1 },
+	{ WSA884X_UVLO_PROG, 0x33 },
+	{ WSA884X_UVLO_PROG1, 0x60 },
+	{ WSA884X_BOP1_PROG, 0x22 },
+	{ WSA884X_BOP2_PROG, 0x44 },
+	{ WSA884X_ZX_CTRL1, 0xf8 },
+	{ WSA884X_STB_CTRL1, 0x6a },
+	{ WSA884X_ILIM_CTRL1, 0xe3 },
+	{ WSA884X_CURRENT_LIMIT, 0xd4 },
+	{ WSA884X_TOP_CTRL1, 0xd2 },
+	{ WSA884X_OCP_CTL, 0xf6 },
+	{ WSA884X_DAC_VCM_CTRL_REG2, 0x06 },
+	{ WSA884X_DAC_VCM_CTRL_REG3, 0x14 },
+	{ WSA884X_DAC_VCM_CTRL_REG4, 0x19 },
+	{ WSA884X_DAC_VCM_CTRL_REG5, 0x1b },
+	{ WSA884X_DAC_VCM_CTRL_REG6, 0x1c },
+	{ WSA884X_DAC_VCM_CTRL_REG7, 0x02 },
+	{ WSA884X_CKWD_CTL_1, 0x13 },
+	{ WSA884X_PWRSTAGE_CTRL2, 0xf1 },
+	{ WSA884X_CURRENT_LIMIT, 0x44 },
+};
+
+static const struct reg_sequence denali_wsa8845_start[] = {
+	{ WSA884X_ISENSE2, 0x07 },
+	{ WSA884X_VSENSE1, 0x67 },
+	{ WSA884X_INTR_MASK0, 0x90 },
+	{ WSA884X_INTR_MASK1, 0x00 },
+	{ WSA884X_CLSH_CTL_0, 0x67 },
+	{ WSA884X_PWRSTG_DBG, 0x08 },
+	{ WSA884X_PDRV_HS_CTL, 0x52 },
+	{ WSA884X_PA_FSM_EN, 0x01 },
+	{ WSA884X_PWRSTG_DBG, 0x0c },
+	{ WSA884X_PDRV_HS_CTL, 0x5a },
+};
+
+static const struct reg_sequence denali_wsa8845_stop[] = {
+	{ WSA884X_PA_FSM_EN, 0x00 },
+	{ WSA884X_INTR_MASK0, 0xff },
+	{ WSA884X_INTR_MASK1, 0x03 },
+	{ WSA884X_INTR_CLEAR0, 0xff },
+	{ WSA884X_INTR_CLEAR1, 0x03 },
+	{ WSA884X_CLSH_CTL_0, 0x00 },
+};
+
+static bool wsa884x_uses_denali_protected_profile(struct wsa884x_priv *wsa884x)
+{
+	return of_machine_is_compatible("microsoft,denali") &&
+	       wsa884x->protected_feedback &&
+	       wsa884x_uses_2s_4ohm_profile(wsa884x);
+}
+
+static void wsa884x_write_sequence(struct wsa884x_priv *wsa884x,
+				   const struct reg_sequence *sequence,
+				   size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++)
+		regmap_write(wsa884x->regmap, sequence[i].reg, sequence[i].def);
+}
+
 static void wsa884x_init(struct wsa884x_priv *wsa884x)
 {
 	unsigned int wo_ctl_0;
@@ -1675,6 +1789,13 @@ static void wsa884x_init(struct wsa884x_priv *wsa884x)
 		}
 	}
 
+	if (wsa884x_uses_denali_protected_profile(wsa884x)) {
+		wsa884x_write_sequence(wsa884x, denali_wsa8845_cold_init,
+				       ARRAY_SIZE(denali_wsa8845_cold_init));
+		wsa884x->hw_init = true;
+		return;
+	}
+
 	regmap_multi_reg_write(wsa884x->regmap, wsa884x_reg_init,
 			       ARRAY_SIZE(wsa884x_reg_init));
 	wsa884x_apply_2s_4ohm_profile(wsa884x);
@@ -1697,6 +1818,69 @@ static void wsa884x_init(struct wsa884x_priv *wsa884x)
 	wsa884x_set_gain_parameters(wsa884x);
 
 	wsa884x->hw_init = true;
+}
+
+static void wsa884x_reset_pa_fsm(struct wsa884x_priv *wsa884x)
+{
+	regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_CTL0,
+			   WSA884X_PA_FSM_RESET_MASK, 0);
+	regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_CTL0,
+			   WSA884X_PA_FSM_RESET_MASK,
+			   WSA884X_PA_FSM_RESET_MASK);
+	regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_CTL0,
+			   WSA884X_PA_FSM_RESET_MASK, 0);
+}
+
+/* Caller serializes this sequence with sp_lock. */
+static int wsa884x_recover_pa(struct wsa884x_priv *wsa884x, bool reenable)
+{
+	unsigned int sta0 = 0, sta1 = 0, err0 = 0, err1 = 0;
+	int ret = -EIO;
+	int retry;
+
+	regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_EN,
+			   WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK, 0);
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_STA0, &sta0);
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_STA1, &sta1);
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_ERR_COND0, &err0);
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_ERR_COND1, &err1);
+
+	dev_warn_ratelimited(wsa884x->dev,
+			     "PA fault: sta0=%#02x sta1=%#02x err0=%#02x err1=%#02x; resetting FSM\n",
+			     sta0, sta1, err0, err1);
+
+	wsa884x_reset_pa_fsm(wsa884x);
+	regmap_write(wsa884x->regmap, WSA884X_INTR_CLEAR1, BIT(1));
+	if (!reenable)
+		return 0;
+
+	for (retry = 0; retry < WSA884X_PA_RECOVERY_RETRIES; retry++) {
+		regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_EN,
+				   WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK,
+				   WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK);
+		usleep_range(1000, 1100);
+
+		ret = regmap_read(wsa884x->regmap, WSA884X_PA_FSM_STA1, &sta1);
+		if (!ret && !(sta1 & WSA884X_PA_ERROR_MASK)) {
+			regmap_write(wsa884x->regmap, WSA884X_INTR_CLEAR1, BIT(1));
+			dev_info(wsa884x->dev,
+				 "PA state machine recovered after %d attempt(s)\n",
+				 retry + 1);
+			return 0;
+		}
+
+		regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_EN,
+				   WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK, 0);
+		wsa884x_reset_pa_fsm(wsa884x);
+	}
+
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_ERR_COND0, &err0);
+	regmap_read(wsa884x->regmap, WSA884X_PA_FSM_ERR_COND1, &err1);
+	dev_err_ratelimited(wsa884x->dev,
+			    "PA recovery failed: sta1=%#02x err0=%#02x err1=%#02x; amplifier left disabled\n",
+			    sta1, err0, err1);
+
+	return ret ?: -EIO;
 }
 
 static int wsa884x_update_status(struct sdw_slave *slave,
@@ -2047,6 +2231,58 @@ static int wsa884x_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 
 	if (dai->id != 0)
 		return 0;
+
+	guard(mutex)(&wsa884x->sp_lock);
+
+	if (wsa884x_uses_denali_protected_profile(wsa884x)) {
+		if (mute) {
+			if (wsa884x->protection_pa_reported) {
+				wsa_macro_protection_pa_event(component, false);
+				wsa884x->protection_pa_reported = false;
+			}
+
+			wsa884x_write_sequence(wsa884x, denali_wsa8845_stop,
+					       ARRAY_SIZE(denali_wsa8845_stop));
+			return 0;
+		}
+
+		/* Recovery remains a contingency outside the clean start trace. */
+		ret = regmap_read(wsa884x->regmap, WSA884X_PA_FSM_STA1,
+				  &pa_status);
+		if (!ret && (pa_status & WSA884X_PA_ERROR_MASK))
+			wsa884x_recover_pa(wsa884x, false);
+
+		wsa884x_write_sequence(wsa884x, denali_wsa8845_start,
+				       ARRAY_SIZE(denali_wsa8845_start));
+		usleep_range(1000, 1100);
+
+		ret = regmap_read(wsa884x->regmap, WSA884X_PA_FSM_STA1,
+				  &pa_status);
+		if (ret) {
+			wsa884x_disable_pa(component);
+			dev_err(wsa884x->dev,
+				"cannot read protected PA status: %pe\n",
+				ERR_PTR(ret));
+			return ret;
+		}
+
+		if (pa_status & WSA884X_PA_ERROR_MASK) {
+			ret = wsa884x_recover_pa(wsa884x, true);
+			if (ret)
+				return ret;
+		}
+
+		if (!wsa884x->protection_pa_reported) {
+			if (!wsa_macro_protection_pa_event(component, true)) {
+				wsa884x_disable_pa(component);
+				return -ENODEV;
+			}
+
+			wsa884x->protection_pa_reported = true;
+		}
+
+		return 0;
+	}
 
 	if (mute) {
 		if (wsa884x->protection_pa_reported) {
