@@ -1116,10 +1116,23 @@ static int qcom_swrm_port_enable(struct sdw_bus *bus,
 
 	ctrl->reg_read(ctrl, reg, &val);
 
-	if (enable_ch->enable)
+	if (enable_ch->enable) {
+		/*
+		 * The Denali amplifiers require the Windows-observed active
+		 * Offset2 value on their VI and CPS feedback ports.  Keep the
+		 * inactive transport description intact and alter only the value
+		 * written while enabling these device-scoped ports.
+		 */
+		if (of_machine_is_compatible("microsoft,denali") &&
+		    bus->controller_id == MASTER_ID_WSA &&
+		    (enable_ch->port_num == 10 || enable_ch->port_num == 11 ||
+		     enable_ch->port_num == 13))
+			val &= ~(0xff << SWRM_DP_PORT_CTRL_OFFSET2_SHFT);
+
 		val |= (enable_ch->ch_mask << SWRM_DP_PORT_CTRL_EN_CHAN_SHFT);
-	else
+	} else {
 		val &= ~(0xff << SWRM_DP_PORT_CTRL_EN_CHAN_SHFT);
+	}
 
 	return ctrl->reg_write(ctrl, reg, val);
 }
