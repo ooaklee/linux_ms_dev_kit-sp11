@@ -191,6 +191,16 @@ static int x1e80100_set_protection_ready(struct snd_soc_pcm_runtime *rtd,
 
 	ret = q6apm_set_protection_backend_ready(cpu_dai->dev, cpu_dai->id,
 						 backend, ready);
+	/*
+	 * DPCM tears the feedback BEs down before the final FE graph stop.
+	 * Defer only the ready-to-not-ready transition while that graph still
+	 * owns a start reference; the confirmed final stop clears both flags.
+	 */
+	if (ret == -EBUSY && !ready) {
+		dev_dbg(rtd->dev,
+			"deferring protected backend %d readiness clear\n", backend);
+		return 0;
+	}
 	if (ret && ret != -ENODEV)
 		dev_warn(rtd->dev,
 			 "failed to update protected backend readiness: %d\n", ret);
