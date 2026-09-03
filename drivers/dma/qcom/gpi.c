@@ -29,6 +29,7 @@
 #define TRE_QSPI_CONFIG0_DW2	0x00010001
 #define TRE_QSPI_GO_TX_DW0	0x20000001
 #define TRE_QSPI_GO_BIDI_DW0	0x20000007
+#define QUP_NOTIF_STATUS_EOT	BIT(27)
 
 /* TRE flags */
 #define TRE_FLAGS_CHAIN		BIT(0)
@@ -532,6 +533,8 @@ struct gpii {
 	struct dmaengine_result qspi_deferred_result;
 	struct timer_list qspi_deferred_timer;
 	bool qspi_deferred_grace_elapsed;
+	struct virt_dma_desc *qspi_early_eot_vd;
+	struct dmaengine_result qspi_early_eot_result;
 };
 
 #define MAX_TRE 3
@@ -543,6 +546,7 @@ struct gpi_desc {
 	struct gchan *gchan;
 	struct gpi_tre tre[MAX_TRE];
 	u32 num_tre;
+	bool qspi_tx_only;
 };
 
 static const u32 GPII_CHAN_DIR[MAX_CHANNELS_PER_GPII] = {
@@ -636,6 +640,8 @@ static void gpi_qspi_complete_deferred(struct gpii *gpii,
 	gpii->qspi_deferred_vd = NULL;
 	gpii->qspi_deferred_gchan = NULL;
 	WRITE_ONCE(gpii->qspi_deferred_grace_elapsed, false);
+	if (gpii->qspi_early_eot_vd == vd)
+		gpii->qspi_early_eot_vd = NULL;
 
 	if (notif)
 		dev_dbg(gpii->gpi_dev->dev,
@@ -653,6 +659,60 @@ static void gpi_qspi_complete_deferred(struct gpii *gpii,
 	list_del(&vd->node);
 	spin_unlock_irqrestore(&gchan->vc.lock, flags);
 	kfree(gpi_desc);
+}
+
+static void gpi_qspi_complete_early_eot(struct gpii *gpii,
+					struct qup_notif_event *notif)
+{
+	struct gchan *gchan = &gpii->gchan[GPI_TX_CHAN];
+	struct virt_dma_desc *vd = gpii->qspi_early_eot_vd;
+	struct dmaengine_result result = gpii->qspi_early_eot_result;
+	struct gpi_desc *gpi_desc;
+	unsigned long flags;
+
+	if (!vd || !(notif->status & QUP_NOTIF_STATUS_EOT))
+		return;
+
+	spin_lock_irqsave(&gchan->vc.lock, flags);
+	if (vchan_next_desc(&gchan->vc) != vd) {
+		spin_unlock_irqrestore(&gchan->vc.lock, flags);
+		dev_warn(gpii->gpi_dev->dev,
+			 "SP11 QSPI discarded unmatched early TX EOT state\n");
+		gpii->qspi_early_eot_vd = NULL;
+		return;
+	}
+	spin_unlock_irqrestore(&gchan->vc.lock, flags);
+
+	gpi_desc = to_gpi_desc(vd);
+	/* The terminal QUP notification retires the complete descriptor. */
+	gchan->ch_ring.rp = gpi_desc->db;
+	/* Publish ring retirement before the client submits another transfer. */
+	smp_wmb();
+	gpii->qspi_early_eot_vd = NULL;
+
+	dev_dbg(gpii->gpi_dev->dev,
+		"SP11 QSPI completing early-pointer TX after terminal QUP notification status:%#x count:%u residue:%u\n",
+		notif->status, notif->count, result.residue);
+
+	dma_cookie_complete(&vd->tx);
+	dmaengine_desc_get_callback_invoke(&vd->tx, &result);
+
+	spin_lock_irqsave(&gchan->vc.lock, flags);
+	list_del(&vd->node);
+	spin_unlock_irqrestore(&gchan->vc.lock, flags);
+	kfree(gpi_desc);
+}
+
+static void gpi_qspi_process_notif(struct gpii *gpii,
+				   struct qup_notif_event *notif)
+{
+	if (!(notif->status & QUP_NOTIF_STATUS_EOT))
+		return;
+
+	if (gpii->qspi_deferred_vd)
+		gpi_qspi_complete_deferred(gpii, notif);
+	else
+		gpi_qspi_complete_early_eot(gpii, notif);
 }
 
 static inline u32 gpi_read_reg(struct gpii *gpii, void __iomem *addr)
@@ -1186,13 +1246,39 @@ static void gpi_process_xfer_compl_event(struct gchan *gchan,
 	if (gchan_is_denali_qspi(gchan) &&
 	    compl_event->code == MSM_GPI_TCE_EOT) {
 		void *last_tre = gpi_desc->db;
+		void *first_tre;
+		phys_addr_t first_tre_phys;
 		phys_addr_t last_tre_phys;
+		size_t db_offset;
 
 		if (last_tre == ch_ring->base)
 			last_tre = ch_ring->base + ch_ring->len;
 		last_tre -= ch_ring->el_size;
 		last_tre_phys = to_physical(ch_ring, last_tre);
 		if (compl_event->ptr != last_tre_phys) {
+			db_offset = gpi_desc->db - ch_ring->base;
+			first_tre = ch_ring->base +
+				((db_offset + ch_ring->len -
+				  gpi_desc->num_tre * ch_ring->el_size) %
+				 ch_ring->len);
+			first_tre_phys = to_physical(ch_ring, first_tre);
+
+			/*
+			 * After a TX-only command, Denali can report the following
+			 * paired transfer's TX EOT at its first CONFIG TRE and omit a
+			 * second terminal-pointer EOT.  Retain that evidence, but bind
+			 * it to this exact descriptor so a later notification cannot
+			 * retire an unrelated successor.
+			 */
+			if (gchan->chid == GPI_TX_CHAN &&
+			    compl_event->ptr == first_tre_phys &&
+			    compl_event->length == gpi_desc->len) {
+				gpii->qspi_early_eot_vd = vd;
+				gpii->qspi_early_eot_result.result =
+					DMA_TRANS_NOERROR;
+				gpii->qspi_early_eot_result.residue = 0;
+			}
+
 			dev_dbg_ratelimited(gpii->gpi_dev->dev,
 					    "SP11 QSPI ignoring non-terminal EOT side:%s ptr:%pa expected:%pa len:%u pending_len:%zu\n",
 					    gpi_qspi_side_name(gchan->chid),
@@ -1263,8 +1349,15 @@ static void gpi_process_xfer_compl_event(struct gchan *gchan,
 		gpii->qspi_deferred_vd = vd;
 		gpii->qspi_deferred_gchan = gchan;
 		gpii->qspi_deferred_result = result;
+		gpii->qspi_early_eot_vd = NULL;
 		WRITE_ONCE(gpii->qspi_deferred_grace_elapsed, false);
-		mod_timer(&gpii->qspi_deferred_timer, jiffies + 1);
+		/*
+		 * TX-only commands do not reliably emit a QUP notification.  Keep
+		 * their bounded compatibility grace period, but never time-retire a
+		 * paired read: its terminal QUP notification owns completion.
+		 */
+		if (gpi_desc->qspi_tx_only)
+			mod_timer(&gpii->qspi_deferred_timer, jiffies + 1);
 		dev_dbg(gpii->gpi_dev->dev,
 			"SP11 QSPI deferring TX EOT until QUP notification residue:%u\n",
 			 result.residue);
@@ -1325,7 +1418,7 @@ static void gpi_process_events(struct gpii *gpii)
 					struct qup_notif_event *notif;
 
 					notif = &gpi_event->qup_notif_event;
-					gpi_qspi_complete_deferred(gpii, notif);
+					gpi_qspi_process_notif(gpii, notif);
 				} else {
 					dev_dbg(gpii->gpi_dev->dev, "QUP_NOTIF_EV_TYPE\n");
 				}
@@ -1701,16 +1794,18 @@ static void gpi_queue_xfer(struct gpii *gpii, struct gchan *gchan,
 
 static void gpi_qspi_clear_deferred(struct gpii *gpii)
 {
-	if (!gpii->qspi_deferred_vd)
+	if (!gpii->qspi_deferred_vd && !gpii->qspi_early_eot_vd)
 		return;
 	timer_delete_sync(&gpii->qspi_deferred_timer);
 
-	dev_warn(gpii->gpi_dev->dev,
-		 "SP11 QSPI clearing stale deferred TX completion on terminate/reset\n");
+	if (gpii->qspi_deferred_vd)
+		dev_warn(gpii->gpi_dev->dev,
+			 "SP11 QSPI clearing stale deferred TX completion on terminate/reset\n");
 
 	gpii->qspi_deferred_vd = NULL;
 	gpii->qspi_deferred_gchan = NULL;
 	WRITE_ONCE(gpii->qspi_deferred_grace_elapsed, false);
+	gpii->qspi_early_eot_vd = NULL;
 }
 
 /* reset and restart transfer channel */
@@ -2163,6 +2258,9 @@ gpi_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	gpi_desc->gchan = gchan;
 	gpi_desc->len = sg_dma_len(sgl);
 	gpi_desc->num_tre  = i;
+	gpi_desc->qspi_tx_only = gchan->protocol == QCOM_GPI_QSPI &&
+				   direction == DMA_MEM_TO_DEV &&
+				   !((struct gpi_spi_config *)gchan->config)->rx_len;
 
 	return vchan_tx_prep(&gchan->vc, &gpi_desc->vd, flags);
 }
@@ -2297,6 +2395,8 @@ static void gpi_free_chan_resources(struct dma_chan *chan)
 	int ret, i;
 
 	mutex_lock(&gpii->ctrl_lock);
+	if (gchan_is_denali_qspi(gchan))
+		gpi_qspi_clear_deferred(gpii);
 
 	cur_state = gchan->pm_state;
 
