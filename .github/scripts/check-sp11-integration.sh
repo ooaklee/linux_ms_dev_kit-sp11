@@ -86,22 +86,23 @@ for path in "${all_changed_paths[@]}"; do
 	esac
 done
 
+kernel_pathspecs=(
+	':(top,glob)**/*.c'
+	':(top,glob)**/*.h'
+	':(top,glob)**/*.S'
+	':(top,glob)**/*.rs'
+	':(top,glob)**/*.dts'
+	':(top,glob)**/*.dtsi'
+	':(top,glob)**/*.patch'
+	':(top,glob)arch/*/configs/**'
+	':(top,glob)**/Kconfig*'
+	':(top,glob)**/Makefile'
+	':(top,glob)Documentation/devicetree/bindings/**/*.yaml'
+)
+
 if [[ "${kernel_changed}" == true ]]; then
 	[[ -x scripts/checkpatch.pl ]] ||
 		die "scripts/checkpatch.pl is required for kernel-source changes"
-	kernel_pathspecs=(
-		':(top,glob)**/*.c'
-		':(top,glob)**/*.h'
-		':(top,glob)**/*.S'
-		':(top,glob)**/*.rs'
-		':(top,glob)**/*.dts'
-		':(top,glob)**/*.dtsi'
-		':(top,glob)**/*.patch'
-		':(top,glob)arch/*/configs/**'
-		':(top,glob)**/Kconfig*'
-		':(top,glob)**/Makefile'
-		':(top,glob)Documentation/devicetree/bindings/**/*.yaml'
-	)
 	# File changes are reviewed, but their generic MAINTAINERS reminder is
 	# not a style defect. Some extracted commits preserve a contributor as
 	# nominal author while carrying only the submitter's authorized sign-off;
@@ -117,6 +118,63 @@ if [[ "${kernel_changed}" == true ]]; then
 	fi
 else
 	printf 'No kernel-source changes require checkpatch.pl.\n'
+fi
+
+review_base="${SP11_REVIEW_BASE:-}"
+review_head="${SP11_REVIEW_HEAD:-}"
+
+if [[ -z "${review_base}" && -z "${review_head}" &&
+	"${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+	merge_and_parents=()
+	read -r -a merge_and_parents <<<"$(git rev-list --parents -n 1 HEAD)"
+	((${#merge_and_parents[@]} == 3)) ||
+		die "pull-request checkout is not a two-parent synthetic merge"
+	review_base="${merge_and_parents[1]}"
+	review_head="${merge_and_parents[2]}"
+fi
+
+if [[ -n "${review_base}" || -n "${review_head}" ]]; then
+	[[ -n "${review_base}" && -n "${review_head}" ]] ||
+		die "SP11_REVIEW_BASE and SP11_REVIEW_HEAD must be provided together"
+
+	git cat-file -e "${review_base}^{commit}" 2>/dev/null ||
+		die "pull-request base commit is unavailable: ${review_base}"
+	git cat-file -e "${review_head}^{commit}" 2>/dev/null ||
+		die "pull-request head commit is unavailable: ${review_head}"
+	# Topic PRs are deliberately re-lifted onto the current beta tip. This
+	# keeps each review delta exact and prevents a green check from masking a
+	# stale topic that has never been tested against newly integrated work.
+	git merge-base --is-ancestor "${review_base}" "${review_head}" ||
+		die "pull-request head must be re-lifted onto the current beta tip"
+
+	review_count=0
+	while IFS= read -r commit; do
+		commit_and_parents=()
+		read -r -a commit_and_parents <<<"$(git rev-list --parents -n 1 "${commit}")"
+		((${#commit_and_parents[@]} == 2)) ||
+			die "topic range must be linear; merge commit found: ${commit}"
+
+		parent="${commit_and_parents[1]}"
+		review_count=$((review_count + 1))
+		if git diff --quiet "${parent}" "${commit}" -- "${kernel_pathspecs[@]}"; then
+			continue
+		fi
+
+		commit_checkpatch_output="$(
+			git diff --no-ext-diff "${parent}" "${commit}" -- \
+				"${kernel_pathspecs[@]}" |
+				scripts/checkpatch.pl --no-tree --strict --show-types \
+					--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF - || true
+		)"
+		printf '%s\n' "${commit_checkpatch_output}"
+		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
+			die "per-commit source checkpatch findings in ${commit}"
+		fi
+	done < <(git rev-list --reverse "${review_base}..${review_head}")
+
+	((review_count > 0)) || die "pull request contains no topic commits"
+	printf 'Per-commit source checks passed for %d topic commits.\n' \
+		"${review_count}"
 fi
 
 printf 'Surface Pro 11 integration checks passed for %s.\n' "$(git rev-parse HEAD)"
