@@ -1889,6 +1889,31 @@ static int wsa884x_update_status(struct sdw_slave *slave,
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(&slave->dev);
 	int ret;
 
+	/*
+	 * Denali keeps the amplifier supplies and reset asserted while its
+	 * simple-clock-stop-capable SoundWire link transiently detaches.  Retain
+	 * the one-time cold state and sync only writes queued while cache-only.
+	 */
+	if (wsa884x_uses_denali_protected_profile(wsa884x) &&
+	    wsa884x->hw_init) {
+		if (status == SDW_SLAVE_UNATTACHED) {
+			regcache_cache_only(wsa884x->regmap, true);
+			return 0;
+		}
+
+		if (status == SDW_SLAVE_ATTACHED) {
+			regcache_cache_only(wsa884x->regmap, false);
+			ret = regcache_sync(wsa884x->regmap);
+			if (ret < 0) {
+				dev_err(&slave->dev,
+					"Cannot sync retained regmap cache\n");
+				return ret;
+			}
+
+			return 0;
+		}
+	}
+
 	if (status == SDW_SLAVE_UNATTACHED) {
 		wsa884x->hw_init = false;
 		regcache_cache_only(wsa884x->regmap, true);
@@ -2726,10 +2751,11 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 
 static int wsa884x_runtime_suspend(struct device *dev)
 {
-	struct regmap *regmap = dev_get_regmap(dev, NULL);
+	struct wsa884x_priv *wsa884x = dev_get_drvdata(dev);
 
-	regcache_cache_only(regmap, true);
-	regcache_mark_dirty(regmap);
+	regcache_cache_only(wsa884x->regmap, true);
+	if (!wsa884x_uses_denali_protected_profile(wsa884x))
+		regcache_mark_dirty(wsa884x->regmap);
 
 	return 0;
 }
