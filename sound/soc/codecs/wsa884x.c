@@ -2040,6 +2040,9 @@ static void wsa884x_spkr_post_pmu(struct snd_soc_component *component,
 {
 	unsigned int curr_limit, curr_ovrd_en;
 
+	if (wsa884x_uses_denali_protected_profile(wsa884x))
+		return;
+
 	wsa884x_set_gain_parameters(wsa884x);
 	if (wsa884x->dev_mode == WSA884X_RECEIVER) {
 		snd_soc_component_write_field(component, WSA884X_DRE_CTL_0,
@@ -2089,15 +2092,17 @@ static int wsa884x_spkr_event(struct snd_soc_dapm_widget *w,
 
 		wsa884x_spkr_post_pmu(component, wsa884x);
 
-		snd_soc_component_write_field(component, WSA884X_PDM_WD_CTL,
-					      WSA884X_PDM_WD_CTL_PDM_WD_EN_MASK,
-					      0x1);
+		if (!wsa884x_uses_denali_protected_profile(wsa884x))
+			snd_soc_component_write_field(component, WSA884X_PDM_WD_CTL,
+						      WSA884X_PDM_WD_CTL_PDM_WD_EN_MASK,
+						      0x1);
 
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		snd_soc_component_write_field(component, WSA884X_PDM_WD_CTL,
-					      WSA884X_PDM_WD_CTL_PDM_WD_EN_MASK,
-					      0x0);
+		if (!wsa884x_uses_denali_protected_profile(wsa884x))
+			snd_soc_component_write_field(component, WSA884X_PDM_WD_CTL,
+						      WSA884X_PDM_WD_CTL_PDM_WD_EN_MASK,
+						      0x0);
 
 		mutex_lock(&wsa884x->sp_lock);
 		wsa884x->pa_on = false;
