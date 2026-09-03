@@ -1622,22 +1622,7 @@ static int __maybe_unused spi_geni_runtime_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	ret = dev_pm_opp_set_rate(mas->dev, mas->cur_sclk_hz);
-	if (ret)
-		return ret;
-
-	/*
-	 * Denali's protocol-9 engine loses the QSPI-specific interrupt and DMA
-	 * register programming while its resources are gated.  Cold probe applies
-	 * this sequence before starting the GPI channels; replay it after a runtime
-	 * resume once that controller has reached GPI DMA mode.  The next paired
-	 * transfer still owns the live completion masks.
-	 */
-	if (spi_geni_is_sp11_qspi(mas) &&
-	    mas->cur_xfer_mode == GENI_GPI_DMA)
-		spi_geni_sp11_qspi_prepare_hw(mas);
-
-	return 0;
+	return dev_pm_opp_set_rate(mas->dev, mas->cur_sclk_hz);
 }
 
 static int __maybe_unused spi_geni_suspend(struct device *dev)
