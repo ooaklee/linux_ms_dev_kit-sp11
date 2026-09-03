@@ -2270,6 +2270,9 @@ int q6apm_graph_stop(struct q6apm_graph *graph)
 		ar_graph->execution_uncertain = false;
 		ar_graph->protection_configured = false;
 		ar_graph->protection_bypass_confirmed = false;
+		/* Complete backend clears deferred by DPCM teardown ordering. */
+		ar_graph->protection_vi_ready = false;
+		ar_graph->protection_cps_ready = false;
 		ar_graph->prepared = false;
 		ar_graph->prepare_uncertain = false;
 	}
