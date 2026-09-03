@@ -1476,6 +1476,8 @@ static void wsa_macro_mclk_enable(struct wsa_macro *wsa, bool mclk_enable)
 static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *component, bool enable,
 						u32 tx_reg0, u32 tx_reg1, u32 val)
 {
+	struct wsa_macro *wsa = snd_soc_component_get_drvdata(component);
+
 	if (enable) {
 		/* Enable V&I sensing */
 		snd_soc_component_update_bits(component, tx_reg0,
@@ -1502,6 +1504,10 @@ static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *componen
 		snd_soc_component_update_bits(component, tx_reg1,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
 					      CDC_WSA_TX_SPKR_PROT_NO_RESET);
+
+		/* Materialize the qualified feedback lane order at the producer. */
+		if (wsa->protected_feedback)
+			snd_soc_component_write(component, CDC_WSA_TOP_TOP_CFG1, 0x03);
 	} else {
 		snd_soc_component_update_bits(component, tx_reg0,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
