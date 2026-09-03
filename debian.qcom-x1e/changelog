@@ -1,8 +1,9 @@
-linux-qcom-x1e (7.2.2-jg-0sp11beta2) resolute; urgency=medium
+linux-qcom-x1e (7.2.2-jg-0sp11v6) resolute; urgency=medium
 
-  * Supersede sp11beta1 with the restored camera parity series.
+  * Assemble the guarded SP11 topic stack for v6 qualification.
+  * Restore hardware-qualified touch and protected-speaker behaviour.
 
- -- Leon Silcott <leon@boasi.io>  Wed, 02 Sep 2026 21:25:00 +0100
+ -- Leon Silcott <leon@boasi.io>  Thu, 03 Sep 2026 02:54:48 +0100
 
 linux-qcom-x1e (7.2.2-jg-0sp11beta1) resolute; urgency=medium
 
