@@ -20,9 +20,6 @@ description: |-
  lane. The sensor provides 4 GPIOS that can be used for external LED signal
  (synchronized with sensor integration periods).
 
-allOf:
-  - $ref: /schemas/media/video-interface-devices.yaml#
-
 properties:
   compatible:
     enum:
@@ -99,6 +96,9 @@ required:
   - vana-supply
   - reset-gpios
   - port
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
 
 unevaluatedProperties: false
 
