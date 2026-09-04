@@ -1,3 +1,10 @@
+linux-qcom-x1e (7.2.0-jg-0sp11v23) resolute; urgency=medium
+
+  * Build the Lexr 0.3.0 end-to-end demonstration kernel from the known-good
+    Surface Pro 11 integration baseline.
+
+ -- Leon Silcott <leon@boasi.io>  Fri, 04 Sep 2026 11:30:11 +0100
+
 linux-qcom-x1e (7.2.0-jg-0sp11v19) resolute; urgency=medium
 
   * Add the Phase 84 IPTS IRQ-cadence path. When paired with the Phase 83
