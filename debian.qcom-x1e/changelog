@@ -1,3 +1,9 @@
+linux-qcom-x1e (7.2.2-jg-1sp11v10) resolute; urgency=medium
+
+  * Test ordered GPI event-ring pointer reads for Denali QSPI touch.
+
+ -- Leon Silcott <leon@boasi.io>  Fri, 04 Sep 2026 02:40:49 +0100
+
 linux-qcom-x1e (7.2.2-jg-1) resolute; urgency=medium
 
   * arm64: dts: qcom: x1-lenovo-ideacentre-mini-01q8x10: discriminate compatible strings
