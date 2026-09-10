@@ -559,6 +559,11 @@ struct vd55g1_vblank_limits {
 	u16 max;
 };
 
+struct vd55g1_frame_timings {
+	u16 frame_length;
+	u16 expo_max;
+};
+
 struct vd55g1 {
 	struct device *dev;
 	const struct vd55g1_version *version;
@@ -720,6 +725,15 @@ static void vd55g1_get_vblank_limits(struct vd55g1 *sensor,
 	limits->min = VD55G1_VBLANK_MIN;
 	limits->def = VD55G1_FRAME_LENGTH_DEF - crop->height;
 	limits->max = VD55G1_VBLANK_MAX - crop->height;
+}
+
+static void vd55g1_get_frame_timings(struct vd55g1 *sensor,
+				     struct v4l2_rect *crop,
+				     struct vd55g1_frame_timings *timings)
+{
+	timings->frame_length = crop->height + sensor->vblank_ctrl->val;
+
+	timings->expo_max = timings->frame_length - VD55G1_EXPO_MAX_TERM;
 }
 
 #define vd55g1_read(sensor, reg, val, err) \
@@ -1303,9 +1317,8 @@ static int vd55g1_new_format_change_controls(struct vd55g1 *sensor,
 					     struct v4l2_rect *crop)
 {
 	struct vd55g1_vblank_limits vblank;
+	struct vd55g1_frame_timings timings;
 	unsigned int hblank;
-	unsigned int frame_length = 0;
-	unsigned int expo_max;
 	int ret;
 
 	/* Reset vblank and frame length to default */
@@ -1316,10 +1329,9 @@ static int vd55g1_new_format_change_controls(struct vd55g1 *sensor,
 		return ret;
 
 	/* Max exposure changes with vblank */
-	frame_length = crop->height + sensor->vblank_ctrl->val;
-	expo_max = frame_length - VD55G1_EXPO_MAX_TERM;
-	ret = __v4l2_ctrl_modify_range(sensor->expo_ctrl, 0, expo_max, 1,
-				       VD55G1_EXPO_DEF);
+	vd55g1_get_frame_timings(sensor, crop, &timings);
+	ret = __v4l2_ctrl_modify_range(sensor->expo_ctrl, 0, timings.expo_max,
+				       1, VD55G1_EXPO_DEF);
 	if (ret)
 		return ret;
 
@@ -1476,8 +1488,6 @@ static int vd55g1_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 static int vd55g1_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct vd55g1 *sensor = ctrl_to_vd55g1(ctrl);
-	unsigned int frame_length = 0;
-	unsigned int expo_max;
 	struct v4l2_subdev_state *state =
 		v4l2_subdev_get_locked_active_state(&sensor->sd);
 	struct v4l2_rect *crop =
@@ -1485,6 +1495,7 @@ static int vd55g1_s_ctrl(struct v4l2_ctrl *ctrl)
 	struct v4l2_mbus_framefmt *format =
 		v4l2_subdev_state_get_format(state, 0);
 	unsigned int hblank = vd55g1_get_hblank_min(sensor, format, crop);
+	struct vd55g1_frame_timings timings;
 	bool is_auto = false;
 	int ret = 0;
 
@@ -1494,10 +1505,10 @@ static int vd55g1_s_ctrl(struct v4l2_ctrl *ctrl)
 	/* Update controls state, range, etc. whatever the state of the HW */
 	switch (ctrl->id) {
 	case V4L2_CID_VBLANK:
-		frame_length = crop->height + ctrl->val;
-		expo_max = frame_length - VD55G1_EXPO_MAX_TERM;
-		ret = __v4l2_ctrl_modify_range(sensor->expo_ctrl, 0, expo_max,
-					       1, VD55G1_EXPO_DEF);
+		vd55g1_get_frame_timings(sensor, crop, &timings);
+		ret = __v4l2_ctrl_modify_range(sensor->expo_ctrl, 0,
+					       timings.expo_max, 1,
+					       VD55G1_EXPO_DEF);
 		break;
 	case V4L2_CID_EXPOSURE_AUTO:
 		is_auto = (ctrl->val == V4L2_EXPOSURE_AUTO);
@@ -1549,7 +1560,7 @@ static int vd55g1_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = vd55g1_update_exposure_target(sensor, ctrl->val);
 		break;
 	case V4L2_CID_VBLANK:
-		ret = vd55g1_update_frame_length(sensor, frame_length);
+		ret = vd55g1_update_frame_length(sensor, timings.frame_length);
 		break;
 	case V4L2_CID_FLASH_LED_MODE:
 		ret = vd55g1_update_gpios(sensor, sensor->ext_leds_mask);
