@@ -1,11 +1,12 @@
-linux-qcom-x1e (7.2.5-jg-0sp11v24) resolute; urgency=medium
+linux-qcom-x1e (7.2.5-jg-0sp11v1) resolute; urgency=medium
 
   * Qualification-only SP11 input build on the refreshed 7.2.5-jg-0 base.
+  * Restart the SP11 release counter at v1 for the 7.2.5 patch series.
   * Retain the isolated GPI event-ring pointer ordering candidate.
   * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
   * Hardware qualification remains pending; retain a known-good fallback.
 
- -- Leon Silcott <leon@boasi.io>  Mon, 28 Sep 2026 08:04:14 +0100
+ -- Leon Silcott <leon@boasi.io>  Mon, 28 Sep 2026 20:30:00 +0100
 
 linux-qcom-x1e (7.2.5-jg-0) resolute; urgency=medium
 
