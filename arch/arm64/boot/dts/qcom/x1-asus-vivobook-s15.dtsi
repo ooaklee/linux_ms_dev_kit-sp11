@@ -915,8 +915,6 @@
 		orientation-switch;
 		retimer-switch;
 
-		parade,disable-usb4;
-
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1036,8 +1034,6 @@
 
 		retimer-switch;
 		orientation-switch;
-
-		parade,disable-usb4;
 
 		ports {
 			#address-cells = <1>;
@@ -1357,7 +1353,6 @@
 &tlmm {
 	gpio-reserved-ranges = <34 2>, /* Unused */
 			       <44 4>, /* SPI (TPM) */
-			       <65 1>, /* EC reset */
 			       <238 1>; /* UFS Reset */
 
 	edp_reg_en: edp-reg-en-state {
