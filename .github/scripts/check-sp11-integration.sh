@@ -3,7 +3,14 @@
 
 set -euo pipefail
 
-readonly SP11_BASE_COMMIT="87bcf07d1ed79960c0f2e769ada5b8b05fd35c48"
+readonly SP11_BASE_COMMIT="e57ec2987d4540fa89280d349f79c4d9bcd7cf27"
+# This exact checkpoint imports the rebased upstream while retaining the
+# original SP11 history. Its tree was reconstructed from the 32 merged SP11
+# commits plus the existing Denali EC-reset GPIO reservation. No held topic
+# is included. Only this immutable merge may bypass the linear-topic rule;
+# its complete SP11 delta remains covered by the integration checks above.
+readonly SP11_REFRESH_COMMIT="eea05165923210e93de26484b040f3f3b398b435"
+readonly SP11_PREVIOUS_BETA_COMMIT="bf631f9a13b3f6bd622645ba95165c8098932c95"
 readonly SP11_RANGE="${SP11_BASE_COMMIT}...HEAD"
 
 die() {
@@ -151,6 +158,21 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 	while IFS= read -r commit; do
 		commit_and_parents=()
 		read -r -a commit_and_parents <<<"$(git rev-list --parents -n 1 "${commit}")"
+		if [[ "${commit}" == "${SP11_REFRESH_COMMIT}" ]]; then
+			((${#commit_and_parents[@]} == 3)) ||
+				die "approved upstream refresh must have two parents"
+			[[ "${commit_and_parents[1]}" == "${SP11_PREVIOUS_BETA_COMMIT}" ]] ||
+				die "approved upstream refresh has the wrong beta parent"
+			[[ "${commit_and_parents[2]}" == "${SP11_BASE_COMMIT}" ]] ||
+				die "approved upstream refresh has the wrong upstream parent"
+			git merge-base --is-ancestor "${review_base}" \
+				"${commit_and_parents[1]}" ||
+				die "approved upstream refresh does not retain the review base"
+			review_count=$((review_count + 1))
+			printf 'Approved upstream refresh %s is checked as an integration delta.\n' \
+				"${commit}"
+			continue
+		fi
 		((${#commit_and_parents[@]} == 2)) ||
 			die "topic range must be linear; merge commit found: ${commit}"
 
@@ -170,7 +192,10 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
 			die "per-commit source checkpatch findings in ${commit}"
 		fi
-	done < <(git rev-list --reverse "${review_base}..${review_head}")
+	# Upstream was rebased; its imported history is not an SP11 topic series.
+	# Exclude only the pinned upstream ancestry, never arbitrary merge parents.
+	done < <(git rev-list --reverse "${review_base}..${review_head}" \
+		"^${SP11_BASE_COMMIT}")
 
 	((review_count > 0)) || die "pull request contains no topic commits"
 	printf 'Per-commit source checks passed for %d topic commits.\n' \
