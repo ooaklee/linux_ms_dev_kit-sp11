@@ -438,6 +438,8 @@ struct wsa_macro {
 	struct mutex protection_lock;
 	unsigned int protection_pa_users;
 	bool protection_clocks_enabled;
+	/* Runtime PM serializes this; teardown reads it after disabling PM. */
+	bool runtime_clks_enabled;
 	struct regmap *regmap;
 	struct clk *mclk;
 	struct clk *npl;
@@ -3001,6 +3003,109 @@ static void wsa_macro_set_denali_defaults(struct wsa_macro *wsa,
 	}
 }
 
+static void wsa_macro_disable_runtime_clks(struct wsa_macro *wsa)
+{
+	if (!wsa->runtime_clks_enabled)
+		return;
+
+	clk_disable_unprepare(wsa->fsgen);
+	clk_disable_unprepare(wsa->npl);
+	clk_disable_unprepare(wsa->mclk);
+	wsa->runtime_clks_enabled = false;
+}
+
+static int wsa_macro_enable_runtime_clks(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = clk_prepare_enable(wsa->mclk);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->npl);
+	if (ret)
+		goto err_mclk;
+
+	ret = clk_prepare_enable(wsa->fsgen);
+	if (ret)
+		goto err_npl;
+
+	wsa->runtime_clks_enabled = true;
+	return 0;
+
+err_npl:
+	clk_disable_unprepare(wsa->npl);
+err_mclk:
+	clk_disable_unprepare(wsa->mclk);
+	return ret;
+}
+
+static void wsa_macro_release_denali_clks(void *data)
+{
+	struct wsa_macro *wsa = data;
+
+	/* PM is disabled, and managed component teardown has already run. */
+	wsa_macro_disable_runtime_clks(wsa);
+	clk_disable_unprepare(wsa->dcodec);
+	clk_disable_unprepare(wsa->macro);
+}
+
+static int wsa_macro_init_clks(struct wsa_macro *wsa)
+{
+	struct device *dev = wsa->dev;
+	int ret;
+
+	if (!wsa->protected_feedback) {
+		ret = devm_pm_clk_create(dev);
+		if (ret)
+			return ret;
+
+		ret = of_pm_clk_add_clks(dev);
+		return ret < 0 ? ret : 0;
+	}
+
+	/*
+	 * Keep Denali's macro/dcodec votes across runtime suspend, as in its
+	 * qualified clock sequence. Only mclk/npl/fsgen follow runtime PM.
+	 */
+	ret = clk_prepare_enable(wsa->macro);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->dcodec);
+	if (ret) {
+		clk_disable_unprepare(wsa->macro);
+		return ret;
+	}
+
+	/* Register before the component so its teardown retains the clocks. */
+	ret = devm_add_action_or_reset(dev, wsa_macro_release_denali_clks, wsa);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(wsa->regmap, true);
+	return 0;
+}
+
+static int wsa_macro_denali_runtime_resume(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = wsa_macro_enable_runtime_clks(wsa);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(wsa->regmap, false);
+	ret = regcache_sync(wsa->regmap);
+	if (ret) {
+		regcache_cache_only(wsa->regmap, true);
+		regcache_mark_dirty(wsa->regmap);
+		wsa_macro_disable_runtime_clks(wsa);
+	}
+
+	return ret;
+}
+
 static int wsa_macro_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -3143,12 +3248,8 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	if (wsa->npl)
 		clk_set_rate(wsa->npl, WSA_MACRO_MCLK_FREQ);
 
-	ret = devm_pm_clk_create(dev);
+	ret = wsa_macro_init_clks(wsa);
 	if (ret)
-		return ret;
-
-	ret = of_pm_clk_add_clks(dev);
-	if (ret < 0)
 		return ret;
 
 	pm_runtime_set_autosuspend_delay(dev, 3000);
@@ -3204,6 +3305,11 @@ static int wsa_macro_runtime_suspend(struct device *dev)
 	regcache_cache_only(wsa->regmap, true);
 	regcache_mark_dirty(wsa->regmap);
 
+	if (wsa->protected_feedback) {
+		wsa_macro_disable_runtime_clks(wsa);
+		return 0;
+	}
+
 	return pm_clk_suspend(dev);
 }
 
@@ -3211,6 +3317,9 @@ static int wsa_macro_runtime_resume(struct device *dev)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(dev);
 	int ret;
+
+	if (wsa->protected_feedback)
+		return wsa_macro_denali_runtime_resume(wsa);
 
 	regcache_cache_only(wsa->regmap, false);
 	ret = pm_clk_resume(dev);
