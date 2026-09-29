@@ -950,9 +950,64 @@ int audioreach_graph_protection_oob_size(const struct audioreach_graph_info *inf
 	return 0;
 }
 
+static size_t audioreach_frame_size(const u8 *frame)
+{
+	return ALIGN(sizeof(struct apm_module_param_data) +
+		     get_unaligned_le32(frame + 2 * sizeof(u32)), 8);
+}
+
+static int audioreach_validate_calibration_frames(const u8 *data, size_t size)
+{
+	size_t frame_size, padding, payload_size;
+
+	if (!size)
+		return -EINVAL;
+
+	while (size) {
+		if (size < sizeof(struct apm_module_param_data))
+			return -EINVAL;
+		payload_size = get_unaligned_le32(data + 2 * sizeof(u32));
+		if (payload_size > size - sizeof(struct apm_module_param_data))
+			return -EINVAL;
+		frame_size = sizeof(struct apm_module_param_data) + payload_size;
+		padding = -frame_size & 7;
+		if (padding > size - frame_size)
+			return -EINVAL;
+		frame_size += padding;
+		data += frame_size;
+		size -= frame_size;
+	}
+
+	return 0;
+}
+
+static int audioreach_replay_graph_calibration(struct audioreach_graph *graph,
+					       const u8 *data, size_t size)
+{
+	size_t offset = 0, frame_size;
+	int ret;
+
+	/* The entire block has been validated before sending any record. */
+	while (offset < size) {
+		frame_size = audioreach_frame_size(data + offset);
+		ret = q6apm_send_oob_config(graph, data + offset, frame_size);
+		if (ret && ret != -EOPNOTSUPP) {
+			dev_err(graph->apm->dev,
+				"graph calibration replay failed at offset %zu (%d)\n",
+				offset, ret);
+			return ret;
+		}
+		offset += frame_size;
+	}
+
+	return 0;
+}
+
 int audioreach_send_protected_graph_calibration(struct audioreach_graph *graph)
 {
+	struct audioreach_graph_info *info = graph->info;
 	const struct audioreach_module_priv_data *graph_cal;
+	size_t size;
 	int ret;
 
 	ret = audioreach_graph_protection_profile(graph->info);
@@ -961,22 +1016,37 @@ int audioreach_send_protected_graph_calibration(struct audioreach_graph *graph)
 
 	graph_cal = audioreach_graph_find_data(graph->info,
 					       SND_SOC_AR_TPLG_GRAPH_CAL_CFG_TYPE);
-	ret = q6apm_send_oob_config(graph, graph_cal->data,
-				    le32_to_cpu(graph_cal->size));
+	size = le32_to_cpu(graph_cal->size);
+	/* Validate framing only: calibration may contain opaque sentinel IIDs. */
+	ret = audioreach_validate_calibration_frames((const u8 *)graph_cal->data,
+						     size);
+	if (ret)
+		return ret;
+
+	mutex_lock(&info->calibration_lock);
+	/* A later graph must not silently accept a partially failed replay. */
+	if (info->calibration_replayed && info->calibration_replay_result) {
+		ret = info->calibration_replay_result;
+		goto unlock;
+	}
+	ret = q6apm_send_oob_config(graph, graph_cal->data, size);
 	if (ret == -EOPNOTSUPP) {
-		/* Qualcomm calibration aggregates may contain query-only records. */
-		dev_warn(graph->apm->dev,
-			 "graph calibration returned AR_EUNSUPPORTED; continuing\n");
-		ret = 0;
+		/* Preserve the qualified replay, including query-only records. */
+		if (!info->calibration_replayed) {
+			dev_warn(graph->apm->dev,
+				 "graph calibration returned AR_EUNSUPPORTED; replaying records\n");
+			info->calibration_replay_result =
+				audioreach_replay_graph_calibration(graph,
+								    (const u8 *)graph_cal->data,
+								    size);
+			info->calibration_replayed = true;
+		}
+		ret = info->calibration_replay_result;
 	}
 
+unlock:
+	mutex_unlock(&info->calibration_lock);
 	return ret;
-}
-
-static size_t audioreach_frame_size(const u8 *frame)
-{
-	return ALIGN(sizeof(struct apm_module_param_data) +
-		     get_unaligned_le32(frame + 2 * sizeof(u32)), 8);
 }
 
 static int audioreach_send_inband_frame(struct q6apm_graph *graph,

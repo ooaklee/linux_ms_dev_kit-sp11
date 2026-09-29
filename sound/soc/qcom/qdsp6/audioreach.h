@@ -3,6 +3,7 @@
 #ifndef __AUDIOREACH_H__
 #define __AUDIOREACH_H__
 #include <linux/types.h>
+#include <linux/mutex.h>
 #include <linux/soc/qcom/apr.h>
 #include <uapi/sound/snd_ar_tokens.h>
 #include <sound/soc.h>
@@ -826,6 +827,10 @@ struct audioreach_graph_info {
 	uint32_t dst_mod_inst_id;
 	uint32_t dst_mod_ip_port_id;
 	bool internal_vmixer_connection;
+	/* Replay state follows the topology, not transient runtime graphs. */
+	struct mutex calibration_lock;
+	bool calibration_replayed;
+	int calibration_replay_result;
 };
 
 struct audioreach_sub_graph {
