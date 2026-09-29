@@ -12,6 +12,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/apr.h>
+#include <linux/unaligned.h>
 #include <linux/wait.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -1625,6 +1626,17 @@ static bool q6apm_graph_try_complete_cmd(struct q6apm_graph *graph,
 	return expected;
 }
 
+static void q6apm_graph_get_cfg_response(struct q6apm_graph *graph,
+					 const struct gpr_resp_pkt *data)
+{
+	/* A truncated response cannot establish a successful query. */
+	if (data->payload_size < (int)sizeof(u32))
+		return;
+
+	q6apm_graph_try_complete_cmd(graph, &data->hdr, data->hdr.opcode,
+				     get_unaligned_le32(data->payload), false);
+}
+
 static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 {
 	struct data_cmd_rsp_rd_sh_mem_ep_data_buffer_done_v2 *rd_done;
@@ -1646,6 +1658,9 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 	result = data->payload;
 
 	switch (hdr->opcode) {
+	case APM_CMD_RSP_GET_CFG:
+		q6apm_graph_get_cfg_response(graph, data);
+		break;
 	case APM_EVENT_MODULE_TO_CLIENT:
 		if (data->payload_size < sizeof(*event))
 			break;
@@ -1728,11 +1743,14 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			graph->cb(client_event, hdr->token, data->payload, graph->priv);
 		break;
 	case GPR_BASIC_RSP_RESULT:
+		if (data->payload_size < (int)sizeof(*result))
+			break;
 		switch (result->opcode) {
 		case APM_CMD_SHARED_MEM_MAP_REGIONS:
 		case DATA_CMD_WR_SH_MEM_EP_MEDIA_FORMAT:
 		case APM_CMD_REGISTER_MODULE_EVENTS:
 		case APM_CMD_SET_CFG:
+		case APM_CMD_GET_CFG:
 		case APM_CMD_GRAPH_START:
 		case APM_CMD_GRAPH_STOP:
 		case APM_CMD_GRAPH_FLUSH:
