@@ -1190,6 +1190,27 @@ static int audioreach_query_protection_config(struct q6apm_graph *graph,
 	return audioreach_graph_send_cmd_sync(graph, pkt, APM_CMD_RSP_GET_CFG);
 }
 
+static int audioreach_configure_protection_volume(struct q6apm_graph *graph,
+						  const struct audioreach_module_priv_data *gain,
+						  const struct audioreach_module_priv_data *mute)
+{
+	int ret;
+
+	ret = audioreach_send_inband_stage(graph, gain, 0);
+	if (ret)
+		return ret;
+	ret = audioreach_send_oob_stage(graph,
+					SND_SOC_AR_TPLG_VOLUME_FILTER_CFG_TYPE);
+	if (ret)
+		return ret;
+	ret = audioreach_send_inband_stage(graph, mute, 0);
+	if (ret)
+		return ret;
+
+	return audioreach_send_oob_stage(graph,
+					SND_SOC_AR_TPLG_CHANNEL_MIXER_CFG_TYPE);
+}
+
 int audioreach_configure_protection(struct q6apm_graph *graph)
 {
 	const struct audioreach_module_priv_data *dynamic, *gain, *mute;
@@ -1222,22 +1243,6 @@ int audioreach_configure_protection(struct q6apm_graph *graph)
 		goto unlock;
 	}
 
-	if (!ar_graph->protection_vi_ready ||
-	    !ar_graph->protection_cps_ready) {
-		ret = audioreach_protection_enable(graph, false);
-		if (ret) {
-			ar_graph->protection_faulted = true;
-			dev_err(graph->dev,
-				"protected speaker feedback is incomplete; bypass failed (%d)\n",
-				ret);
-		} else {
-			ar_graph->protection_bypass_confirmed = true;
-			dev_warn(graph->dev,
-				 "protected speaker feedback is incomplete; using bypass\n");
-		}
-		goto unlock;
-	}
-
 	dynamic = audioreach_graph_find_data(graph->info,
 					     SND_SOC_AR_TPLG_PROTECTION_DYNAMIC_CFG_TYPE);
 	gain = audioreach_graph_find_data(graph->info,
@@ -1248,6 +1253,30 @@ int audioreach_configure_protection(struct q6apm_graph *graph)
 	    IS_ERR_OR_NULL(mute)) {
 		ret = -ENODATA;
 		goto bypass;
+	}
+
+	if (!ar_graph->protection_vi_ready ||
+	    !ar_graph->protection_cps_ready) {
+		ret = audioreach_protection_enable(graph, false);
+		if (ret) {
+			ar_graph->protection_faulted = true;
+			dev_err(graph->dev,
+				"protected speaker feedback is incomplete; bypass failed (%d)\n",
+				ret);
+		} else {
+			/* Preserve the qualified volume tail after both disables. */
+			ret = audioreach_configure_protection_volume(graph, gain, mute);
+			if (ret) {
+				ar_graph->protection_faulted = true;
+				dev_err(graph->dev,
+					"bypass volume configuration failed (%d)\n", ret);
+			} else {
+				ar_graph->protection_bypass_confirmed = true;
+				dev_warn(graph->dev,
+					 "protected speaker feedback is incomplete; using bypass\n");
+			}
+		}
+		goto unlock;
 	}
 
 	first_size = audioreach_frame_size((const u8 *)dynamic->data);
@@ -1289,18 +1318,7 @@ int audioreach_configure_protection(struct q6apm_graph *graph)
 	ret = audioreach_protection_enable(graph, true);
 	if (ret)
 		goto bypass;
-	ret = audioreach_send_inband_stage(graph, gain, 0);
-	if (ret)
-		goto bypass;
-	ret = audioreach_send_oob_stage(graph,
-					SND_SOC_AR_TPLG_VOLUME_FILTER_CFG_TYPE);
-	if (ret)
-		goto bypass;
-	ret = audioreach_send_inband_stage(graph, mute, 0);
-	if (ret)
-		goto bypass;
-	ret = audioreach_send_oob_stage(graph,
-					SND_SOC_AR_TPLG_CHANNEL_MIXER_CFG_TYPE);
+	ret = audioreach_configure_protection_volume(graph, gain, mute);
 	if (ret)
 		goto bypass;
 
