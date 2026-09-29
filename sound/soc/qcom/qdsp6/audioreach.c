@@ -1077,6 +1077,49 @@ static int audioreach_send_oob_stage(struct q6apm_graph *graph, u32 type)
 					   le32_to_cpu(stage->size));
 }
 
+static int audioreach_query_protection_config(struct q6apm_graph *graph,
+					      u32 type, u32 module_id)
+{
+	const struct audioreach_module_priv_data *stage;
+	const struct audioreach_module *module;
+	struct gpr_pkt *pkt __free(kfree) = NULL;
+	struct apm_module_param_data *param;
+	const u8 *frame;
+	size_t payload_size;
+	u32 param_size;
+
+	stage = audioreach_graph_find_data(graph->info, type);
+	module = audioreach_graph_find_module(graph->info, module_id);
+	if (IS_ERR_OR_NULL(stage) || IS_ERR_OR_NULL(module))
+		return -ENODATA;
+	if (le32_to_cpu(stage->size) < sizeof(*param))
+		return -EINVAL;
+
+	/* The first tag record supplies the configuration query's shape. */
+	frame = (const u8 *)stage->data;
+	if (get_unaligned_le32(frame) != module->instance_id)
+		return -EINVAL;
+	param_size = get_unaligned_le32(frame + 2 * sizeof(u32));
+	if (!param_size || param_size > le32_to_cpu(stage->size) - sizeof(*param))
+		return -EINVAL;
+	payload_size = ALIGN(sizeof(*param) + (size_t)param_size, 8);
+	/* GPR's packet-size field has 24 bits, including both headers. */
+	if (payload_size > GENMASK(23, 0) - GPR_HDR_SIZE - APM_CMD_HDR_SIZE)
+		return -E2BIG;
+
+	pkt = audioreach_alloc_cmd_pkt(payload_size, APM_CMD_GET_CFG, 0,
+				       graph->port->id, module->instance_id);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+
+	param = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+	param->module_instance_id = module->instance_id;
+	param->param_id = get_unaligned_le32(frame + sizeof(u32));
+	param->param_size = param_size;
+
+	return audioreach_graph_send_cmd_sync(graph, pkt, APM_CMD_RSP_GET_CFG);
+}
+
 int audioreach_configure_protection(struct q6apm_graph *graph)
 {
 	const struct audioreach_module_priv_data *dynamic, *gain, *mute;
@@ -1145,6 +1188,17 @@ int audioreach_configure_protection(struct q6apm_graph *graph)
 		goto bypass;
 	ret = audioreach_send_oob_stage(graph,
 					SND_SOC_AR_TPLG_SP_TAG_CFG_TYPE);
+	if (ret)
+		goto bypass;
+	/* Preserve the qualified query order before programming SPVI. */
+	ret = audioreach_query_protection_config(graph,
+						 SND_SOC_AR_TPLG_SP_TAG_CFG_TYPE,
+						 MODULE_ID_SPEAKER_PROTECTION);
+	if (ret)
+		goto bypass;
+	ret = audioreach_query_protection_config(graph,
+						 SND_SOC_AR_TPLG_SPVI_TAG_CFG_TYPE,
+						 MODULE_ID_SPEAKER_PROTECTION_VI);
 	if (ret)
 		goto bypass;
 	ret = audioreach_send_inband_stage(graph, dynamic, first_size);
