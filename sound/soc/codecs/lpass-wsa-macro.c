@@ -437,6 +437,10 @@ struct wsa_macro {
 	struct mutex protection_lock;
 	unsigned int protection_pa_users;
 	bool protection_clocks_enabled;
+	/* Runtime PM serializes this; teardown reads it after disabling PM. */
+	bool runtime_clks_enabled;
+	bool denali_pm;
+	bool denali_probe_pm_held;
 	struct regmap *regmap;
 	struct clk *mclk;
 	struct clk *npl;
@@ -2785,6 +2789,31 @@ static int wsa_swrm_clock(struct wsa_macro *wsa, bool enable)
 {
 	struct regmap *regmap = wsa->regmap;
 
+	if (wsa->denali_pm) {
+		int ret;
+
+		ret = pm_runtime_resume_and_get(wsa->dev);
+		if (ret < 0)
+			return ret;
+
+		if (enable) {
+			wsa_macro_mclk_enable(wsa, true);
+			regmap_update_bits(regmap,
+					   CDC_WSA_CLK_RST_CTRL_SWR_CONTROL,
+					   CDC_WSA_SWR_CLK_EN_MASK,
+					   CDC_WSA_SWR_CLK_ENABLE);
+		} else {
+			regmap_update_bits(regmap,
+					   CDC_WSA_CLK_RST_CTRL_SWR_CONTROL,
+					   CDC_WSA_SWR_CLK_EN_MASK, 0);
+			wsa_macro_mclk_enable(wsa, false);
+		}
+
+		pm_runtime_mark_last_busy(wsa->dev);
+		pm_runtime_put_autosuspend(wsa->dev);
+		return 0;
+	}
+
 	if (enable) {
 		int ret;
 
@@ -2926,7 +2955,10 @@ static int wsa_macro_register_mclk_output(struct wsa_macro *wsa)
 	init.num_parents = 1;
 	wsa->hw.init = &init;
 	hw = &wsa->hw;
-	ret = clk_hw_register(wsa->dev, hw);
+	if (wsa->denali_pm)
+		ret = devm_clk_hw_register(wsa->dev, hw);
+	else
+		ret = clk_hw_register(wsa->dev, hw);
 	if (ret)
 		return ret;
 
@@ -2999,6 +3031,118 @@ static void wsa_macro_set_denali_defaults(struct wsa_macro *wsa,
 	}
 }
 
+static void wsa_macro_disable_runtime_clks(struct wsa_macro *wsa)
+{
+	if (!wsa->runtime_clks_enabled)
+		return;
+
+	clk_disable_unprepare(wsa->fsgen);
+	clk_disable_unprepare(wsa->npl);
+	clk_disable_unprepare(wsa->mclk);
+	wsa->runtime_clks_enabled = false;
+}
+
+static int wsa_macro_enable_runtime_clks(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = clk_prepare_enable(wsa->mclk);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->npl);
+	if (ret)
+		goto err_mclk;
+
+	ret = clk_prepare_enable(wsa->fsgen);
+	if (ret)
+		goto err_npl;
+
+	wsa->runtime_clks_enabled = true;
+	return 0;
+
+err_npl:
+	clk_disable_unprepare(wsa->npl);
+err_mclk:
+	clk_disable_unprepare(wsa->mclk);
+	return ret;
+}
+
+static void wsa_macro_release_denali_clks(void *data)
+{
+	struct wsa_macro *wsa = data;
+	struct device *dev = wsa->dev;
+
+	/* Component and output clock devres have already stopped callbacks. */
+	pm_runtime_disable(dev);
+	pm_runtime_dont_use_autosuspend(dev);
+	if (wsa->denali_probe_pm_held) {
+		pm_runtime_put_noidle(dev);
+		wsa->denali_probe_pm_held = false;
+	}
+	regcache_cache_only(wsa->regmap, true);
+	regcache_mark_dirty(wsa->regmap);
+	wsa_macro_disable_runtime_clks(wsa);
+	clk_disable_unprepare(wsa->dcodec);
+	clk_disable_unprepare(wsa->macro);
+	pm_runtime_set_suspended(dev);
+}
+
+static int wsa_macro_init_denali_clks(struct wsa_macro *wsa)
+{
+	struct device *dev = wsa->dev;
+	int ret;
+
+	ret = pm_runtime_set_suspended(dev);
+	if (ret)
+		return ret;
+
+	/* Keep the qualified macro/dcodec votes across runtime suspend. */
+	ret = clk_prepare_enable(wsa->macro);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->dcodec);
+	if (ret) {
+		clk_disable_unprepare(wsa->macro);
+		return ret;
+	}
+
+	regcache_cache_only(wsa->regmap, true);
+	regcache_mark_dirty(wsa->regmap);
+	pm_runtime_set_autosuspend_delay(dev, 3000);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_enable(dev);
+	ret = devm_add_action_or_reset(dev, wsa_macro_release_denali_clks, wsa);
+	if (ret)
+		return ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+	wsa->denali_probe_pm_held = true;
+	return 0;
+}
+
+static int wsa_macro_denali_runtime_resume(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = wsa_macro_enable_runtime_clks(wsa);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(wsa->regmap, false);
+	ret = regcache_sync(wsa->regmap);
+	if (ret) {
+		regcache_cache_only(wsa->regmap, true);
+		regcache_mark_dirty(wsa->regmap);
+		wsa_macro_disable_runtime_clks(wsa);
+	}
+
+	return ret;
+}
+
 static int wsa_macro_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -3018,6 +3162,7 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	mutex_init(&wsa->protection_lock);
 	wsa->protected_feedback =
 		of_machine_is_compatible("microsoft,denali");
+	wsa->denali_pm = IS_ENABLED(CONFIG_PM) && wsa->protected_feedback;
 	/* Regmap's access callbacks need the instance during initialization. */
 	dev_set_drvdata(dev, wsa);
 
@@ -3140,25 +3285,31 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	clk_set_rate(wsa->mclk, WSA_MACRO_MCLK_FREQ);
 	clk_set_rate(wsa->npl, WSA_MACRO_MCLK_FREQ);
 
-	ret = clk_prepare_enable(wsa->macro);
-	if (ret)
-		goto err;
+	if (wsa->denali_pm) {
+		ret = wsa_macro_init_denali_clks(wsa);
+		if (ret)
+			goto err;
+	} else {
+		ret = clk_prepare_enable(wsa->macro);
+		if (ret)
+			goto err;
 
-	ret = clk_prepare_enable(wsa->dcodec);
-	if (ret)
-		goto err_dcodec;
+		ret = clk_prepare_enable(wsa->dcodec);
+		if (ret)
+			goto err_dcodec;
 
-	ret = clk_prepare_enable(wsa->mclk);
-	if (ret)
-		goto err_mclk;
+		ret = clk_prepare_enable(wsa->mclk);
+		if (ret)
+			goto err_mclk;
 
-	ret = clk_prepare_enable(wsa->npl);
-	if (ret)
-		goto err_npl;
+		ret = clk_prepare_enable(wsa->npl);
+		if (ret)
+			goto err_npl;
 
-	ret = clk_prepare_enable(wsa->fsgen);
-	if (ret)
-		goto err_fsgen;
+		ret = clk_prepare_enable(wsa->fsgen);
+		if (ret)
+			goto err_fsgen;
+	}
 
 	/* reset swr ip */
 	regmap_update_bits(wsa->regmap, CDC_WSA_CLK_RST_CTRL_SWR_CONTROL,
@@ -3171,10 +3322,24 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	regmap_update_bits(wsa->regmap, CDC_WSA_CLK_RST_CTRL_SWR_CONTROL,
 			   CDC_WSA_SWR_RST_EN_MASK, CDC_WSA_SWR_RST_DISABLE);
 
+	/* Component/DAPM teardown must precede removal of its output clock. */
+	if (wsa->denali_pm) {
+		ret = wsa_macro_register_mclk_output(wsa);
+		if (ret)
+			goto err_clkout;
+	}
+
 	ret = devm_snd_soc_register_component(dev, &wsa_macro_component_drv,
 					      dais, num_dais);
 	if (ret)
 		goto err_clkout;
+
+	if (wsa->denali_pm) {
+		wsa->denali_probe_pm_held = false;
+		pm_runtime_mark_last_busy(dev);
+		pm_runtime_put_autosuspend(dev);
+		return 0;
+	}
 
 	pm_runtime_set_autosuspend_delay(dev, 3000);
 	pm_runtime_use_autosuspend(dev);
@@ -3189,6 +3354,8 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	return 0;
 
 err_clkout:
+	if (wsa->denali_pm)
+		return ret;
 	clk_disable_unprepare(wsa->fsgen);
 err_fsgen:
 	clk_disable_unprepare(wsa->npl);
@@ -3207,6 +3374,10 @@ static void wsa_macro_remove(struct platform_device *pdev)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(&pdev->dev);
 
+	/* Denali devres tears down component/output before PM and clock votes. */
+	if (wsa->denali_pm)
+		return;
+
 	clk_disable_unprepare(wsa->macro);
 	clk_disable_unprepare(wsa->dcodec);
 	clk_disable_unprepare(wsa->mclk);
@@ -3221,6 +3392,11 @@ static int wsa_macro_runtime_suspend(struct device *dev)
 	regcache_cache_only(wsa->regmap, true);
 	regcache_mark_dirty(wsa->regmap);
 
+	if (wsa->denali_pm) {
+		wsa_macro_disable_runtime_clks(wsa);
+		return 0;
+	}
+
 	clk_disable_unprepare(wsa->fsgen);
 	clk_disable_unprepare(wsa->npl);
 	clk_disable_unprepare(wsa->mclk);
@@ -3232,6 +3408,9 @@ static int wsa_macro_runtime_resume(struct device *dev)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(dev);
 	int ret;
+
+	if (wsa->denali_pm)
+		return wsa_macro_denali_runtime_resume(wsa);
 
 	ret = clk_prepare_enable(wsa->mclk);
 	if (ret) {
