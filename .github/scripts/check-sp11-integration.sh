@@ -18,6 +18,26 @@ die() {
 	exit 1
 }
 
+reviewed_private_defaults_warning() {
+	local commit="$1" output="$2" diagnostics patch_id blob_id
+
+	# The Denali producer patch mutates a private defaults copy before regmap
+	# initialization. CONST_STRUCT is inapplicable to that writable argument.
+	# Pin both the patch and exact resulting source. Stable patch IDs ignore
+	# whitespace, including meaningful whitespace inside string literals.
+	# Accept exactly this one diagnostic; other findings still fail closed.
+	diagnostics="$(grep -E '^(ERROR|WARNING|CHECK):' <<<"$output" || true)"
+	[[ "$diagnostics" == \
+		'WARNING:CONST_STRUCT: struct reg_default should normally be const' ]] ||
+		return 1
+	blob_id="$(git rev-parse --verify \
+		"${commit}:sound/soc/codecs/lpass-wsa-macro.c")" || return 1
+	[[ "$blob_id" == af26d75c4017cb672722bb9e742b7c7fa24ec57e ]] || return 1
+	patch_id="$(git diff --no-ext-diff "${commit}^" "$commit" -- |
+		git patch-id --stable)" || return 1
+	[[ "${patch_id%% *}" == 5a64ac327ac508b199b27da018f14ac2d61ad0f4 ]]
+}
+
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 	die "run this check from the repository worktree"
 
@@ -190,7 +210,10 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 		)"
 		printf '%s\n' "${commit_checkpatch_output}"
 		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
-			die "per-commit source checkpatch findings in ${commit}"
+			reviewed_private_defaults_warning "$commit" \
+				"$commit_checkpatch_output" ||
+				die "per-commit source checkpatch findings in ${commit}"
+			printf 'Reviewed private-defaults warning retained for %s.\n' "$commit"
 		fi
 	# Upstream was rebased; its imported history is not an SP11 topic series.
 	# Exclude only the pinned upstream ancestry, never arbitrary merge parents.
