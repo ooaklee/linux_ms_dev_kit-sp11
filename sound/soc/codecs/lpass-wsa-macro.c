@@ -289,6 +289,7 @@
 #define WSA_MACRO_RX_PATH_OFFSET 0x80
 #define WSA_MACRO_RX_PATH_CFG3_OFFSET 0x10
 #define WSA_MACRO_RX_PATH_DSMDEM_OFFSET 0x4C
+#define WSA_MACRO_SOFTCLIP_CTRL_OFFSET 0x4
 #define WSA_MACRO_FS_RATE_MASK 0x0F
 #define WSA_MACRO_EC_MIX_TX0_MASK 0x03
 #define WSA_MACRO_EC_MIX_TX1_MASK 0x18
@@ -1790,7 +1791,8 @@ static int wsa_macro_config_softclip(struct snd_soc_component *component,
 	if (!wsa->is_softclip_on[softclip_path])
 		return 0;
 
-	softclip_ctrl_reg = CDC_WSA_SOFTCLIP0_SOFTCLIP_CTRL +
+	softclip_ctrl_reg = wsa->reg_layout->softclip0_reg_base +
+			WSA_MACRO_SOFTCLIP_CTRL_OFFSET +
 				(softclip_path * wsa->reg_layout->softclip1_reg_offset);
 
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
