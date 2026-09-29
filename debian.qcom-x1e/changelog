@@ -1,3 +1,14 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v2) resolute; urgency=medium
+
+  * Qualification-only SP11 TX/Golden audio dependency-group build.
+  * Retain the refreshed 7.2.5 base and the v1 GPI ordering repair.
+  * Include the guarded TX DMIC and Golden playback parity ports.
+  * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
+  * No suspend, audio safety, or full hardware-parity approval is implied.
+  * Retain the known-good recovery kernel and do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 29 Sep 2026 02:15:00 +0100
+
 linux-qcom-x1e (7.2.5-jg-0) resolute; urgency=medium
 
   * usb: typec: mux: ps883x: increase delay after writing config regs
