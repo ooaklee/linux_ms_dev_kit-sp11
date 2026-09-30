@@ -2614,6 +2614,36 @@ static int wsa884x_get_reset(struct device *dev, struct wsa884x_priv *wsa884x)
 	return 0;
 }
 
+static int wsa884x_init_sink_ports(struct wsa884x_priv *wsa884x)
+{
+	struct sdw_slave *slave = wsa884x->slave;
+	struct sdw_dpn_prop *ports;
+
+	slave->prop.sink_dpn_prop = wsa884x_sink_dpn_prop;
+	if (!of_machine_is_compatible("microsoft,denali") ||
+	    !wsa884x->protected_feedback || wsa884x->speaker_load_ohms != 4)
+		return 0;
+
+	/*
+	 * Select transport capabilities from the board wiring. VPHX status is
+	 * only available after attach, and remains a separate analog guard.
+	 */
+	ports = devm_kmemdup(wsa884x->dev, wsa884x_sink_dpn_prop,
+			     sizeof(wsa884x_sink_dpn_prop), GFP_KERNEL);
+	if (!ports)
+		return -ENOMEM;
+
+	ports[WSA884X_PORT_DAC].simple_transport_registers =
+		SDW_DPN_SIMPLE_TRANSPORT_BLOCKCTRL3;
+	ports[WSA884X_PORT_COMP].simple_transport_registers =
+		SDW_DPN_SIMPLE_TRANSPORT_OFFSETCTRL2;
+	ports[WSA884X_PORT_BOOST].simple_transport_registers =
+		SDW_DPN_SIMPLE_TRANSPORT_OFFSETCTRL2;
+	slave->prop.sink_dpn_prop = ports;
+
+	return 0;
+}
+
 static int wsa884x_probe(struct sdw_slave *pdev,
 			 const struct sdw_device_id *id)
 {
@@ -2713,7 +2743,9 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 		pdev->prop.sink_ports = GENMASK(WSA884X_MAX_SWR_PORTS - 1, 0);
 	}
 	pdev->prop.simple_clk_stop_capable = true;
-	pdev->prop.sink_dpn_prop = wsa884x_sink_dpn_prop;
+	ret = wsa884x_init_sink_ports(wsa884x);
+	if (ret)
+		return ret;
 	pdev->prop.scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
 
 	wsa884x_reset_deassert(wsa884x);
