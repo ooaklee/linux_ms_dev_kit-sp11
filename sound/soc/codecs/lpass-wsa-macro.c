@@ -5,6 +5,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
@@ -13,6 +14,7 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <linux/pm_runtime.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pm_clock.h>
 #include <sound/tlv.h>
@@ -55,6 +57,17 @@
 #define CDC_WSA_RX_MIX_TX0_SEL_MASK		GENMASK(2, 0)
 #define CDC_WSA_RX_INP_MUX_RX_EC_CFG0		(0x0114)
 #define CDC_WSA_RX_INP_MUX_SOFTCLIP_CFG0	(0x0118)
+#define CDC_WSA_VBAT_BCL_VBAT_PATH_CTL		(0x0180)
+#define CDC_WSA_VBAT_BCL_VBAT_CFG		(0x0184)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD1		(0x01DC)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD2		(0x01E0)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD3		(0x01E4)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD4		(0x01E8)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD5		(0x01EC)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD6		(0x01F0)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD7		(0x01F4)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD8		(0x01F8)
+#define CDC_WSA_VBAT_BCL_GAIN_UPD9		(0x01FC)
 #define CDC_WSA_TX0_SPKR_PROT_PATH_CTL		(0x0244)
 #define CDC_WSA_TX_SPKR_PROT_RESET_MASK		BIT(5)
 #define CDC_WSA_TX_SPKR_PROT_RESET		BIT(5)
@@ -75,6 +88,7 @@
 #define CDC_WSA_TX2_SPKR_PROT_PATH_CFG0		(0x0288)
 #define CDC_WSA_TX3_SPKR_PROT_PATH_CTL		(0x02A4)
 #define CDC_WSA_TX3_SPKR_PROT_PATH_CFG0		(0x02A8)
+#define WSA_MACRO_PROTECTION_PA_COUNT		2
 #define CDC_WSA_INTR_CTRL_CFG			(0x0340)
 #define CDC_WSA_INTR_CTRL_CLR_COMMIT		(0x0344)
 #define CDC_WSA_INTR_CTRL_PIN1_MASK0		(0x0360)
@@ -262,6 +276,9 @@
 #define CDC_2_5_WSA_SOFTCLIP0_SOFTCLIP_CTRL	(0x0644)
 #define CDC_2_5_WSA_SOFTCLIP1_CRC		(0x0660)
 #define CDC_2_5_WSA_SOFTCLIP1_SOFTCLIP_CTRL	(0x0664)
+#define CDC_2_5_WSA_CB_DECODE_CTL0		(0x0900)
+#define CDC_2_5_WSA_CB_DECODE_CTL1		(0x0904)
+#define CDC_2_5_WSA_CB_DECODE_CMD		(0x0908)
 
 #define WSA_MACRO_RX_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
 			SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 |\
@@ -286,6 +303,7 @@
 #define WSA_MACRO_RX_PATH_OFFSET 0x80
 #define WSA_MACRO_RX_PATH_CFG3_OFFSET 0x10
 #define WSA_MACRO_RX_PATH_DSMDEM_OFFSET 0x4C
+#define WSA_MACRO_SOFTCLIP_CTRL_OFFSET 0x4
 #define WSA_MACRO_FS_RATE_MASK 0x0F
 #define WSA_MACRO_EC_MIX_TX0_MASK 0x03
 #define WSA_MACRO_EC_MIX_TX1_MASK 0x18
@@ -374,6 +392,7 @@ enum {
 	WSA_MACRO_AIF_MIX1_PB,
 	WSA_MACRO_AIF_VI,
 	WSA_MACRO_AIF_ECHO,
+	WSA_MACRO_AIF_CPS,
 	WSA_MACRO_MAX_DAIS,
 };
 
@@ -414,6 +433,13 @@ struct wsa_macro {
 	u32 pcm_rate_vi;
 	int is_softclip_on[WSA_MACRO_SOFTCLIP_MAX];
 	int softclip_clk_users[WSA_MACRO_SOFTCLIP_MAX];
+	bool protected_feedback;
+	/* Protects protection_pa_users and protection_clocks_enabled. */
+	struct mutex protection_lock;
+	unsigned int protection_pa_users;
+	bool protection_clocks_enabled;
+	/* Runtime PM serializes this; teardown reads it after disabling PM. */
+	bool runtime_clks_enabled;
 	struct regmap *regmap;
 	struct clk *mclk;
 	struct clk *npl;
@@ -423,6 +449,8 @@ struct wsa_macro {
 	struct clk_hw hw;
 };
 #define to_wsa_macro(_hw) container_of(_hw, struct wsa_macro, hw)
+
+static const struct snd_soc_component_driver wsa_macro_component_drv;
 
 static const struct wsa_reg_layout wsa_codec_v2_1 = {
 	.rx_intx_1_mix_inp0_sel_mask		= GENMASK(2, 0),
@@ -814,6 +842,33 @@ static bool wsa_is_wronly_register(struct device *dev,
 	return false;
 }
 
+static bool wsa_is_vbat_register(struct wsa_macro *wsa, unsigned int reg)
+{
+	if (!wsa->protected_feedback)
+		return false;
+
+	switch (reg) {
+	case CDC_WSA_VBAT_BCL_VBAT_PATH_CTL:
+	case CDC_WSA_VBAT_BCL_VBAT_CFG:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD1:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD2:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD3:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD4:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD5:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD6:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD7:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD8:
+	case CDC_WSA_VBAT_BCL_GAIN_UPD9:
+		return true;
+	case CDC_2_5_WSA_CB_DECODE_CTL0:
+	case CDC_2_5_WSA_CB_DECODE_CTL1:
+	case CDC_2_5_WSA_CB_DECODE_CMD:
+		return wsa->codec_version >= LPASS_CODEC_VERSION_2_5;
+	default:
+		return false;
+	}
+}
+
 static bool wsa_is_rw_register_v2_1(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
@@ -884,6 +939,9 @@ static bool wsa_is_rw_register_v2_5(struct device *dev, unsigned int reg)
 static bool wsa_is_rw_register(struct device *dev, unsigned int reg)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(dev);
+
+	if (wsa_is_vbat_register(wsa, reg))
+		return true;
 
 	switch (reg) {
 	case CDC_WSA_CLK_RST_CTRL_MCLK_CONTROL:
@@ -1079,6 +1137,9 @@ static bool wsa_is_volatile_register_v2_5(struct device *dev, unsigned int reg)
 static bool wsa_is_volatile_register(struct device *dev, unsigned int reg)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(dev);
+
+	if (wsa_is_vbat_register(wsa, reg))
+		return true;
 
 	/* Update volatile list for rx/tx macros */
 	switch (reg) {
@@ -1278,6 +1339,15 @@ static int wsa_macro_hw_params(struct snd_pcm_substream *substream,
 	struct wsa_macro *wsa = snd_soc_component_get_drvdata(component);
 	int ret;
 
+	if (wsa->protected_feedback && dai->id == WSA_MACRO_AIF_VI &&
+	    substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		wsa->pcm_rate_vi = params_rate(params);
+		return 0;
+	}
+
+	if (wsa->protected_feedback && dai->id == WSA_MACRO_AIF_CPS)
+		return 0;
+
 	switch (substream->stream) {
 	case SNDRV_PCM_STREAM_PLAYBACK:
 		ret = wsa_macro_set_interpolator_rate(dai, params_rate(params));
@@ -1311,6 +1381,10 @@ static int wsa_macro_get_channel_map(const struct snd_soc_dai *dai,
 	case WSA_MACRO_AIF_VI:
 		*tx_slot = wsa->active_ch_mask[dai->id];
 		*tx_num = wsa->active_ch_cnt[dai->id];
+		break;
+	case WSA_MACRO_AIF_CPS:
+		*tx_num = 2;
+		*tx_slot = GENMASK(1, 0);
 		break;
 	case WSA_MACRO_AIF1_PB:
 	case WSA_MACRO_AIF_MIX1_PB:
@@ -1452,6 +1526,8 @@ static void wsa_macro_mclk_enable(struct wsa_macro *wsa, bool mclk_enable)
 static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *component, bool enable,
 						u32 tx_reg0, u32 tx_reg1, u32 val)
 {
+	struct wsa_macro *wsa = snd_soc_component_get_drvdata(component);
+
 	if (enable) {
 		/* Enable V&I sensing */
 		snd_soc_component_update_bits(component, tx_reg0,
@@ -1478,6 +1554,10 @@ static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *componen
 		snd_soc_component_update_bits(component, tx_reg1,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
 					      CDC_WSA_TX_SPKR_PROT_NO_RESET);
+
+		/* Materialize the qualified feedback lane order at the producer. */
+		if (wsa->protected_feedback)
+			snd_soc_component_write(component, CDC_WSA_TOP_TOP_CFG1, 0x03);
 	} else {
 		snd_soc_component_update_bits(component, tx_reg0,
 					      CDC_WSA_TX_SPKR_PROT_RESET_MASK,
@@ -1493,6 +1573,63 @@ static void wsa_macro_enable_disable_vi_sense(struct snd_soc_component *componen
 					      CDC_WSA_TX_SPKR_PROT_CLK_DISABLE);
 	}
 }
+
+static void wsa_macro_set_protection_clocks(struct snd_soc_component *component,
+					    bool enable)
+{
+	wsa_macro_enable_disable_vi_sense(component, enable,
+					  CDC_WSA_TX0_SPKR_PROT_PATH_CTL,
+					  CDC_WSA_TX1_SPKR_PROT_PATH_CTL, 0);
+	wsa_macro_enable_disable_vi_sense(component, enable,
+					  CDC_WSA_TX2_SPKR_PROT_PATH_CTL,
+					  CDC_WSA_TX3_SPKR_PROT_PATH_CTL, 0);
+}
+
+bool wsa_macro_protection_pa_event(struct snd_soc_component *source,
+				   bool enable)
+{
+	struct snd_soc_component *component;
+	struct wsa_macro *wsa;
+
+	if (!source || !source->card)
+		return false;
+
+	for_each_card_components(source->card, component) {
+		if (component->driver != &wsa_macro_component_drv)
+			continue;
+
+		wsa = snd_soc_component_get_drvdata(component);
+		if (!wsa->protected_feedback)
+			continue;
+
+		guard(mutex)(&wsa->protection_lock);
+
+		if (enable) {
+			if (wsa->protection_pa_users < WSA_MACRO_PROTECTION_PA_COUNT)
+				wsa->protection_pa_users++;
+
+			if (wsa->protection_pa_users == WSA_MACRO_PROTECTION_PA_COUNT &&
+			    !wsa->protection_clocks_enabled) {
+				wsa_macro_set_protection_clocks(component, true);
+				wsa->protection_clocks_enabled = true;
+			}
+		} else {
+			if (wsa->protection_pa_users == WSA_MACRO_PROTECTION_PA_COUNT &&
+			    wsa->protection_clocks_enabled) {
+				wsa_macro_set_protection_clocks(component, false);
+				wsa->protection_clocks_enabled = false;
+			}
+
+			if (wsa->protection_pa_users)
+				wsa->protection_pa_users--;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(wsa_macro_protection_pa_event);
 
 static void wsa_macro_enable_disable_vi_feedback(struct snd_soc_component *component,
 						 bool enable, u32 rate)
@@ -1566,8 +1703,13 @@ static int wsa_macro_enable_vi_feedback(struct snd_soc_dapm_widget *w,
 static void wsa_macro_hd2_control(struct snd_soc_component *component,
 				  u16 reg, int event)
 {
+	struct wsa_macro *wsa = snd_soc_component_get_drvdata(component);
 	u16 hd2_scale_reg;
 	u16 hd2_enable_reg;
+
+	/* The qualified Denali producer path does not enable generic HD2. */
+	if (wsa->protected_feedback)
+		return;
 
 	if (reg == CDC_WSA_RX0_RX_PATH_CTL) {
 		hd2_scale_reg = CDC_WSA_RX0_RX_PATH_SEC3;
@@ -1688,6 +1830,84 @@ static void wsa_macro_enable_softclip_clk(struct snd_soc_component *component,
 	}
 }
 
+/* Preserve the qualified Denali VBAT/BCL producer sequence on both paths. */
+static int wsa_macro_enable_vbat(struct snd_soc_dapm_widget *w,
+				 struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct wsa_macro *wsa = snd_soc_component_get_drvdata(component);
+	u16 vbat_path_cfg;
+	int softclip_path;
+	static const u16 bcl_regs[] = {
+		CDC_WSA_VBAT_BCL_GAIN_UPD1, CDC_WSA_VBAT_BCL_GAIN_UPD2,
+		CDC_WSA_VBAT_BCL_GAIN_UPD3, CDC_WSA_VBAT_BCL_GAIN_UPD4,
+		CDC_WSA_VBAT_BCL_GAIN_UPD5, CDC_WSA_VBAT_BCL_GAIN_UPD6,
+		CDC_WSA_VBAT_BCL_GAIN_UPD7, CDC_WSA_VBAT_BCL_GAIN_UPD8,
+		CDC_WSA_VBAT_BCL_GAIN_UPD9,
+	};
+	static const u8 bcl_gain[] = { 0xff, 0x03, 0x00, 0xff, 0x03, 0x00,
+				       0xff, 0x03, 0x00 };
+	int i;
+
+	if (!wsa->protected_feedback)
+		return -ENODEV;
+
+	if (!snd_soc_dapm_widget_name_cmp(w, "WSA_RX INT0 VBAT")) {
+		vbat_path_cfg = CDC_WSA_RX0_RX_PATH_CFG1;
+		softclip_path = WSA_MACRO_SOFTCLIP0;
+	} else if (!snd_soc_dapm_widget_name_cmp(w, "WSA_RX INT1 VBAT")) {
+		vbat_path_cfg = CDC_WSA_RX1_RX_PATH_CFG1;
+		softclip_path = WSA_MACRO_SOFTCLIP1;
+	} else {
+		return -EINVAL;
+	}
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_PATH_CTL,
+					      0x10, 0x10);
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_CFG,
+					      0x01, 0x01);
+		snd_soc_component_update_bits(component, vbat_path_cfg, 0x80, 0x80);
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_CFG,
+					      0x02, 0x00);
+		wsa_macro_enable_softclip_clk(component, wsa, softclip_path, true);
+		snd_soc_component_update_bits(component, vbat_path_cfg, 0x02, 0x02);
+		for (i = 0; i < ARRAY_SIZE(bcl_regs); i++)
+			snd_soc_component_write(component, bcl_regs[i], bcl_gain[i]);
+
+		if (wsa->codec_version >= LPASS_CODEC_VERSION_2_5) {
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CTL0, 0x01);
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CTL1, 0x01);
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CMD, 0x01);
+		}
+		dev_info(component->dev, "SP11VBAT: %s enabled\n", w->name);
+		break;
+
+	case SND_SOC_DAPM_POST_PMD:
+		if (wsa->codec_version >= LPASS_CODEC_VERSION_2_5) {
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CMD, 0x00);
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CTL1, 0x00);
+			snd_soc_component_write(component, CDC_2_5_WSA_CB_DECODE_CTL0, 0x00);
+		}
+		snd_soc_component_update_bits(component, vbat_path_cfg, 0x80, 0x00);
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_CFG,
+					      0x02, 0x02);
+		snd_soc_component_update_bits(component, vbat_path_cfg, 0x02, 0x00);
+		for (i = 0; i < ARRAY_SIZE(bcl_regs); i++)
+			snd_soc_component_write(component, bcl_regs[i], 0x00);
+		wsa_macro_enable_softclip_clk(component, wsa, softclip_path, false);
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_CFG,
+					      0x01, 0x00);
+		snd_soc_component_update_bits(component, CDC_WSA_VBAT_BCL_VBAT_PATH_CTL,
+					      0x10, 0x00);
+		dev_info(component->dev, "SP11VBAT: %s disabled\n", w->name);
+		break;
+	}
+
+	return 0;
+}
+
 static int wsa_macro_config_softclip(struct snd_soc_component *component,
 				     int path, int event)
 {
@@ -1703,7 +1923,8 @@ static int wsa_macro_config_softclip(struct snd_soc_component *component,
 	if (!wsa->is_softclip_on[softclip_path])
 		return 0;
 
-	softclip_ctrl_reg = CDC_WSA_SOFTCLIP0_SOFTCLIP_CTRL +
+	softclip_ctrl_reg = wsa->reg_layout->softclip0_reg_base +
+			WSA_MACRO_SOFTCLIP_CTRL_OFFSET +
 				(softclip_path * wsa->reg_layout->softclip1_reg_offset);
 
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
@@ -1868,6 +2089,8 @@ static int wsa_macro_enable_interpolator(struct snd_soc_dapm_widget *w,
 			snd_soc_component_update_bits(component,
 					CDC_WSA_RX0_RX_PATH_SEC1,
 					CDC_WSA_RX_PGA_HALF_DB_MASK,
+					wsa->protected_feedback ?
+					CDC_WSA_RX_PGA_HALF_DB_DISABLE :
 					CDC_WSA_RX_PGA_HALF_DB_ENABLE);
 			snd_soc_component_update_bits(component,
 					CDC_WSA_RX0_RX_PATH_MIX_SEC0,
@@ -1876,6 +2099,8 @@ static int wsa_macro_enable_interpolator(struct snd_soc_dapm_widget *w,
 			snd_soc_component_update_bits(component,
 					CDC_WSA_RX1_RX_PATH_SEC1,
 					CDC_WSA_RX_PGA_HALF_DB_MASK,
+					wsa->protected_feedback ?
+					CDC_WSA_RX_PGA_HALF_DB_DISABLE :
 					CDC_WSA_RX_PGA_HALF_DB_ENABLE);
 			snd_soc_component_update_bits(component,
 					CDC_WSA_RX1_RX_PATH_MIX_SEC0,
@@ -2388,6 +2613,40 @@ static const struct snd_soc_dapm_widget wsa_macro_dapm_widgets[] = {
 			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 };
 
+static const struct snd_soc_dapm_widget wsa_macro_denali_widgets[] = {
+	SND_SOC_DAPM_MIXER_E("WSA_RX INT0 VBAT", SND_SOC_NOPM, 0, 0,
+			     NULL, 0, wsa_macro_enable_vbat,
+			     SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_MIXER_E("WSA_RX INT1 VBAT", SND_SOC_NOPM, 0, 0,
+			     NULL, 0, wsa_macro_enable_vbat,
+			     SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_AIF_IN_E("WSA AIF_VI Protection",
+			      "WSA_AIF_VI Protection", 0,
+			      SND_SOC_NOPM, WSA_MACRO_AIF_VI, 0,
+			      wsa_macro_enable_vi_feedback,
+			      SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+	SND_SOC_DAPM_AIF_IN("WSA AIF_CPS Protection",
+			    "WSA_AIF_CPS Protection", 0,
+			    SND_SOC_NOPM, WSA_MACRO_AIF_CPS, 0),
+	SND_SOC_DAPM_INPUT("CPSINPUT_WSA"),
+};
+
+static const struct snd_soc_dapm_route wsa_macro_denali_routes[] = {
+	{ "WSA_RX INT0 VBAT", NULL, "WSA_RX INT0 INTERP" },
+	{ "WSA_RX INT0 CHAIN", NULL, "WSA_RX INT0 VBAT" },
+	{ "WSA_RX INT1 VBAT", NULL, "WSA_RX INT1 INTERP" },
+	{ "WSA_RX INT1 CHAIN", NULL, "WSA_RX INT1 VBAT" },
+	{ "WSA AIF_VI Protection", NULL, "WSA_AIF_VI Mixer" },
+	{ "WSA AIF_VI Protection", NULL, "WSA_MCLK" },
+	{ "WSA AIF_CPS Protection", NULL, "CPSINPUT_WSA" },
+	{ "WSA AIF_CPS Protection", NULL, "WSA_MCLK" },
+};
+
+static const struct snd_soc_dapm_route wsa_macro_generic_routes[] = {
+	{ "WSA_RX INT0 CHAIN", NULL, "WSA_RX INT0 INTERP" },
+	{ "WSA_RX INT1 CHAIN", NULL, "WSA_RX INT1 INTERP" },
+};
+
 static const struct snd_soc_dapm_widget wsa_macro_dapm_widgets_v2_1[] = {
 	SND_SOC_DAPM_MUX("WSA_RX0 INP0", SND_SOC_NOPM, 0, 0, &rx0_prim_inp0_mux_v2_1),
 	SND_SOC_DAPM_MUX("WSA_RX0 INP1", SND_SOC_NOPM, 0, 0, &rx0_prim_inp1_mux_v2_1),
@@ -2482,7 +2741,6 @@ static const struct snd_soc_dapm_route wsa_audio_map[] = {
 	{"WSA_RX INT0 INTERP", NULL, "WSA_RX INT0 SEC MIX"},
 	{"WSA_RX0 INT0 SIDETONE MIX", "SRC0", "WSA SRC0_INP"},
 	{"WSA_RX INT0 INTERP", NULL, "WSA_RX0 INT0 SIDETONE MIX"},
-	{"WSA_RX INT0 CHAIN", NULL, "WSA_RX INT0 INTERP"},
 
 	{"WSA_SPK1 OUT", NULL, "WSA_RX INT0 CHAIN"},
 	{"WSA_SPK1 OUT", NULL, "WSA_MCLK"},
@@ -2522,7 +2780,6 @@ static const struct snd_soc_dapm_route wsa_audio_map[] = {
 	{"WSA_RX INT1 SEC MIX", NULL, "WSA_RX INT1 MIX"},
 	{"WSA_RX INT1 INTERP", NULL, "WSA_RX INT1 SEC MIX"},
 
-	{"WSA_RX INT1 CHAIN", NULL, "WSA_RX INT1 INTERP"},
 	{"WSA_SPK2 OUT", NULL, "WSA_RX INT1 CHAIN"},
 	{"WSA_SPK2 OUT", NULL, "WSA_MCLK"},
 };
@@ -2562,6 +2819,7 @@ static int wsa_macro_component_probe(struct snd_soc_component *comp)
 	struct wsa_macro *wsa = snd_soc_component_get_drvdata(comp);
 	const struct snd_soc_dapm_widget *widgets;
 	unsigned int num_widgets;
+	int ret;
 
 	snd_soc_component_init_regmap(comp, wsa->regmap);
 
@@ -2599,7 +2857,21 @@ static int wsa_macro_component_probe(struct snd_soc_component *comp)
 		return -EINVAL;
 	}
 
-	return snd_soc_dapm_new_controls(dapm, widgets, num_widgets);
+	ret = snd_soc_dapm_new_controls(dapm, widgets, num_widgets);
+	if (ret)
+		return ret;
+
+	if (!wsa->protected_feedback)
+		return snd_soc_dapm_add_routes(dapm, wsa_macro_generic_routes,
+					       ARRAY_SIZE(wsa_macro_generic_routes));
+
+	ret = snd_soc_dapm_new_controls(dapm, wsa_macro_denali_widgets,
+					ARRAY_SIZE(wsa_macro_denali_widgets));
+	if (ret)
+		return ret;
+
+	return snd_soc_dapm_add_routes(dapm, wsa_macro_denali_routes,
+				       ARRAY_SIZE(wsa_macro_denali_routes));
 }
 
 static int swclk_gate_enable(struct clk_hw *hw)
@@ -2676,12 +2948,172 @@ static const struct snd_soc_component_driver wsa_macro_component_drv = {
 	.num_dapm_routes = ARRAY_SIZE(wsa_audio_map),
 };
 
+/*
+ * Preserve Denali's qualified cache state without changing the shared reset
+ * tables. These defaults are cache assumptions, not forced hardware writes.
+ */
+static void wsa_macro_set_denali_defaults(struct wsa_macro *wsa,
+					  struct reg_default *defaults, int count)
+{
+	int i;
+
+	if (!wsa->protected_feedback)
+		return;
+
+	for (i = 0; i < count; i++) {
+		switch (defaults[i].reg) {
+		case CDC_WSA_TOP_TOP_CFG1:
+			defaults[i].def = 0x03;
+			break;
+		case CDC_WSA_RX0_RX_PATH_CFG1:
+		case CDC_WSA_RX1_RX_PATH_CFG1:
+			defaults[i].def = 0x6c;
+			break;
+		case CDC_WSA_COMPANDER0_CTL7:
+			defaults[i].def = 0x2e;
+			break;
+		}
+
+		if (wsa->codec_version < LPASS_CODEC_VERSION_2_5)
+			continue;
+
+		switch (defaults[i].reg) {
+		case CDC_2_5_WSA_COMPANDER1_CTL7:
+			defaults[i].def = 0x2e;
+			break;
+		case CDC_2_5_WSA_COMPANDER0_CTL11:
+		case CDC_2_5_WSA_COMPANDER1_CTL11:
+			defaults[i].def = 0x0c;
+			break;
+		case CDC_2_5_WSA_COMPANDER0_CTL12:
+		case CDC_2_5_WSA_COMPANDER0_CTL13:
+		case CDC_2_5_WSA_COMPANDER0_CTL14:
+		case CDC_2_5_WSA_COMPANDER0_CTL15:
+		case CDC_2_5_WSA_COMPANDER1_CTL12:
+		case CDC_2_5_WSA_COMPANDER1_CTL13:
+		case CDC_2_5_WSA_COMPANDER1_CTL14:
+		case CDC_2_5_WSA_COMPANDER1_CTL15:
+			defaults[i].def = 0x15;
+			break;
+		case CDC_2_5_WSA_COMPANDER0_CTL16:
+		case CDC_2_5_WSA_COMPANDER1_CTL16:
+			defaults[i].def = 0x0f;
+			break;
+		}
+	}
+}
+
+static void wsa_macro_disable_runtime_clks(struct wsa_macro *wsa)
+{
+	if (!wsa->runtime_clks_enabled)
+		return;
+
+	clk_disable_unprepare(wsa->fsgen);
+	clk_disable_unprepare(wsa->npl);
+	clk_disable_unprepare(wsa->mclk);
+	wsa->runtime_clks_enabled = false;
+}
+
+static int wsa_macro_enable_runtime_clks(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = clk_prepare_enable(wsa->mclk);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->npl);
+	if (ret)
+		goto err_mclk;
+
+	ret = clk_prepare_enable(wsa->fsgen);
+	if (ret)
+		goto err_npl;
+
+	wsa->runtime_clks_enabled = true;
+	return 0;
+
+err_npl:
+	clk_disable_unprepare(wsa->npl);
+err_mclk:
+	clk_disable_unprepare(wsa->mclk);
+	return ret;
+}
+
+static void wsa_macro_release_denali_clks(void *data)
+{
+	struct wsa_macro *wsa = data;
+
+	/* PM is disabled, and managed component teardown has already run. */
+	wsa_macro_disable_runtime_clks(wsa);
+	clk_disable_unprepare(wsa->dcodec);
+	clk_disable_unprepare(wsa->macro);
+}
+
+static int wsa_macro_init_clks(struct wsa_macro *wsa)
+{
+	struct device *dev = wsa->dev;
+	int ret;
+
+	if (!wsa->protected_feedback) {
+		ret = devm_pm_clk_create(dev);
+		if (ret)
+			return ret;
+
+		ret = of_pm_clk_add_clks(dev);
+		return ret < 0 ? ret : 0;
+	}
+
+	/*
+	 * Keep Denali's macro/dcodec votes across runtime suspend, as in its
+	 * qualified clock sequence. Only mclk/npl/fsgen follow runtime PM.
+	 */
+	ret = clk_prepare_enable(wsa->macro);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(wsa->dcodec);
+	if (ret) {
+		clk_disable_unprepare(wsa->macro);
+		return ret;
+	}
+
+	/* Register before the component so its teardown retains the clocks. */
+	ret = devm_add_action_or_reset(dev, wsa_macro_release_denali_clks, wsa);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(wsa->regmap, true);
+	return 0;
+}
+
+static int wsa_macro_denali_runtime_resume(struct wsa_macro *wsa)
+{
+	int ret;
+
+	ret = wsa_macro_enable_runtime_clks(wsa);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(wsa->regmap, false);
+	ret = regcache_sync(wsa->regmap);
+	if (ret) {
+		regcache_cache_only(wsa->regmap, true);
+		regcache_mark_dirty(wsa->regmap);
+		wsa_macro_disable_runtime_clks(wsa);
+	}
+
+	return ret;
+}
+
 static int wsa_macro_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct snd_soc_dai_driver *dais = wsa_macro_dai;
 	struct wsa_macro *wsa;
 	kernel_ulong_t flags;
 	void __iomem *base;
+	int num_dais = ARRAY_SIZE(wsa_macro_dai);
 	int ret, def_count;
 
 	flags = (kernel_ulong_t)device_get_match_data(dev);
@@ -2689,6 +3121,12 @@ static int wsa_macro_probe(struct platform_device *pdev)
 	wsa = devm_kzalloc(dev, sizeof(*wsa), GFP_KERNEL);
 	if (!wsa)
 		return -ENOMEM;
+
+	mutex_init(&wsa->protection_lock);
+	wsa->protected_feedback =
+		of_machine_is_compatible("microsoft,denali");
+	/* Regmap's access callbacks need the instance during initialization. */
+	dev_set_drvdata(dev, wsa);
 
 	wsa->macro = devm_clk_get_optional(dev, "macro");
 	if (IS_ERR(wsa->macro))
@@ -2763,26 +3201,55 @@ static int wsa_macro_probe(struct platform_device *pdev)
 
 	reg_config->reg_defaults = reg_defaults;
 	reg_config->num_reg_defaults = def_count;
+	wsa_macro_set_denali_defaults(wsa, reg_defaults, def_count);
+	if (wsa->protected_feedback &&
+	    wsa->codec_version >= LPASS_CODEC_VERSION_2_5)
+		reg_config->max_register = CDC_2_5_WSA_CB_DECODE_CMD;
 
 	wsa->regmap = devm_regmap_init_mmio(dev, base, reg_config);
 	if (IS_ERR(wsa->regmap))
 		return PTR_ERR(wsa->regmap);
 
-	dev_set_drvdata(dev, wsa);
-
 	wsa->dev = dev;
+	if (wsa->protected_feedback) {
+		dais = devm_kcalloc(dev, num_dais + 1, sizeof(*dais), GFP_KERNEL);
+		if (!dais)
+			return -ENOMEM;
+
+		memcpy(dais, wsa_macro_dai, sizeof(wsa_macro_dai));
+		dais[WSA_MACRO_AIF_VI].playback = (struct snd_soc_pcm_stream) {
+			.stream_name = "WSA_AIF_VI Protection",
+			.rates = SNDRV_PCM_RATE_8000,
+			.formats = SNDRV_PCM_FMTBIT_S32_LE,
+			.rate_max = 8000,
+			.rate_min = 8000,
+			.channels_min = 1,
+			.channels_max = 4,
+		};
+		dais[num_dais] = (struct snd_soc_dai_driver) {
+			.name = "wsa_macro_cps",
+			.id = WSA_MACRO_AIF_CPS,
+			.playback = {
+				.stream_name = "WSA_AIF_CPS Protection",
+				.rates = SNDRV_PCM_RATE_24000,
+				.formats = SNDRV_PCM_FMTBIT_S32_LE,
+				.rate_max = 24000,
+				.rate_min = 24000,
+				.channels_min = 2,
+				.channels_max = 2,
+			},
+			.ops = &wsa_macro_dai_ops,
+		};
+		num_dais++;
+	}
 
 	/* set MCLK and NPL rates */
 	clk_set_rate(wsa->mclk, WSA_MACRO_MCLK_FREQ);
 	if (wsa->npl)
 		clk_set_rate(wsa->npl, WSA_MACRO_MCLK_FREQ);
 
-	ret = devm_pm_clk_create(dev);
+	ret = wsa_macro_init_clks(wsa);
 	if (ret)
-		return ret;
-
-	ret = of_pm_clk_add_clks(dev);
-	if (ret < 0)
 		return ret;
 
 	pm_runtime_set_autosuspend_delay(dev, 3000);
@@ -2807,8 +3274,7 @@ static int wsa_macro_probe(struct platform_device *pdev)
 			   CDC_WSA_SWR_RST_EN_MASK, CDC_WSA_SWR_RST_DISABLE);
 
 	ret = devm_snd_soc_register_component(dev, &wsa_macro_component_drv,
-					      wsa_macro_dai,
-					      ARRAY_SIZE(wsa_macro_dai));
+					      dais, num_dais);
 	if (ret)
 		goto err_rpm_put;
 
@@ -2839,6 +3305,11 @@ static int wsa_macro_runtime_suspend(struct device *dev)
 	regcache_cache_only(wsa->regmap, true);
 	regcache_mark_dirty(wsa->regmap);
 
+	if (wsa->protected_feedback) {
+		wsa_macro_disable_runtime_clks(wsa);
+		return 0;
+	}
+
 	return pm_clk_suspend(dev);
 }
 
@@ -2846,6 +3317,9 @@ static int wsa_macro_runtime_resume(struct device *dev)
 {
 	struct wsa_macro *wsa = dev_get_drvdata(dev);
 	int ret;
+
+	if (wsa->protected_feedback)
+		return wsa_macro_denali_runtime_resume(wsa);
 
 	regcache_cache_only(wsa->regmap, false);
 	ret = pm_clk_resume(dev);
