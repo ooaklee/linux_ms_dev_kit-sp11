@@ -1,3 +1,16 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v4) resolute; urgency=medium
+
+  * Qualification-only SP11 render transport repair; supersede the v3 test.
+  * Restore Denali DAC, COMP and BOOST port extensions in private sink properties.
+  * Preserve generic WSA884x properties, speaker protection and pinned userspace.
+  * Retain the refreshed 7.2.5 base, GPI ordering and previous audio repairs.
+  * Use a fresh ABI to isolate this candidate from the failed v3 hardware test.
+  * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
+  * Hardware qualification remains open; retain the known-good recovery kernel.
+  * Do not merge this test carrier or infer speaker safety from offline checks.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 30 Sep 2026 01:26:40 +0100
+
 linux-qcom-x1e (7.2.5-jg-0sp11v3) resolute; urgency=medium
 
   * Qualification-only SP11 audio repair build; supersede the failed v2 test.
