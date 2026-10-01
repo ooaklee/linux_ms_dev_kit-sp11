@@ -41,6 +41,8 @@ jobs:
           sparse-checkout: |
             .github
             scripts/checkpatch.pl
+            scripts/spelling.txt
+            scripts/const_structs.checkpatch
           sparse-checkout-cone-mode: false
 
       - name: Validate the Surface Pro 11 integration delta

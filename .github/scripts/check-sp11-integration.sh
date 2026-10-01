@@ -18,6 +18,26 @@ die() {
 	exit 1
 }
 
+run_source_checkpatch() {
+	local input output status=0
+
+	[[ -x scripts/checkpatch.pl ]] ||
+		die "scripts/checkpatch.pl is required for kernel-source changes"
+	for input in scripts/checkpatch.pl scripts/spelling.txt \
+		scripts/const_structs.checkpatch; do
+		[[ -r "$input" && -s "$input" ]] ||
+			die "readable, non-empty checkpatch input is required: ${input}"
+	done
+
+	output="$(scripts/checkpatch.pl --no-tree --strict --show-types \
+		--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF -)" || status=$?
+	printf '%s\n' "$output"
+	((status <= 1)) || die "checkpatch.pl failed with exit status ${status}"
+	if ((status == 1)) && ! grep -qE '^(ERROR|WARNING|CHECK):' <<<"$output"; then
+		die "checkpatch.pl failed without a source diagnostic"
+	fi
+}
+
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 	die "run this check from the repository worktree"
 
@@ -108,16 +128,13 @@ kernel_pathspecs=(
 )
 
 if [[ "${kernel_changed}" == true ]]; then
-	[[ -x scripts/checkpatch.pl ]] ||
-		die "scripts/checkpatch.pl is required for kernel-source changes"
 	# File changes are reviewed, but their generic MAINTAINERS reminder is
 	# not a style defect. Some extracted commits preserve a contributor as
 	# nominal author while carrying only the submitter's authorized sign-off;
 	# provenance for those commits is audited separately in the PR body.
 	checkpatch_output="$(
 		git diff --no-ext-diff "${SP11_RANGE}" -- "${kernel_pathspecs[@]}" |
-			scripts/checkpatch.pl --no-tree --strict --show-types \
-				--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF - || true
+			run_source_checkpatch
 	)"
 	printf '%s\n' "${checkpatch_output}"
 	if grep -qE '^ERROR:' <<<"${checkpatch_output}"; then
@@ -185,8 +202,7 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 		commit_checkpatch_output="$(
 			git diff --no-ext-diff "${parent}" "${commit}" -- \
 				"${kernel_pathspecs[@]}" |
-				scripts/checkpatch.pl --no-tree --strict --show-types \
-					--ignore FILE_PATH_CHANGES,NO_AUTHOR_SIGN_OFF - || true
+				run_source_checkpatch
 		)"
 		printf '%s\n' "${commit_checkpatch_output}"
 		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
