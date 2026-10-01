@@ -6,6 +6,11 @@ on:
   pull_request:
     branches:
       - sp11/ubuntu-qcom-x1e-7.2.y-beta
+      # Check held topic deltas against their explicit dependency bases.
+      # Source-hygiene success does not qualify hardware or authorize merging.
+      - x/sync-jg-7.2.5-20260928
+      - x/sp11-tx-7.2.5-20260928
+      - x/sp11-battery-7.2.5-20260928
   push:
     branches:
       - sp11/ubuntu-qcom-x1e-7.2.y-beta
