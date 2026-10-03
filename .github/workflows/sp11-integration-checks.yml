@@ -11,6 +11,7 @@ on:
       - x/sync-jg-7.2.5-20260928
       - x/sp11-tx-7.2.5-20260928
       - x/sp11-battery-7.2.5-20260928
+      - x/sp11-checkpatch-complete-inputs-7.2.5-20261001
   push:
     branches:
       - sp11/ubuntu-qcom-x1e-7.2.y-beta
@@ -44,6 +45,9 @@ jobs:
             scripts/spelling.txt
             scripts/const_structs.checkpatch
           sparse-checkout-cone-mode: false
+
+      - name: Test exact reviewed-finding boundaries
+        run: bash .github/tests/check-sp11-reviewed-findings.sh
 
       - name: Validate the Surface Pro 11 integration delta
         run: .github/scripts/check-sp11-integration.sh
