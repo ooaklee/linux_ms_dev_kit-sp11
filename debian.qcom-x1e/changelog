@@ -1,3 +1,15 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v8) resolute; urgency=medium
+
+  * Qualification-only combined SP11 camera and power-profile dependency build.
+  * Replay the v5 camera ports onto v7 without altering their patches or authors.
+  * Preserve the v7 audio, input, battery, profile and CPU-policy implementation.
+  * Retain the guarded IMX681 receiver setup and partial-stream failure handling.
+  * Allocate a fresh ABI without changing source DTB or non-Stubble policy.
+  * Camera/profile interactions and combined hardware qualification remain open.
+  * Retain the known-good recovery kernel; do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 03 Oct 2026 12:53:23 +0100
+
 linux-qcom-x1e (7.2.5-jg-0sp11v7) resolute; urgency=medium
 
   * Qualification-only SP11 profile, fan and CPU-policy dependency-group build.
