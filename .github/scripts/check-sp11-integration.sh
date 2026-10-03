@@ -18,6 +18,12 @@ die() {
 	exit 1
 }
 
+readonly SP11_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -r "${SP11_SCRIPT_DIR}/check-sp11-reviewed-findings.sh" ]] ||
+	die "reviewed-finding policy helper is required"
+# shellcheck source=check-sp11-reviewed-findings.sh
+source "${SP11_SCRIPT_DIR}/check-sp11-reviewed-findings.sh"
+
 run_source_checkpatch() {
 	local input output status=0
 
@@ -40,6 +46,10 @@ run_source_checkpatch() {
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 	die "run this check from the repository worktree"
+SP11_REPOSITORY_PREFIX="$(git rev-parse --show-prefix)" ||
+	die "cannot determine the repository-root working directory"
+[[ -z "$SP11_REPOSITORY_PREFIX" ]] ||
+	die "run integration checks from the repository root"
 
 git cat-file -e "${SP11_BASE_COMMIT}^{commit}" 2>/dev/null ||
 	die "required Surface Pro 11 base commit is unavailable"
@@ -206,7 +216,13 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 		)"
 		printf '%s\n' "${commit_checkpatch_output}"
 		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
-			die "per-commit source checkpatch findings in ${commit}"
+			if sp11_reviewed_checkpatch_finding "${commit}" \
+				"${commit_checkpatch_output}"; then
+				printf 'Documented writable-defaults finding in %s; raw diagnostic retained.\n' \
+					"${commit}"
+			else
+				die "per-commit source checkpatch findings in ${commit}"
+			fi
 		fi
 	# Upstream was rebased; its imported history is not an SP11 topic series.
 	# Exclude only the pinned upstream ancestry, never arbitrary merge parents.
