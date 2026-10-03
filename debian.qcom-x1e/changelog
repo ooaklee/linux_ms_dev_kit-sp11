@@ -1,3 +1,107 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v8) resolute; urgency=medium
+
+  * Qualification-only combined SP11 camera and power-profile dependency build.
+  * Replay the v5 camera ports onto v7 without altering their patches or authors.
+  * Preserve the v7 audio, input, battery, profile and CPU-policy implementation.
+  * Retain the guarded IMX681 receiver setup and partial-stream failure handling.
+  * Allocate a fresh ABI without changing source DTB or non-Stubble policy.
+  * Camera/profile interactions and combined hardware qualification remain open.
+  * Retain the known-good recovery kernel; do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 03 Oct 2026 12:53:23 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v7) resolute; urgency=medium
+
+  * Qualification-only SP11 profile, fan and CPU-policy dependency-group build.
+  * Keep the native platform-profile class available without a fake ACPI path.
+  * Add Denali-only profile and fan nodes with guarded frequency-QoS handling.
+  * Select low power at probe with the Denali 2.515 GHz maximum-frequency policy.
+  * Preserve the v6 battery ports, tested v4 audio/input and contribution history.
+  * Keep camera refinements isolated and retain source non-Stubble DTB policy.
+  * Allocate a fresh ABI; profile transitions and hardware qualification are open.
+  * Retain the known-good recovery kernel; do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 03 Oct 2026 04:00:04 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v6) resolute; urgency=medium
+
+  * Qualification-only SP11 battery and AC-provider dependency-group build.
+  * Omit Denali SAM battery and AC nodes in favor of Qualcomm battmgr providers.
+  * Preserve the tested v4 audio/input source and existing contribution history.
+  * Keep platform-profile and experimental camera changes in separate carriers.
+  * Allocate a fresh ABI without changing source DTB or non-Stubble policy.
+  * Battery, AC transitions and power-state qualification remain open.
+  * Retain the known-good recovery kernel; do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 01 Oct 2026 20:24:45 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v4) resolute; urgency=medium
+
+  * Qualification-only SP11 render transport repair; supersede the v3 test.
+  * Restore Denali DAC, COMP and BOOST port extensions in private sink properties.
+  * Preserve generic WSA884x properties, speaker protection and pinned userspace.
+  * Retain the refreshed 7.2.5 base, GPI ordering and previous audio repairs.
+  * Use a fresh ABI to isolate this candidate from the failed v3 hardware test.
+  * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
+  * Hardware qualification remains open; retain the known-good recovery kernel.
+  * Do not merge this test carrier or infer speaker safety from offline checks.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 30 Sep 2026 01:26:40 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v3) resolute; urgency=medium
+
+  * Qualification-only SP11 audio repair build; supersede the failed v2 test.
+  * Restore guarded calibration, protection-query and feedback-tail behavior.
+  * Restore Denali WSA producer stages and runtime clock ownership.
+  * Correct the WSA softclip register layout and retain failure guards.
+  * Allocate a fresh ABI for the changed AudioReach module symbol checksums.
+  * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
+  * Hardware qualification remains open; retain the known-good recovery kernel.
+  * Do not merge this test carrier or infer full feature parity from builds.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 29 Sep 2026 07:35:00 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v2) resolute; urgency=medium
+
+  * Qualification-only SP11 TX/Golden audio dependency-group build.
+  * Retain the refreshed 7.2.5 base and the v1 GPI ordering repair.
+  * Include the guarded TX DMIC and Golden playback parity ports.
+  * Preserve source DTB and non-Stubble packaging policy for Lexr delivery.
+  * No suspend, audio safety, or full hardware-parity approval is implied.
+  * Retain the known-good recovery kernel and do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 29 Sep 2026 02:15:00 +0100
+
+linux-qcom-x1e (7.2.5-jg-0) resolute; urgency=medium
+
+  * usb: typec: mux: ps883x: increase delay after writing config regs
+  * usb: typec: mux: ps883x: support TYPEC_DP_STATE_F like qmp-combo
+  * rebase the whole stack to v7.2.5
+
+ -- Jens Glathe <jens.glathe@oldschoololutions.biz>  Wed, 16 Sep 2026 22:34:59 +0200
+
+linux-qcom-x1e (7.2.3-jg-1) resolute; urgency=medium
+
+  * arm64: dts: qcom: x1-ideacentre-mini-01q8x10: remove qcom,disable-usb4
+  * usb: typec: mux: ps883x: v2 follow-up — drop DT USB4 quirk, align DP path
+
+ -- Jens Glathe <jens.glathe@oldschoololutions.biz>  Sun, 13 Sep 2026 17:52:43 +0200
+
+linux-qcom-x1e (7.2.3-jg-0) resolute; urgency=medium
+
+  * arm64: dts: qcom: Add Lenovo IdeaPad Slim 5x 14Q8X9 whole series [https://lore.kernel.org/all/20260906-x1-ideapad-slim5x-v1-0-7ccffbe6bc4a@oldschoolsolutions.biz/]
+  * arm64: dts: qcom: IdeaCentre Mini 01Q8X10 Hamoa + Purwa whole series [https://lore.kernel.org/all/20260905-x1-ideacentre-mini-prettify-v1-0-9a87882973bb@oldschoolsolutions.biz/]
+  * rebase the whole stack to v7.2.3
+
+ -- Jens Glathe <jens.glathe@oldschoololutions.biz>  Sun, 06 Sep 2026 21:44:20 +0200
+
+linux-qcom-x1e (7.2.2-jg-2) resolute; urgency=medium
+
+  * arm64: dts: qcom: x1p42100-ideapad-5-2in1: add CTIA/OMTP mux
+  * REMOVE arm64: dts: qcom: hamoa: Mark the EC reset gpio as reserved on all boards  whole series [Abel Vesa <abel.vesa@oss.qualcomm.com>]
+
+ -- Jens Glathe <jens.glathe@oldschoololutions.biz>  Sat, 05 Sep 2026 06:45:03 +0200
+
 linux-qcom-x1e (7.2.2-jg-1) resolute; urgency=medium
 
   * arm64: dts: qcom: x1-lenovo-ideacentre-mini-01q8x10: discriminate compatible strings
@@ -7,7 +111,7 @@ linux-qcom-x1e (7.2.2-jg-1) resolute; urgency=medium
   * arm64: dts: qcom: x1-denali: add volume-down key [Leon Silcott <leon@boasi.io>]
   * Ubuntu: change default generation to nostubble
   * arm64: dts: qcom: hamoa: Mark the EC reset gpio as reserved on all boards  whole series [Abel Vesa <abel.vesa@oss.qualcomm.com>]
-  * drm: handle IRQ_HPD events correctly  whole series [Dmitry Baryshkov <dmitry.baryshkov@oss.qualcomm.com>]
+  * drm: handle IRQ_HPD events correctly  whole series [Dmitry Baryshkov <dmitry.baryshkov@oss.qualcomm.com>] 
     [https://lore.kernel.org/all/20260608-hpd-irq-events-v4-0-30b62b335487@oss.qualcomm.com/]
   * drm/msm/dp: Handle IRQ HPD as a sink request [Xilin Wu <sophon@radxa.com>]
   * drm/msm/dp: Mark the link bad when an active sink is replugged [Xilin Wu <sophon@radxa.com>]

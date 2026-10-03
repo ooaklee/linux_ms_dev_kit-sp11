@@ -662,8 +662,14 @@ static inline u32 gpi_read_reg(struct gpii *gpii, void __iomem *addr)
 
 static phys_addr_t gpi_read_ev_rp(struct gpii *gpii)
 {
-	u32 lsb = gpi_read_reg(gpii, gpii->ev_ring_rp_lsb_reg);
-	u32 msb;
+	u32 lsb, msb;
+
+	/*
+	 * The event read pointer publishes entries written by the device into
+	 * coherent memory. Use ordered MMIO reads so those writes are visible
+	 * before the caller consumes an event from the ring.
+	 */
+	lsb = readl(gpii->ev_ring_rp_lsb_reg);
 
 	/*
 	 * Denali publishes and may inspect the event ring before either QSPI
@@ -674,7 +680,7 @@ static phys_addr_t gpi_read_ev_rp(struct gpii *gpii)
 	if (!gpii_has_denali_qspi(gpii))
 		return lsb;
 
-	msb = gpi_read_reg(gpii, gpii->ev_ring_rp_lsb_reg + 4);
+	msb = readl(gpii->ev_ring_rp_lsb_reg + 4);
 
 	return ((phys_addr_t)msb << 32) | lsb;
 }

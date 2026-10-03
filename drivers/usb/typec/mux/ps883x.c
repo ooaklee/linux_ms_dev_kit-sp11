@@ -7,11 +7,13 @@
 
 #include <drm/bridge/aux-bridge.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/usb/pd.h>
@@ -41,6 +43,22 @@
 #define CONN_STATUS_2_TBT_UNIDIR_LSRX_ACT_LT	BIT(4)
 #define CONN_STATUS_2_USB4_CONNECTED		BIT(7)
 
+/*
+ * Platforms where the USB4 / DP-tunneling stack is not ready yet. Rejecting
+ * USB4 here lets the Type-C stack fall back to USB3 + DP Alt Mode instead of
+ * negotiating USB4 and then failing to drive DisplayPort.
+ *
+ * This is a temporary, kernel-contained quirk (not DT ABI). Drop the entries
+ * once the corresponding USB4 support is complete.
+ */
+static const char * const ps883x_disable_usb4_compats[] = {
+	"qcom,x1e80100",
+	"qcom,x1p42100",
+	"qcom,hamoa",
+	"qcom,purwa",
+	NULL,
+};
+
 struct ps883x_retimer {
 	struct i2c_client *client;
 	struct gpio_desc *reset_gpio;
@@ -64,6 +82,18 @@ struct ps883x_retimer {
 	bool in_reset;
 	bool disable_usb4;
 };
+
+static bool ps883x_should_disable_usb4(void)
+{
+	const char * const *compat;
+
+	for (compat = ps883x_disable_usb4_compats; *compat; compat++) {
+		if (of_machine_is_compatible(*compat))
+			return true;
+	}
+
+	return false;
+}
 
 static int ps883x_enable_vregs(struct ps883x_retimer *retimer)
 {
@@ -185,28 +215,16 @@ static int ps883x_configure(struct ps883x_retimer *retimer, int cfg0,
 		return ret;
 	}
 
-	usleep_range(20000, 30000);
+	/*
+	 * The retimer needs time after the connection-status registers are
+	 * written for the analog front-end (PLLs, lane training) to settle.
+	 * Without this, DisplayPort Alt Mode hotplug is unreliable on some
+	 * docks (e.g. Lenovo 40B0). Qualcomm firmware on platforms that
+	 * program this chip from an MCU uses a similar post-config delay.
+	 */
+	fsleep(30000);
 
 	return 0;
-}
-
-static void ps883x_apply_dp_altmode(int *cfg0, int *cfg1, int dp_state)
-{
-	*cfg1 |= CONN_STATUS_1_DP_CONNECTED | CONN_STATUS_1_DP_HPD_LEVEL;
-
-	switch (dp_state) {
-	case TYPEC_DP_STATE_D:
-	case TYPEC_DP_STATE_F:
-		*cfg0 |= CONN_STATUS_0_USB_3_1_CONNECTED;
-		fallthrough;
-	case TYPEC_DP_STATE_C:
-	case TYPEC_DP_STATE_E:
-		*cfg1 |= CONN_STATUS_1_DP_SINK_REQUESTED |
-			 CONN_STATUS_1_DP_PIN_ASSIGNMENT_C_D;
-		break;
-	default:
-		break;
-	}
 }
 
 static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state *state)
@@ -224,7 +242,21 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 	if (state->alt) {
 		switch (state->alt->svid) {
 		case USB_TYPEC_DP_SID:
-			ps883x_apply_dp_altmode(&cfg0, &cfg1, state->mode);
+			cfg1 |= CONN_STATUS_1_DP_CONNECTED |
+				CONN_STATUS_1_DP_HPD_LEVEL;
+
+			switch (state->mode)  {
+			case TYPEC_DP_STATE_D:
+			case TYPEC_DP_STATE_F:
+				cfg0 |= CONN_STATUS_0_USB_3_1_CONNECTED;
+				fallthrough;
+			case TYPEC_DP_STATE_C:
+				cfg1 |= CONN_STATUS_1_DP_SINK_REQUESTED |
+					CONN_STATUS_1_DP_PIN_ASSIGNMENT_C_D;
+				break;
+			default: /* MODE_E */
+				break;
+			}
 			break;
 		case USB_TYPEC_TBT_SID:
 			tb_data = state->data;
@@ -258,13 +290,9 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 			cfg0 |= CONN_STATUS_0_USB_3_1_CONNECTED;
 			break;
 		case TYPEC_MODE_USB4:
-			if (retimer->disable_usb4) {
-				dev_info(&retimer->client->dev,
-					 "USB4 disabled via DT property, rejecting USB4 mode\n");
+			if (retimer->disable_usb4)
 				return -EOPNOTSUPP;
-			}
 
-			/* Normal USB4 handling */
 			eudo_data = state->data;
 
 			cfg2 |= CONN_STATUS_2_USB4_CONNECTED;
@@ -385,6 +413,7 @@ static int ps883x_retimer_probe(struct i2c_client *client)
 	struct typec_switch_desc sw_desc = { };
 	struct typec_retimer_desc rtmr_desc = { };
 	struct ps883x_retimer *retimer;
+	unsigned int val;
 	int ret;
 
 	retimer = devm_kzalloc(dev, sizeof(*retimer), GFP_KERNEL);
@@ -393,7 +422,9 @@ static int ps883x_retimer_probe(struct i2c_client *client)
 
 	retimer->client = client;
 
-	retimer->disable_usb4 = device_property_read_bool(dev, "parade,disable-usb4");
+	retimer->disable_usb4 = ps883x_should_disable_usb4();
+	if (retimer->disable_usb4)
+		dev_info(dev, "USB4 disabled until platform USB4 support is complete\n");
 
 	mutex_init(&retimer->lock);
 
@@ -456,6 +487,16 @@ static int ps883x_retimer_probe(struct i2c_client *client)
 
 		/* firmware initialization delay */
 		msleep(60);
+
+		/* make sure device is accessible */
+		ret = regmap_read(retimer->regmap, REG_USB_PORT_CONN_STATUS_0,
+				  &val);
+		if (ret) {
+			dev_err(dev, "failed to read conn_status_0: %d\n", ret);
+			if (ret == -ENXIO)
+				ret = -EIO;
+			goto err_clk_disable;
+		}
 	}
 
 	/* Keep the retimer in reset until a Type-C notification comes */

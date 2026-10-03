@@ -857,8 +857,6 @@
 		retimer-switch;
 		orientation-switch;
 
-		parade,disable-usb4;
-
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -1250,9 +1248,7 @@
 	gpio-reserved-ranges = <28 4>, /* Unused */
 			       <34 2>, /* Unused */
 			       <44 4>, /* SPI (TPM) */
-			       <65 1>, /* EC reset */
-			       <72 2>, /* Secure EC I2C connection (?) */
-			       <238 1>; /* UFS Reset */
+			       <72 2>; /* Secure EC I2C connection (?) */
 
 	edp_reg_en: edp-reg-en-state {
 		pins = "gpio54";

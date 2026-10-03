@@ -3,12 +3,39 @@
 
 set -euo pipefail
 
-readonly SP11_BASE_COMMIT="87bcf07d1ed79960c0f2e769ada5b8b05fd35c48"
+readonly SP11_BASE_COMMIT="e57ec2987d4540fa89280d349f79c4d9bcd7cf27"
+# This exact checkpoint imports the rebased upstream while retaining the
+# original SP11 history. Its tree was reconstructed from the 32 merged SP11
+# commits plus the existing Denali EC-reset GPIO reservation. No held topic
+# is included. Only this immutable merge may bypass the linear-topic rule;
+# its complete SP11 delta remains covered by the integration checks above.
+readonly SP11_REFRESH_COMMIT="eea05165923210e93de26484b040f3f3b398b435"
+readonly SP11_PREVIOUS_BETA_COMMIT="bf631f9a13b3f6bd622645ba95165c8098932c95"
 readonly SP11_RANGE="${SP11_BASE_COMMIT}...HEAD"
 
 die() {
 	printf 'error: %s\n' "$*" >&2
 	exit 1
+}
+
+reviewed_private_defaults_warning() {
+	local commit="$1" output="$2" diagnostics patch_id blob_id
+
+	# The Denali producer patch mutates a private defaults copy before regmap
+	# initialization. CONST_STRUCT is inapplicable to that writable argument.
+	# Pin both the patch and exact resulting source. Stable patch IDs ignore
+	# whitespace, including meaningful whitespace inside string literals.
+	# Accept exactly this one diagnostic; other findings still fail closed.
+	diagnostics="$(grep -E '^(ERROR|WARNING|CHECK):' <<<"$output" || true)"
+	[[ "$diagnostics" == \
+		'WARNING:CONST_STRUCT: struct reg_default should normally be const' ]] ||
+		return 1
+	blob_id="$(git rev-parse --verify \
+		"${commit}:sound/soc/codecs/lpass-wsa-macro.c")" || return 1
+	[[ "$blob_id" == af26d75c4017cb672722bb9e742b7c7fa24ec57e ]] || return 1
+	patch_id="$(git diff --no-ext-diff "${commit}^" "$commit" -- |
+		git patch-id --stable)" || return 1
+	[[ "${patch_id%% *}" == 5a64ac327ac508b199b27da018f14ac2d61ad0f4 ]]
 }
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
@@ -151,6 +178,21 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 	while IFS= read -r commit; do
 		commit_and_parents=()
 		read -r -a commit_and_parents <<<"$(git rev-list --parents -n 1 "${commit}")"
+		if [[ "${commit}" == "${SP11_REFRESH_COMMIT}" ]]; then
+			((${#commit_and_parents[@]} == 3)) ||
+				die "approved upstream refresh must have two parents"
+			[[ "${commit_and_parents[1]}" == "${SP11_PREVIOUS_BETA_COMMIT}" ]] ||
+				die "approved upstream refresh has the wrong beta parent"
+			[[ "${commit_and_parents[2]}" == "${SP11_BASE_COMMIT}" ]] ||
+				die "approved upstream refresh has the wrong upstream parent"
+			git merge-base --is-ancestor "${review_base}" \
+				"${commit_and_parents[1]}" ||
+				die "approved upstream refresh does not retain the review base"
+			review_count=$((review_count + 1))
+			printf 'Approved upstream refresh %s is checked as an integration delta.\n' \
+				"${commit}"
+			continue
+		fi
 		((${#commit_and_parents[@]} == 2)) ||
 			die "topic range must be linear; merge commit found: ${commit}"
 
@@ -168,9 +210,15 @@ if [[ -n "${review_base}" || -n "${review_head}" ]]; then
 		)"
 		printf '%s\n' "${commit_checkpatch_output}"
 		if grep -qE '^(ERROR|WARNING|CHECK):' <<<"${commit_checkpatch_output}"; then
-			die "per-commit source checkpatch findings in ${commit}"
+			reviewed_private_defaults_warning "$commit" \
+				"$commit_checkpatch_output" ||
+				die "per-commit source checkpatch findings in ${commit}"
+			printf 'Reviewed private-defaults warning retained for %s.\n' "$commit"
 		fi
-	done < <(git rev-list --reverse "${review_base}..${review_head}")
+	# Upstream was rebased; its imported history is not an SP11 topic series.
+	# Exclude only the pinned upstream ancestry, never arbitrary merge parents.
+	done < <(git rev-list --reverse "${review_base}..${review_head}" \
+		"^${SP11_BASE_COMMIT}")
 
 	((review_count > 0)) || die "pull request contains no topic commits"
 	printf 'Per-commit source checks passed for %d topic commits.\n' \
