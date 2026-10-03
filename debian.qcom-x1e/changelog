@@ -1,3 +1,16 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v7) resolute; urgency=medium
+
+  * Qualification-only SP11 profile, fan and CPU-policy dependency-group build.
+  * Keep the native platform-profile class available without a fake ACPI path.
+  * Add Denali-only profile and fan nodes with guarded frequency-QoS handling.
+  * Select low power at probe with the Denali 2.515 GHz maximum-frequency policy.
+  * Preserve the v6 battery ports, tested v4 audio/input and contribution history.
+  * Keep camera refinements isolated and retain source non-Stubble DTB policy.
+  * Allocate a fresh ABI; profile transitions and hardware qualification are open.
+  * Retain the known-good recovery kernel; do not merge this test carrier.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 03 Oct 2026 04:00:04 +0100
+
 linux-qcom-x1e (7.2.5-jg-0sp11v6) resolute; urgency=medium
 
   * Qualification-only SP11 battery and AC-provider dependency-group build.
