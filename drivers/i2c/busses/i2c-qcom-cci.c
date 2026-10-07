@@ -27,6 +27,7 @@
 #define CCI_I2C_Mm_SDA_CTL_1(m)			(0x108 + 0x100 * (m))
 #define CCI_I2C_Mm_SDA_CTL_2(m)			(0x10c + 0x100 * (m))
 #define CCI_I2C_Mm_MISC_CTL(m)			(0x110 + 0x100 * (m))
+#define CCI_I2C_MISC_CTL_SCL_STRETCH_EN	BIT(8)
 
 #define CCI_I2C_Mm_READ_DATA(m)			(0x118 + 0x100 * (m))
 #define CCI_I2C_Mm_READ_BUF_LEVEL(m)		(0x11c + 0x100 * (m))
@@ -263,7 +264,8 @@ static void cci_init(struct cci *cci)
 		val = hw->tbuf;
 		writel(val, cci->base + CCI_I2C_Mm_SDA_CTL_2(i));
 
-		val = hw->scl_stretch_en << 8 | hw->trdhld << 4 | hw->tsp;
+		val = CCI_I2C_MISC_CTL_SCL_STRETCH_EN |
+		      hw->trdhld << 4 | hw->tsp;
 		writel(val, cci->base + CCI_I2C_Mm_MISC_CTL(i));
 	}
 }
