@@ -4291,12 +4291,19 @@ static const struct of_device_id g6ts_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, g6ts_of_match);
 
+static const struct spi_device_id g6ts_spi_ids[] = {
+	{ "mshw0485", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, g6ts_spi_ids);
+
 static struct spi_driver g6ts_driver = {
 	.driver = {
 		.name = G6TS_NAME,
 		.of_match_table = g6ts_of_match,
 		.pm = pm_sleep_ptr(&g6ts_pm_ops),
 	},
+	.id_table = g6ts_spi_ids,
 	.probe = g6ts_probe,
 	.remove = g6ts_remove,
 };
