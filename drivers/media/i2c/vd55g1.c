@@ -2167,24 +2167,28 @@ static int vd55g1_disable_streams(struct v4l2_subdev *sd,
 				  u64 streams_mask)
 {
 	struct vd55g1 *sensor = to_vd55g1(sd);
-	int ret = 0;
+	int stop_ret = 0;
+	int ret;
 
 	/* Retrieve Expo cluster to enable coldstart of AE */
 	ret = vd55g1_read_expo_cluster(sensor);
-
-	vd55g1_write(sensor, REG_STREAMING, VD55G1_STREAMING_STOP_STREAM,
-		     &ret);
-	vd55g1_poll_reg(sensor, REG_STREAMING, 0, &ret);
-	vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &ret);
-
 	if (ret)
+		dev_warn(sensor->dev, "Failed to save exposure: %d\n", ret);
+
+	/* A failed exposure read must not suppress the independent stop. */
+	vd55g1_write(sensor, REG_STREAMING, VD55G1_STREAMING_STOP_STREAM,
+		     &stop_ret);
+	vd55g1_poll_reg(sensor, REG_STREAMING, 0, &stop_ret);
+	vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &stop_ret);
+
+	if (stop_ret)
 		dev_warn(sensor->dev, "Can't disable stream\n");
 
 	vd55g1_grab_ctrls(sensor, false);
 
 	pm_runtime_put_autosuspend(sensor->dev);
 
-	return ret;
+	return stop_ret ? stop_ret : ret;
 }
 
 static int vd55g1_patch(struct vd55g1 *sensor)
