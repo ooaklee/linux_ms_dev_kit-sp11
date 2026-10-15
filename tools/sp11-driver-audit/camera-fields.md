@@ -188,7 +188,7 @@ deserializer and request producer in `QcDeviceMFT8380.dll`, SHA-256
 `c241b7fbb2ec54e439752a1ea7ad25da10ca740012a54bd0e7a87ea94a141c35`.
 The chain from `0x180881218` through `0x18087eab0` and `0x18087d020`
 expands each 252-byte serialized mode into a `0x248`-byte runtime record.
-Request producer `0x18071f308` consumes the following proven mappings:
+The deserializer and downstream consumers use the following proven mappings:
 
 | Field | Serialized mode offset | Runtime offset |
 | --- | --- | --- |
