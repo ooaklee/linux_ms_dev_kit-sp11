@@ -16,7 +16,7 @@ raw storage from a new Linux driver to work around unverified boot integration.
 
 ## Native source candidate
 
-The source-only `sp11-native-dpp-source-20261015` bundle applies two focused
+The source-only `sp11-native-dpp-source-20261015-r2` bundle applies four focused
 commits to [dtbloader](https://github.com/TravMurav/dtbloader) at
 `b1bf23e88b779ac323fbcbe547cf3ba939433df3`:
 
@@ -26,6 +26,25 @@ commits to [dtbloader](https://github.com/TravMurav/dtbloader) at
 2. `397ee3ca597084d91f1be5c82fe10129e03f43a4`: constrain Bluetooth vendor matching
    to `QCOM` through the existing Surface Pro 11 descriptor, preserving other
    boards' unconstrained vendor policy and the existing WLAN/byte-reversal path.
+3. `0d88509c82a3752fa3b9afb982b344612f1dcc31`: honor the native matcher's
+   already declared hardware-ID priority order without changing descriptors.
+4. `3ba7a4bdfb92bf9869ab3783ccbe06a036dc86ce`: add portable actual-function
+   board-matcher tests alongside the existing bounded-reader tests.
+
+Revision 2 is the complete four-patch series from the same base, not an
+incremental patch for the original two-patch archive. That earlier archive
+remains an immutable historical revision. Replaying the four emails onto the
+full exact base on Linux reproduced tree
+`a91c60a401d726276d56e51d3e9a971e3c083c48`, with all 15 review snapshots and
+original author identities, exact dates, messages, trailers and code patch IDs
+preserved. Replay committer metadata need not match the original commits.
+
+The revision-2 archive SHA-256 is
+`c6910c329bb9edc553c8ec6eb62d01a847e92eac272596009ddd35a6dada1a57`.
+It contains only 23 text files, including 15 source/licence snapshots and four
+patch emails. Deterministic packing, exact member-byte comparison and fresh
+Linux extraction verified all 22 checksums. Private evidence and compiled
+results are not distributed in the archive.
 
 The reader interprets only the licensed native implementation's known fields.
 Unknown versions, secondary magic, region ownership and nonzero row states
@@ -63,8 +82,8 @@ corrects a pre-existing board matcher issue: use `hwids[priority[i]]`, not
 `hwids[i]`. The original loop checked IDs 0 through 8, ignoring the declared
 specificity order and omitting IDs 9 through 11. The priority array, device
 descriptors, additional match predicates, registration-order ties and
-successful-match cache are unchanged. This commit is not part of the immutable
-two-patch source bundle described above.
+successful-match cache are unchanged. The correction and its portable tests
+are included in revision 2, not retroactively added to the original archive.
 
 The exact function passed 191 synthetic scenarios per optimized and
 AddressSanitizer/UndefinedBehaviorSanitizer run on both macOS and native ARM64
@@ -74,6 +93,10 @@ orders, sole identities, rejected predicates, ties, missing identities and
 cache/error retry behavior. Actual project headers are used, but EFI services,
 SMBIOS population and registry boundaries are synthetic; these tests do not
 exercise the COFF linker registry or identify a real board.
+
+The public `make -C tests check` and `sanitize` targets reproduce both suites;
+select the installed C compiler with `CC`, such as `CC=clang-18`. Python 3 is
+needed for test extraction/orchestration only, not the production provider.
 
 The corrected source also completed the full 85-object native ARM64 EFI
 compile/link without warnings. OpenCode recommended the focused correction

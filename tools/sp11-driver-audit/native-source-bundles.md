@@ -118,7 +118,11 @@ commit messages and ordered trailers. The resulting four snapshots matched;
 only those paths and the declared `MAINTAINERS` addition differ from v8.
 
 See [the validation summary](native-camera-validation.md) and the bundle's
-manifest for exact source, configuration and artifact hashes. No revision
+manifest for exact source, configuration and artifact hashes. The exact binding
+snapshots also passed scoped document/lint/style checks and four positive/five
+negative synthetic example checks; unrelated carrier schema diagnostics remain
+recorded. These are not physical board or exhaustive schema-semantic tests.
+No revision
 is an installable kernel release or evidence of camera, suspend or
 optical-safety qualification.
 
