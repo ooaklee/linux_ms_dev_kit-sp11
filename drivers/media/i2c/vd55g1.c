@@ -2110,10 +2110,10 @@ static int vd55g1_ro_ctrls_setup(struct vd55g1 *sensor, struct v4l2_rect *crop)
 static void vd55g1_grab_ctrls(struct vd55g1 *sensor, bool enable)
 {
 	/* These settings cannot change during stream */
-	v4l2_ctrl_grab(sensor->hflip_ctrl, enable);
-	v4l2_ctrl_grab(sensor->vflip_ctrl, enable);
-	v4l2_ctrl_grab(sensor->patgen_ctrl, enable);
-	v4l2_ctrl_grab(sensor->hdr_ctrl, enable);
+	__v4l2_ctrl_grab(sensor->hflip_ctrl, enable);
+	__v4l2_ctrl_grab(sensor->vflip_ctrl, enable);
+	__v4l2_ctrl_grab(sensor->patgen_ctrl, enable);
+	__v4l2_ctrl_grab(sensor->hdr_ctrl, enable);
 }
 
 static int vd55g1_enable_streams(struct v4l2_subdev *sd,
@@ -2583,16 +2583,17 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 	struct v4l2_ctrl *ctrl;
 	struct v4l2_fwnode_device_properties fwnode_props;
 	struct vd55g1_vblank_limits vblank;
+	struct v4l2_subdev_state *state;
+	struct v4l2_mbus_framefmt format;
+	struct v4l2_rect crop;
 	unsigned int hblank;
-	struct v4l2_subdev_state *state =
-		v4l2_subdev_lock_and_get_active_state(&sensor->sd);
-	struct v4l2_rect *crop =
-		v4l2_subdev_state_get_crop(state, 0);
-	struct v4l2_mbus_framefmt *format =
-		v4l2_subdev_state_get_format(state, 0);
 	int ret;
 
-	v4l2_ctrl_handler_init(hdl, 16);
+	/* Control constructors acquire the shared state/handler lock. */
+	state = v4l2_subdev_lock_and_get_active_state(&sensor->sd);
+	crop = *v4l2_subdev_state_get_crop(state, 0);
+	format = *v4l2_subdev_state_get_format(state, 0);
+	v4l2_subdev_unlock_state(state);
 
 	/* Flip cluster */
 	sensor->hflip_ctrl = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_HFLIP,
@@ -2603,6 +2604,8 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 					       0, 1, 1, 0);
 	if (sensor->vflip_ctrl)
 		sensor->vflip_ctrl->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+	if (hdl->error)
+		return hdl->error;
 	v4l2_ctrl_cluster(2, &sensor->hflip_ctrl);
 
 	/* Exposition cluster */
@@ -2618,6 +2621,8 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 					      VD55G1_FRAME_LENGTH_DEF -
 					      VD55G1_EXPO_MAX_TERM,
 					      1, VD55G1_EXPO_DEF);
+	if (hdl->error)
+		return hdl->error;
 	v4l2_ctrl_auto_cluster(4, &sensor->ae_ctrl, V4L2_EXPOSURE_MANUAL, true);
 
 	sensor->patgen_ctrl =
@@ -2650,12 +2655,14 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 						     0, VD55G1_NO_HDR,
 						     vd55g1_hdr_menu);
 	}
-	hblank = vd55g1_get_hblank_min(sensor, format, crop);
+	if (hdl->error)
+		return hdl->error;
+	hblank = vd55g1_get_hblank_min(sensor, &format, &crop);
 	sensor->hblank_ctrl = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_HBLANK,
 						hblank, hblank, 1, hblank);
 	if (sensor->hblank_ctrl)
 		sensor->hblank_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-	vd55g1_get_vblank_limits(sensor, crop, &vblank);
+	vd55g1_get_vblank_limits(sensor, &crop, &vblank);
 	sensor->vblank_ctrl = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_VBLANK,
 						vblank.min, vblank.max,
 						1, vblank.def);
@@ -2668,23 +2675,14 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 					       V4L2_FLASH_LED_MODE_FLASH, 0,
 					       V4L2_FLASH_LED_MODE_NONE);
 	}
+	if (hdl->error)
+		return hdl->error;
 
 	ret = v4l2_fwnode_device_parse(sensor->dev, &fwnode_props);
 	if (ret)
-		goto free_ctrls;
+		return ret;
 
-	ret = v4l2_ctrl_new_fwnode_properties(hdl, ops, &fwnode_props);
-	if (ret)
-		goto free_ctrls;
-
-	sensor->sd.ctrl_handler = hdl;
-	goto unlock_state;
-
-free_ctrls:
-	v4l2_ctrl_handler_free(hdl);
-unlock_state:
-	v4l2_subdev_unlock_state(state);
-	return ret;
+	return v4l2_ctrl_new_fwnode_properties(hdl, ops, &fwnode_props);
 }
 
 static int vd55g1_match_revision(struct vd55g1 *sensor, u64 rev)
@@ -2989,6 +2987,11 @@ static int vd55g1_subdev_init(struct vd55g1 *sensor)
 		return ret;
 	}
 
+	ret = v4l2_ctrl_handler_init(&sensor->ctrl_handler, 16);
+	if (ret)
+		goto err_media;
+
+	sensor->sd.ctrl_handler = &sensor->ctrl_handler;
 	sensor->sd.state_lock = sensor->ctrl_handler.lock;
 	ret = v4l2_subdev_init_finalize(&sensor->sd);
 	if (ret) {
@@ -3004,14 +3007,15 @@ static int vd55g1_subdev_init(struct vd55g1 *sensor)
 	if (ret) {
 		dev_dbg(sensor->dev, "Controls initialization failed %d\n",
 			ret);
-		goto err_media;
+		goto err_subdev;
 	}
 
 	return 0;
 
+err_subdev:
+	v4l2_subdev_cleanup(&sensor->sd);
 err_ctrls:
-	v4l2_ctrl_handler_free(sensor->sd.ctrl_handler);
-
+	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 err_media:
 	media_entity_cleanup(&sensor->sd.entity);
 	return ret;
@@ -3021,8 +3025,8 @@ static void vd55g1_subdev_cleanup(struct vd55g1 *sensor)
 {
 	v4l2_async_unregister_subdev(&sensor->sd);
 	v4l2_subdev_cleanup(&sensor->sd);
+	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 	media_entity_cleanup(&sensor->sd.entity);
-	v4l2_ctrl_handler_free(sensor->sd.ctrl_handler);
 }
 
 static int vd55g1_get_regulators(struct vd55g1 *sensor)
