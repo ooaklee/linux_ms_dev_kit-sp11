@@ -35,11 +35,12 @@ including the separate touch-autoload repair, require their own integration
 and regression checks. Fork research tools and CI are not part of the native
 driver patch sets.
 
-Revision 2 retains the first 23 patch emails unchanged and appends one
-VD55G1-family correction: changing automatic/manual exposure must retain the
-existing 446-line limit in HDR subtraction mode. It does not add illumination
-support or change manual exposure, frame timing or GPIO policy. The previous
-bundle remains a separately identified historical revision.
+Revision 3 retains revision 2's 24 patch emails unchanged and appends three
+IR-driver corrections: reject active format changes while streaming, establish
+the shared state/control lock before publication and use its caller-locked
+control helpers, and restore VD55G0's native exposure-control write sequence.
+The bundle contains 2 OV13858 and 25 IR patches. Earlier archives remain
+separately identified, immutable historical revisions.
 
 VD55G0 source is based on
 [Peter Marshall's native series](https://github.com/petm5/linux/commit/4a04accd5f688ac4fdca1ad4d3959ef17825085c),
@@ -89,22 +90,26 @@ for the **previous 23-patch revision**, whose IR source ends at
 `14bb8959fc37812a23ed55af73a2eb273acdb043`. Its configuration was unchanged
 by `olddefconfig`; it was a validation configuration, not an identical release
 toolchain/configuration. Warnings elsewhere in the carrier remain documented.
-That full build does not include revision 2's HDR correction.
+That full build does not include revision 2's HDR correction or revision 3's
+three corrections.
 
-The **current 24-patch revision** ends at IR commit
-`5c961dcbcb4e7742124e402800317f693634ddb4`. Its corrected driver passed a
-focused ARM64 `W=1` object and module link against that prepared kernel, plus
-779 exact-function synthetic cases on each of host sanitizers and native
-ARM64 Linux. The pre-correction driver failed 176 HDR-sensitive cases in the
-same test set. These tests use stubs, not a sensor or the live PM/CCI core.
-All 24 patch emails also applied with `git am` to the complete original v8
+The **current 27-patch revision** ends at IR commit
+`ff99e470cc8ca665580cd26bd072145d853d1ab5`. Its exact driver passed a focused
+ARM64 `W=1` object/module link against the prepared kernel and 1,059 synthetic
+register-trace/error cases on each of host sanitizers and native ARM64 Linux.
+The G0 correction removes only the added maximum-register operation; all
+tested G1/G4/VD65G4 traces, including HDR subtraction's 446-line value, remain
+unchanged. Separate checks at the preceding format and lifecycle commits
+cover active-state mutation, allocation failures and shared-lock ownership.
+These are source-level tests, not sensor or full V4L2/PM/CCI-core tests.
+
+All 27 patch emails applied with `git am` to the complete original v8
 commit/tree on a Linux filesystem, preserving author identities, exact dates,
 commit messages and ordered trailers. The resulting four snapshots matched;
-all other carrier files except the declared `MAINTAINERS` addition were
-unchanged.
+only those paths and the declared `MAINTAINERS` addition differ from v8.
 
 See [the validation summary](native-camera-validation.md) and the bundle's
-manifest for exact source, configuration and artifact hashes. Neither revision
+manifest for exact source, configuration and artifact hashes. No revision
 is an installable kernel release or evidence of camera, suspend or
 optical-safety qualification.
 
@@ -126,9 +131,13 @@ IR board identity, actual I2C routing/address, supplies/reset, CSI graph,
 capture timing, calibration and sensor-only runtime behaviour remain to be
 qualified. Illuminator wiring, first-frame and live-control exposure limits,
 current control and independent safety requirements need a separate review
-before illumination support can be added. Live VBLANK changes still do not
-explicitly synchronize the hardware auto-exposure ceiling with the changed
-frame length; that inherited behavior is not corrected here. Full capture,
-runtime failure recovery, suspend/resume and physical VD55G1/G4 regression
-compatibility remain unproven. No device installation instructions are
-supplied for this unqualified foundation.
+before illumination support can be added. G0's `0x096c` is described as a
+manual maximum, not a proven automatic-exposure ceiling. The current source
+does not directly access it, matching ST's native driver for the same firmware
+versions. This does not establish the full physical exposure range. Live
+VBLANK changes update context frame length and software exposure ranges;
+firmware-specific maximum/latching rules and the G1-family live static-register
+policy still need qualification. No guessed group-hold or startup-only maximum
+write has been added. Full capture, runtime failure recovery, suspend/resume
+and physical VD55G1/G4 regression compatibility remain unproven. No device
+installation instructions are supplied for this unqualified foundation.

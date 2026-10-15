@@ -95,8 +95,8 @@ the tested v8 carrier and the inspected jglathe 7.2.9 tree before these edits.
   with no Windows package present in the build environment.
 
 The unchanged OV13858 snapshot was also included in the previous 23-patch
-revision's complete ARM64 kernel/module link. Revision 2 adds only the
-separately tested IR HDR correction; see
+revision's complete ARM64 kernel/module link. Revisions 2 and 3 add separately
+tested IR-driver corrections without changing this sensor snapshot; see
 [the validation summary](native-camera-validation.md) for that distinction.
 These checks do not qualify a combined hardware release. Integration with later
 carrier changes and physical OF/ACPI regression tests remain required before a
