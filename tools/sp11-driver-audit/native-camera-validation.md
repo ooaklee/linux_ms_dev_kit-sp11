@@ -158,6 +158,32 @@ compilation/linking of its exact source, not Debian packaging, binding or
 firmware behavior or physical hardware safety. Generated signing material was
 not read, hashed or exported by the audit.
 
+## Scoped binding and example checks
+
+The same exact two binding snapshots subsequently passed direct document
+validation, YAML lint and the kernel's binding-style checker using dtschema
+2026.9. Each direct check exited successfully without diagnostics. The selected
+kernel `dt_binding_check` target generated both example DTBs and all three check
+stamps without changing source.
+
+Separate checks confirmed both schema IDs were present in the processed schema
+and inspected JSON validation diagnostics, not just command exit status. In
+this tool version, `dt-validate` returns zero even for validation errors, and
+the kernel example recipe masks that exit with `true`.
+
+Four synthetic examples passed: the original OV13858 and G1 examples, plus G0
+without LEDs using 600 MHz and the 375 MHz schema-minimum link frequencies.
+Five controls were
+rejected by the intended schemas: missing `reg` on either original sensor,
+OV13858 at the unsupported 592.8 MHz link frequency, G0 with `st,leds`, and G0
+below 375 MHz. These checks cover the stated example constraints, not every possible
+tree, driver behavior or physical clock/sensor configuration.
+
+Whole-tree schema aggregation also reported an unrelated ath12k parsing error,
+duplicate EC-compatible schemas and a jobserver warning. These remain recorded;
+the check is not described as a clean validation of every carrier binding.
+No board graph, camera operation, electrical or optical behavior was qualified.
+
 ## Remaining boundaries
 
 No Denali rear/IR graph, physical sensor identity, calibration, runtime
