@@ -26,6 +26,10 @@ node tools/sp11-driver-audit/camera-config.mjs \
   --kind pcfg --input /path/to/CAMP_PCFG_MSHW0495.bin
 node tools/sp11-driver-audit/camera-config.mjs \
   --kind scfg --input /path/to/SCFG_REAR_MSHW0491.bin
+node tools/sp11-driver-audit/camera-power.mjs \
+  --input /path/to/CAMS_RES_MSHW0491.bin
+node tools/sp11-driver-audit/windows-resources.mjs \
+  --format registry-utf16-arm64 --input /path/to/camera-platform.reg
 node tools/sp11-driver-audit/chromatix.mjs \
   --input /path/to/com.surface.sensormodule.rfc_ov13858.bin
 node --test tools/sp11-driver-audit/*.test.mjs
@@ -52,6 +56,22 @@ It preserves both platform configuration banks, raw values and unknown tail
 fields. It does not select a board, turn orientation codes into angles, or
 translate Windows resource indices into Linux GPIO or CCI numbers.
 
+The power interpreter names the verified TLMM GPIO fields, type-one PMIC
+voltage/enable/mode votes and resource-delay units. Unknown mechanisms,
+component subtrees and extension fields remain opaque. Wrapper metadata is
+stored once, with offset references from resources, so long device labels are
+not repeated for every operation. Configured sequence order is not measured
+electrical timing, and a GPIO level or voltage is not proof of a sensor pin's
+function or ownership.
+
+The Windows resource reader explicitly selects the observed ARM64 packed
+layout; it does not autodetect architectures or evaluate firmware. It accepts
+bounded UTF-16LE registry exports containing typed `hex(8)` lists, or a raw
+list with `--format cm-arm64`. Unknown layouts, variable-length resource
+types, MSI interrupts and ambiguous/duplicate registry value names fail
+explicitly. Registry output can contain device-instance identifiers: retain
+it privately. Nothing is imported into the registry or applied to hardware.
+
 The Chromatix reader validates the observed 3.0.1 container, CRC32, section
 extents, named descriptors, register-sequence references and resource budgets.
 It does not execute operations or emit Linux driver code. Default output
@@ -75,6 +95,15 @@ arguments require the minimum data union; the earlier narrow reader rejected
 `qcadc/ADC1.bin` because it missed this documented storage rule. Structural
 decoding does not establish the meaning of ADC resources or coverage of every
 possible argument encoding.
+
+The new power interpreter accepts all 13 inspected camera-resource files;
+uninterpreted component subtrees remain opaque rather than being treated as
+covered policies. The rear file exposes three GPIO, eight PMIC-vote and three
+delay records. A saved MSHW0495 camera-platform allocation independently
+matches the two CCI memory ranges in Linux. Its four byte-identical export
+copies constitute one observation, not four hardware trials; allocation data
+is not itself a translated WDF resource trace. See the field specification
+for the combined evidence and its limits.
 
 The sensor-container reader validates the inspected IMX681, OV13858 and three
 OV02C10 containers. The front module has 3,035 named descriptors and 915 register
