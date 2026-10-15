@@ -124,6 +124,7 @@ registers. Neither check establishes CSI timing or successful rear capture.
 | Sensors | Surface SAM support is distinct from the Qualcomm sensor hub | Transport, exact board configuration, orientation and calibration |
 | USB4 | Router/retimer groundwork exists | Resource ownership, sideband and working firmware/ring lifecycle |
 | Audio | Working protected kernel and userspace path; an ALSA update replaced the selector | Preserve sound while completing persistent userspace selection and scoped compatibility |
+| Bluetooth factory identity | Existing native firmware-property consumer; separate bounded provider source candidate | Authenticate factory source, harden provider selection and qualify the installed boot path |
 
 Hardware identity comes from the actual board, firmware tables and device
 identification. The bundle includes optional docks, modems, SSDs, panels and
@@ -139,6 +140,11 @@ the independent OV13858 and VD55G0 patch sets, their native upstream/vendor
 provenance and the source, object and module validation workflow. They are
 foundations for qualification, not installable camera fixes. In particular, a
 native IR sensor driver is not equivalent to safely enabling an illuminator.
+
+The [native Bluetooth provisioning source track](native-bluetooth-provisioning.md)
+records a separate source-only dtbloader candidate, its exact native build and
+synthetic coverage, and the provider/boot-chain gates that remain. It does not
+add a kernel raw-partition reader or change the running device's factory identity.
 
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that
