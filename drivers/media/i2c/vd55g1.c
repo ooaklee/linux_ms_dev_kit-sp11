@@ -2774,8 +2774,7 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 
 	/* Establish the sensor-only GPIO policy after firmware reaches standby. */
 	if (sensor->model == &vd55g0_model) {
-		ret = vd55g1_update_gpios(sensor,
-					 GENMASK(VD55G1_NB_GPIOS - 1, 0));
+		ret = vd55g1_update_gpios(sensor, GENMASK(VD55G1_NB_GPIOS - 1, 0));
 		if (ret)
 			goto disable_clock;
 	}
