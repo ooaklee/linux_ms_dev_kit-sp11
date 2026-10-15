@@ -44,17 +44,19 @@ silently substitute either sequence for verified board/module requirements.
 
 No Denali DTS node is enabled by this series. Resolve and review:
 
-- Sensor-to-PCFG-slot lookup and current-board confirmation. The platform
-  HAL establishes raw address `0x20` as CCI/Linux `0x10`; the saved MSHW0495
-  allocation plus the HAL consumer now match logical masters 0/1 to CCI0
-  and 2/3 to CCI1. This is not a fresh translated-resource hardware trace.
+- Current-board and effective-PCFG-bank confirmation. Static consumer
+  tracing now associates the rear with slot zero; the saved MSHW0495
+  allocation, HAL and SCFG together describe `cci0_i2c1` at `0x10`, CSIPHY1.
+  This is not a fresh translated-resource or physical capture trace.
 - Reset-net and sensor pin-to-rail ownership. Static analysis establishes
   physical GPIO110 low/high levels and the `ldom6`/`ldom1`/`ldom5`/`ldob16`
   voltage votes, but does not prove that GPIO110 is reset or that the
   separately sequenced 2.9 V rail belongs to an actuator.
-- Physical CSI lane assignment, link frequency and module-specific mode
-  timing. Windows metadata and programmed frame length currently disagree;
-  output-size agreement is not enough to infer clock timing.
+- Physical sensor-to-receiver lane assignment, polarities, sensor PLL and
+  module-specific timing. The verified Windows producer's nominal 592.8 MHz
+  request assumes zero overhead, whose effective setting is unresolved;
+  it is not a new validated Linux mode. Metadata and listed frame-length
+  writes still disagree, and output and exposure clocks are distinct.
 - Actuator/OTP calibration ownership and indicator sharing with the front
   and IR cameras, using native Linux interfaces.
 

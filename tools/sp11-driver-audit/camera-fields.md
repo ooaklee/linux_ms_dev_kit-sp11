@@ -56,8 +56,8 @@ field-specific log arguments support these names:
 
 Flag bit 8 indicates position-offset data and bit 9 indicates privacy-shutter
 data. Tail words remain uninterpreted in the source tool. Orientation values
-are not degrees, Windows I2C indices are not a proven Linux bus mapping, and
-neither CSI lane layout nor link frequency follows from these fields.
+are not degrees. An I2C index alone does not identify a Linux bus, and neither
+CSI lane layout nor link frequency follows from these fields.
 
 The MSHW0495 bank-zero words begin `0x00110000`, `0x00230010`, `0x01000110`.
 The second word's CSIPHY 2 agrees with the existing front-camera graph. The
@@ -144,14 +144,90 @@ consumer and index split gives this controller map:
 These are captured registry allocations, not an evaluated `_CRS` or a direct
 WDF translated-list dump. Do not present them as either, infer physical sensor
 presence from them, or assume a different board revision has identical wiring.
-Associating a PCFG slot with a sensor still requires the sensor-ID lookup
-chain; controller mapping alone is not board enablement.
+Controller mapping alone is not board enablement.
 
 The bounded reader follows the documented
 [resource-list structure](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_cm_resource_list)
 and [partial-descriptor fields](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_cm_partial_resource_descriptor),
 with an explicit observed-layout selection. It never applies resources or
 turns connection IDs into Linux GPIO numbers.
+
+### Sensor slots and configured routes
+
+Separate instruction-level inspection closes the PCFG consumer association;
+this is not inferred from privacy-indicator labels. Each sensor getter asks
+the platform for a `0x388`-byte table with command `0x232083`. Rear getter
+`0x140005188` copies the first slot at table offset `0x24`. Front getter
+`0x140001b48` copies offset `0x90` and records index one; auxiliary getter
+`0x140001300` copies offset `0xfc` and records index two. These offsets match
+the parser's `0x6c`-byte slot stride. The inspected auxiliary driver SHA-256 is
+`e5b6b064f39cf239ab07e22ca2434e3c08c93b691dc7d27cebb90861226efa75`.
+
+Combining the MSHW0495 bank-zero values, those consumers, the controller map
+and each SCFG address gives these configured routes:
+
+| Sensor consumer | PCFG slot | Logical master | Linux bus/address | CSIPHY index |
+| --- | --- | --- | --- | --- |
+| Rear | 0 | 1 | `cci0_i2c1`, `0x10` | 1 |
+| Front | 1 | 3 | `cci1_i2c1`, `0x10` | 2 |
+| Auxiliary | 2 | 0 | `cci0_i2c0`, `0x60` | 0 |
+
+The auxiliary address is not the front/rear address. Its SCFG file, SHA-256
+`1c848ac4ddbe12948cae4affee421e3a457cac61f98dacb30043841bf0bd1bff`,
+contains raw `0xc0`, with expected probe bytes `30 47` at register zero.
+That is consistent with the first two little-endian bytes of native VD55G0
+ID `0x53354730`, but not a substitute for a physical full-ID/revision check.
+The alternate PCFG bank is zero in this file; the effective bank and actual
+board revision still need confirmation. No graph, rail ownership or sensor
+presence is established merely by publishing these configured routes.
+
+## Rear mode and PHY request
+
+The rear module's serialized mode fields were traced through the actual
+deserializer and request producer in `QcDeviceMFT8380.dll`, SHA-256
+`c241b7fbb2ec54e439752a1ea7ad25da10ca740012a54bd0e7a87ea94a141c35`.
+The chain from `0x180881218` through `0x18087eab0` and `0x18087d020`
+expands each 252-byte serialized mode into a `0x248`-byte runtime record.
+Request producer `0x18071f308` consumes the following proven mappings:
+
+| Field | Serialized mode offset | Runtime offset |
+| --- | --- | --- |
+| Line length | `0x24` | `0x44` |
+| Frame length | `0x28` | `0x48` |
+| Output pixel clock | `0x34` | `0x54` |
+| Maximum frame rate | `0x40` | `0x60` |
+| Lane count | `0x50` | `0x74` |
+| Requested settle time | `0x5c` | `0x84` |
+| D-PHY/C-PHY phase | `0x60` | `0x88` |
+
+All three inspected rear modes describe four-lane D-PHY, RAW10, 100 ns
+requested settle time and 474,240,000 output pixels/s. The producer applies
+a runtime percentage overhead before calculating per-lane bit rate. Only
+at zero overhead would the nominal D-PHY request be 592,800,000 Hz:
+`474240000 * 10 / 4 / 2`. The effective overhead is unresolved. This is a
+metadata-derived receiver request, not verified sensor PLL timing or a new
+Linux link-frequency mode.
+
+The published `vtPixelClock` is synthesized from line length, frame length
+and maximum FPS in this path. It is not the output pixel clock. The listed
+frame length is 3214, while the last listed sensor writes encode 3208;
+dynamic frame-duration/exposure programming remains untraced. Do not derive
+Linux exposure/blanking controls by conflating these clock domains.
+
+`qccammipicsi8380.sys`, SHA-256
+`033f5b1431ad4c76a12ac3b7f0a5be42e460a03bcff40d249511b3034786d407`,
+separates D-PHY from C-PHY and consumes the bit-rate and nanosecond fields.
+The configured `laneAssign = 0x3210` is unpacked as `0,1,2,3`. Native
+instructions show that forwarding even though decompiler output omits its
+local array; decompiled indirect-call arguments alone were insufficient.
+
+The four-lane Windows PHY mask `0xd5` agrees with Linux's X1E PHY table.
+Linux's gen2 enable path produces that mask from receiver data positions
+`0,1,2,3`, copying the receiver endpoint positions directly. Sensor-local
+`1,2,3,4` numbering and clock lane zero are a different endpoint contract:
+do not blindly copy them onto the CAMSS receiver or reinterpret the fixed
+hardware clock-enable bit as a DT clock-lane number. Physical lane mapping,
+polarities, sensor PLL and runtime capture still require qualification.
 
 ## Power-resource delays
 
