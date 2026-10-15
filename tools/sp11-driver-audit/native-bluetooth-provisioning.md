@@ -191,6 +191,42 @@ rerun against revision 3 and is not a whole-revision regression claim. OpenCode'
 direct GLM 5.1 supplied-source review found no introduced blocker. Its review
 and these tests are not proof of firmware ABI, deployment or hardware parity.
 
+### Subsequent file-opening source candidate
+
+Local native commit `1c7b8f75bf6be7efceeb7aea4b8e32fa0b0cf553`, tree
+`f5acac88077dcc3c7da01bb64cc4a6632dc68eb5`, is a separate follow-up over
+revision 3. It is not contained in that immutable source archive.
+
+`GetVolume()` and `FileOpen()` now return explicit native status and a separate
+owned handle. Only exact successful opens publish a non-NULL output. Native
+errors propagate; unexpected warnings and success without a required interface
+or handle fail closed. Failed-service output pointers are not trusted or closed
+as though they were owned. Borrowed protocol interfaces remain borrowed.
+
+The six-path DTB search continues only on a file-open `EFI_NOT_FOUND`, retaining
+the original order. Device/access/media failures stop immediately instead of
+falling through to a lower-priority file or protocol-only success. Only genuine
+exhausted-path absence is optional; lookup, metadata, read and close errors
+remain fatal even when their status is also `EFI_NOT_FOUND`. Root-close failure
+overrides optional absence. Existing cleanup precedence, normalized-hash order,
+staged publication and the legacy protocol interface remain unchanged.
+
+All eight public targets passed on ARM64 macOS and native ARM64 Linux, including
+optimized and sanitizer variants. The helper suite now has 2,969 calls; the new
+actual-source loader suite has 142 scenarios. It compiles actual GNU-EFI UTF-16
+functions and libfdt rather than rewriting the search or tree algorithms.
+Eighteen loader extraction controls and two behavioral mutants reject malformed
+boundaries and reintroduced error masking. The full current-commit 86-object
+native COFF compile/link passed without warnings. OpenCode's direct GLM 5.1
+production-source review found no introduced blocker; tests and dependencies
+were outside that review's scope and were checked separately.
+
+The new native ADR `0002-explicit-file-opening-status.md` supersedes only the
+opening-status limitation in ADR 0001, leaving the earlier record unchanged.
+Real EFI services, handle release, SHA/NVRAM authorization and installed
+caller/provider behavior remain unqualified. No EFI image was executed or
+installed; these shared-loader changes also need non-SP11 firmware testing.
+
 ### Still open
 
 The existing GPT-name comparison and broad/ambiguous partition selection still
@@ -215,12 +251,12 @@ before provider deployment.
 
 Revision 3 establishes complete successful reads and validation against
 supplied byte extents before staged mutation. A header's `totalsize` still
-does not prove pointer accessibility. Existing `GetVolume()` and `FileOpen()`
-collapse native errors into missing handles; the new missing-file flag only
-separates the failed-open control flow from post-open I/O errors. Precise
-opening-error classification, real cleanup services and actual installed
-caller/provider behavior remain unqualified. The revision-2 archive must not
-be described as containing revision-3 changes.
+does not prove pointer accessibility. Its `GetVolume()` and `FileOpen()` still
+collapse native errors into missing handles; the missing-file flag separates
+failed-open control flow from post-open I/O errors only. The subsequent source
+candidate above corrects that classification, not real filesystem/service
+qualification. Neither revision-2 nor revision-3 archives contain that new
+candidate; revision 2 also lacks revision-3 staged publication.
 
 No raw-storage capture, provider invocation, boot-order/Secure Boot change or
 hardware radio test follows from these source checks. Those require separately
