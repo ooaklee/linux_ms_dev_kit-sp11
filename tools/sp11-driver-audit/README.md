@@ -88,7 +88,7 @@ registers. Neither check establishes CSI timing or successful rear capture.
 | Track | Existing Linux position | Next implementation evidence |
 | --- | --- | --- |
 | Front IMX681 | Native driver and OLED graph; prior preview and indicator tests | Compare verified power, lane and stream/error lifecycle with this package |
-| Rear OV13858 | Native sensor driver assumes an ACPI-powered device; no Denali graph | Native power resources, module-specific PHY/modes, actuator and indicator ownership |
+| Rear OV13858 | Native OF power-management foundation under development; no Denali graph | Verified board resources, module-specific PHY/modes, actuator and indicator ownership |
 | IR VD55G0/VD55G1 | Different sensors and board variants; support differs | Exact module identity, native driver, transport and illumination limits |
 | Touch/pen | Native transport and userspace exist; fresh-boot autoload repair is a separate series | Preserve repair and investigate actual lifecycle gaps |
 | Suspend | Several device and SoC resource owners are involved | Decode power policies and compare failed Linux transitions with measured Windows behaviour |
@@ -99,6 +99,11 @@ registers. Neither check establishes CSI timing or successful rear capture.
 Hardware identity comes from the actual board, firmware tables and device
 identification. The bundle includes optional docks, modems, SSDs, panels and
 camera assemblies; membership in the package does not justify enabling them.
+
+The [native OV13858 series](ov13858-native.md) is separate from these research
+tools. It uses Linux resource interfaces, leaves existing sensor tables intact
+and does not load the inspected configuration files. Its board-enablement and
+hardware-qualification gates remain explicit.
 
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that

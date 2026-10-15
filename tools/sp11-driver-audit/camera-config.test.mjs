@@ -74,6 +74,7 @@ function sensorFixture(values=[0x00150020,0x12345678,0],names=['sensor-label','t
 test('sensor probe fields separate Windows address, enum codes and identity',()=>{
   const decoded=decodeSensorConfiguration(sensorFixture());
   assert.equal(decoded.bus.windowsSlaveAddress,0x20);
+  assert.equal(decoded.bus.observedCciSlaveId,0x10);
   assert.equal(decoded.bus.frequencyCode,1);
   assert.equal(decoded.bus.observedFrequencySetting,400);
   assert.equal(decoded.bus.observedAddressType,2);
@@ -96,6 +97,7 @@ test('sensor labels stay inert and opaque fields and enum fallback remain visibl
   const wide=decodeSensorConfiguration(sensorFixture([0x00151234,0,0]));
   assert.equal(wide.bus.windowsSlaveAddress,0x1234);
   assert.equal(wide.bus.observedInterfaceAddressByte,0x34);
+  assert.equal(wide.bus.observedCciSlaveId,0x1a);
 });
 
 test('sensor interpreter rejects unverified extensions, missing labels and wide fields',()=>{
