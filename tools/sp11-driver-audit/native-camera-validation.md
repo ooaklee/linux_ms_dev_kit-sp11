@@ -26,13 +26,14 @@ contained 2 OV13858 and 21 IR patches. Its IR source ended at
 - Its `vmlinux` SHA-256 was
   `83a4abe6b3a00e17c270c6820d88c99e441b1fe196816246cfc656106bf8d31c`.
 
-That complete build did **not** contain the HDR correction added in revision 2.
+That complete build did **not** contain the HDR correction added in revision 2
+or the three corrections added in revision 3.
 
-## Current revision: HDR correction
+## Revision 2: HDR correction
 
 Revision 2 retains all 23 earlier patch emails byte-for-byte and appends IR
 commit `5c961dcbcb4e7742124e402800317f693634ddb4`, for 24 patches total.
-The current IR driver SHA-256 is
+That revision's IR driver SHA-256 is
 `086ec2feff305a159d93a283c0e303fd04108c798e6c4252d34bfe5e45c9b5b1`.
 The other three driver/binding snapshots are unchanged.
 
@@ -45,7 +46,7 @@ preserved. The resulting tree was
 the manifest and only those paths plus the declared `MAINTAINERS` addition
 changed from v8. Index/worktree, whitespace and connectivity checks were clean.
 
-The correction keeps the established 446-line hardware auto-exposure ceiling
+The correction keeps the existing 446-line maximum-register setting
 when an HDR-capable model is in HDR subtraction mode and automatic/manual
 exposure changes. Other modes retain their prior frame-derived maximum.
 Manual register values, register order, frame timing, GPIO policy and the
@@ -69,6 +70,55 @@ VD55G0 illumination gate are unchanged.
   Those artifacts are not supplied as standalone installation binaries.
 - The focused diff passed strict checkpatch and whitespace checks.
 
+## Current revision: format, control lifecycle and G0 exposure writes
+
+Revision 3 retains all 24 revision-2 patch emails byte-for-byte and appends:
+
+- `62ff85ae8cc10d44040b293bea3cf887eff65d09`: reject active format changes
+  while the core still owns a stream, including after a failed stop. TRY
+  negotiation remains available. The exact source passed 209 synthetic cases
+  per host-sanitizer/native-ARM64 platform; these model the surrounding core.
+- `ef08c6a681e2cf61feb5aa5189bf51368401b6f0`: initialize the handler before
+  choosing the shared state lock, copy initial state before control
+  construction, check sticky constructor errors and release state before its
+  handler. Stream callbacks use caller-locked grab helpers. The exact source
+  passed 298 synthetic lifecycle cases per platform. Separate real-mutex
+  cases distinguished the corrected helpers from a deadlocking intermediate;
+  they do not constitute full-kernel lockdep or real V4L2 allocator tests.
+- `ff99e470cc8ca665580cd26bd072145d853d1ab5`: omit the newly added G0
+  maximum-register write and remove its mapping, restoring the native ST G0
+  control-write pattern. Mode selection, manual exposure/gains, software
+  ranges and G1/G4/VD65G4 register traces remain unchanged.
+
+The current IR driver SHA-256 is
+`600064057065a8a7a98951fa016b22dda842c634bf3832a985f2583eb488e1a0`.
+The other three source snapshots and six licence/copying files are unchanged.
+All 27 emails replayed onto the complete original v8 tree on a Linux filesystem,
+with author identities, exact dates, messages, ordered trailers and stable
+code patch IDs preserved. Only the four snapshots and declared `MAINTAINERS`
+addition differ from the carrier. The manifest records the resulting tree.
+
+The final G0 correction passed 1,059/1,059 exact-function cases on both host
+AddressSanitizer/UndefinedBehaviorSanitizer and native ARM64 GCC 13.3. The
+unchanged parent failed 76 intended G0-only assertions, not 76 demonstrated
+physical defects. All 896 success-matrix traces differ only by deleting the
+G0 `0x096c` operation; all 912 non-G0 cases, including injected failures, are
+unchanged. The harness uses actual CCI encodings, maps, resolver and write/
+control functions, but a stub bus and projected control/model structures.
+It proves traces and first-error handling, not register acceptance or AE
+efficacy. Missing G0 mapping returns `-EOPNOTSUPP` without a CCI transaction.
+
+A focused native ARM64 `W=1` object/module link for this exact final source
+passed without warnings or errors against the read-only prepared kernel,
+configuration and `Module.symvers`. The object SHA-256 is
+`17859f8fb91b595577ce28fc002fcbbb31f3f51227ccf4555e828be33a5600ab`;
+the test-module SHA-256 is
+`ad15bc5252eadba578b53c8e2f2c18f0c94b72a9ae2a0be54c9e18b311d8d8cf`.
+No complete kernel build was repeated for revision 3. These test artifacts
+are not standalone installation modules. The final diff passed strict
+checkpatch and whitespace checks; OpenCode GLM 5.1 found no source-level
+blocker in the bounded correction.
+
 ## Remaining boundaries
 
 No Denali rear/IR graph, physical sensor identity, calibration, runtime
@@ -77,6 +127,16 @@ has been qualified. G0 nonempty `st,leds` is rejected before power resources
 are used. Post-firmware GPIO input programming does not prove reset/boot pin
 states or physical no-emission, electrical or optical safety.
 
-Inherited live VBLANK/auto-exposure-ceiling synchronization and G1/G4 LED
-context behavior require separate source/sensor review. The HDR correction
-does not claim to resolve those limitations or qualify illumination.
+ST's pinned native G0 source, with the same cut1 firmware 2.11 and cut2 0.5
+payloads, never directly writes `0x096c`. Public documentation describes that
+register as a manual maximum in a standby-configured group; this is not proof
+of an AUTO ceiling or a firmware-specific live-write exception. The current
+source restores the vendor-native absence of that host operation, not full
+vendor-driver equivalence or physical exposure-range validation.
+
+Live VBLANK changes continue to update context frame length and software
+exposure ranges. Register latching, full manual range, G1-family live
+static-register writes, partial-write recovery and LED context behavior
+require separate source/sensor review. No speculative startup-only maximum
+write or group-hold transaction is added. None of these changes qualifies
+illumination.
