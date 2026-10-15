@@ -24,6 +24,10 @@ node tools/sp11-driver-audit/camera-config.mjs \
   --kind prld --input /path/to/CAMP_PRLD_MSHW0495.bin
 node tools/sp11-driver-audit/camera-config.mjs \
   --kind pcfg --input /path/to/CAMP_PCFG_MSHW0495.bin
+node tools/sp11-driver-audit/camera-config.mjs \
+  --kind scfg --input /path/to/SCFG_REAR_MSHW0491.bin
+node tools/sp11-driver-audit/chromatix.mjs \
+  --input /path/to/com.surface.sensormodule.rfc_ov13858.bin
 node --test tools/sp11-driver-audit/*.test.mjs
 ```
 
@@ -35,16 +39,26 @@ Service declarations include sections that might never be selected. Broken
 string declarations remain unresolved and produce warnings. Child symbolic
 links are skipped. INF path strings are never opened as commands or files.
 
-The AeoB reader checks lengths, top-level counts, nested boundaries, integer
-precision and resource limits. It recognizes the observed integer, string and
-nested tuple forms. Unknown tags retain a digest and byte range without a
-guessed interpretation. Unsupported layouts fail explicitly. Generated JSON
-is research data and should remain outside the kernel source tree.
+The AeoB reader checks the ACPI V1 output-buffer structure: lengths, top-level
+counts, nested boundaries and the minimum four-byte argument data union. This
+does not align every payload to four bytes. Documented four-byte integers and
+observed eight-byte integers retain full precision. Buffers and unknown tags
+retain a digest and byte range without guessed device semantics. Unsupported
+layouts fail explicitly. Generated JSON is research data and should remain
+outside the kernel source tree.
 
 The camera interpreter uses the [recorded field specification](camera-fields.md).
 It preserves both platform configuration banks, raw values and unknown tail
 fields. It does not select a board, turn orientation codes into angles, or
 translate Windows resource indices into Linux GPIO or CCI numbers.
+
+The Chromatix reader validates the observed 3.0.1 container, CRC32, section
+extents, named descriptors, register-sequence references and resource budgets.
+It does not execute operations or emit Linux driver code. Default output
+contains identities, offsets, counts and digests, not register values or raw
+payloads. Explicit `--include-registers` and `--include-payloads` options are
+for local research; keep their output outside the source tree. Unknown
+operation codes must not be interpreted as production policy.
 
 ## Initial measured coverage
 
@@ -55,10 +69,19 @@ string declarations reported as warnings. Static PE headers identify 190 ARM64
 and 17 I386 objects; the package also contains DSP and firmware objects in other
 formats.
 
-Of 72 files beginning with `AeoB`, 71 follow the observed layout, containing
-46,033 records with maximum nesting depth six. `qcadc/ADC1.bin` uses an
-unsupported layout and is rejected at offset 253. This is a coverage limit,
-not a claim that the vendor file is corrupt or that all AeoB variants match.
+All 72 files beginning with `AeoB` follow the checked ACPI argument-storage
+layout, containing 47,008 records with maximum nesting depth six. Two short
+arguments require the minimum data union; the earlier narrow reader rejected
+`qcadc/ADC1.bin` because it missed this documented storage rule. Structural
+decoding does not establish the meaning of ADC resources or coverage of every
+possible argument encoding.
+
+The sensor-container reader validates the inspected IMX681, OV13858 and three
+OV02C10 containers. The front module has 3,035 named descriptors and 915 register
+rows; the rear has 2,117 descriptors and 632 rows. Some TPG and IR records use
+unsupported semantics and fail explicitly. Front sequences were compared with
+public IMX681 reference tables; rear output sizes agree with output-size
+registers. Neither check establishes CSI timing or successful rear capture.
 
 ## Implementation tracks
 

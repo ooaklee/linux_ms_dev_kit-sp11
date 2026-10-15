@@ -10,11 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { AEOB_LIMITS, AeobDecodeError, decodeAeob } from './aeob.mjs';
 
 // Synthetic fixtures are independently generated, not copied driver payloads.
-function tlv(kind, payload) {
+function tlv(kind, payload, paddingValue = 0) {
   const header = Buffer.alloc(4);
   header.writeUInt16LE(kind, 0);
   header.writeUInt16LE(payload.length, 2);
-  return Buffer.concat([header, payload]);
+  return Buffer.concat([header, payload, Buffer.alloc(Math.max(0, 4 - payload.length), paddingValue)]);
 }
 
 function integer(value) {
@@ -75,6 +75,35 @@ test('unknown kind remains opaque with length, offsets and digest only', () => {
   assert.equal('value' in result.records[0], false);
 });
 
+test('short arguments consume a minimum four-byte data union, not alignment', () => {
+  const payload = Buffer.from([0x11, 0x22]);
+  const result = decodeAeob(file([container([
+    tlv(2, payload, 0xa5),
+    tlv(1, Buffer.from('a\0')),
+    tlv(1, Buffer.from('four\0')),
+    integer(9n),
+  ])]));
+  const children = result.records[0].children;
+  assert.equal(children[0].encoding, 'buffer');
+  assert.equal(children[0].paddingBytes, 2);
+  assert.equal(children[0].sha256, createHash('sha256').update(payload).digest('hex'));
+  assert.deepEqual(result.stats.unknownKinds, []);
+  assert.deepEqual(children.map((item) => item.offset), [16, 24, 32, 41]);
+  assert.equal(children[3].value, '9');
+  // Padding belongs to the data union, but may not run into a sibling.
+  const truncated = Buffer.from([2, 0, 2, 0, 0x11, 0x22]);
+  rejects('RECORD_OVERRUN', file([truncated]));
+  rejects('RECORD_OVERRUN', file([container([truncated]), integer(1n)]));
+});
+
+test('documented ULONG and observed uint64 integer forms preserve precision', () => {
+  const payload = Buffer.alloc(4);
+  payload.writeUInt32LE(0xffff_ffff);
+  const result = decodeAeob(file([tlv(0, payload)]));
+  assert.equal(result.records[0].encoding, 'uint32-le');
+  assert.equal(result.records[0].value, '4294967295');
+});
+
 test('header, byte limits and declared counts are enforced', () => {
   rejects('SHORT_HEADER', Buffer.alloc(11));
   const magic = file([]); magic[0] = 0;
@@ -93,7 +122,7 @@ test('container length cannot consume siblings or partial headers', () => {
   rejects('RECORD_OVERRUN', file([overrun]));
   rejects('SHORT_RECORD_HEADER', file([container([Buffer.from([0, 0])])]));
   rejects('RECORD_OVERRUN', file([container([overrun]), integer(1n)]));
-  // Extra bytes after an opaque record are not silently treated as padding.
+  // Bytes beyond the minimum data union are not silently treated as padding.
   rejects('SHORT_RECORD_HEADER', file([container([
     tlv(2, Buffer.from([0x11, 0x22])), Buffer.from([0, 0]),
   ])]));
