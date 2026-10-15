@@ -1738,7 +1738,16 @@ static int vd55g1_prepare_clock_tree(struct vd55g1 *sensor)
 		return -EINVAL;
 	}
 
-	/* MIPI bus is double data rate */
+	/* Validate the full-width input before doubling and narrowing to u32. */
+	if (sensor->link_freq <
+	    DIV_ROUND_UP((u64)sensor->model->mipi_rate_min, 2) ||
+	    sensor->link_freq > sensor->model->mipi_rate_max / 2) {
+		dev_dbg(sensor->dev, "Unsupported link frequency: %llu Hz\n",
+			sensor->link_freq);
+		return -EINVAL;
+	}
+
+	/* MIPI bus is double data rate; the validated value fits in u32. */
 	sensor->mipi_rate = sensor->link_freq * 2;
 
 	if (sensor->mipi_rate < sensor->model->mipi_rate_min ||
