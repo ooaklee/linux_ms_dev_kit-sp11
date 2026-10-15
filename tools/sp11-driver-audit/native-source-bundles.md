@@ -94,9 +94,18 @@ That full build does not include revision 2's HDR correction or revision 3's
 three corrections.
 
 The **current 27-patch revision** ends at IR commit
-`ff99e470cc8ca665580cd26bd072145d853d1ab5`. Its exact driver passed a focused
-ARM64 `W=1` object/module link against the prepared kernel and 1,059 synthetic
-register-trace/error cases on each of host sanitizers and native ARM64 Linux.
+`ff99e470cc8ca665580cd26bd072145d853d1ab5`. Its exact source subsequently
+completed a clean full ARM64 `W=1` build of `vmlinux` and all 7,817 ordered
+modules, independently checked against the unchanged validation configuration
+and source pins. No modified-driver warnings were found. Existing carrier
+warning counts/categories match the earlier log; differing signatures were
+individually reconciled as quotation-mark presentation only. A post-build
+checker correction follows the kernel's actual `.o`-to-`.ko` ordering contract;
+the original failed checker report and immutable archive remain preserved.
+
+The exact driver also passed a focused ARM64 `W=1` object/module link against
+the prepared kernel and 1,059 synthetic register-trace/error cases on each of
+host sanitizers and native ARM64 Linux.
 The G0 correction removes only the added maximum-register operation; all
 tested G1/G4/VD65G4 traces, including HDR subtraction's 446-line value, remain
 unchanged. Separate checks at the preceding format and lifecycle commits
