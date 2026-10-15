@@ -2340,6 +2340,10 @@ static int vd55g1_set_pad_fmt(struct v4l2_subdev *sd,
 	struct v4l2_rect pad_crop;
 	unsigned int binning;
 
+	if (sd_fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
+	    v4l2_subdev_is_streaming(sd))
+		return -EBUSY;
+
 	new_mode = v4l2_find_nearest_size(sensor->model->modes,
 					  sensor->model->num_modes,
 					  width, height,
