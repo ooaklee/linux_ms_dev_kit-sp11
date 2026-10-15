@@ -13,6 +13,39 @@ function words(input) {
   return {sha256:decoded.sha256,words:children.map(x=>({value:Number(x.value),offset:x.payloadOffset}))};
 }
 
+export function decodeSensorConfiguration(input) {
+  const decoded=decodeAeob(input);
+  if(decoded.records.length!==1||decoded.records[0].kind!==3)throw new Error('Expected one observed sensor tuple');
+  const fields=decoded.records[0].children;
+  if(fields.length!==5||fields[0].kind!==1||fields[1].kind!==1||
+     fields.slice(2).some(x=>x.kind!==0||BigInt(x.value)>0xffffffffn)) {
+    throw new Error('Observed sensor configuration requires two strings and three 32-bit fields');
+  }
+  const [bus,probe,tail]=fields.slice(2).map(x=>Number(x.value));
+  const frequencyCode=(bus>>>16)&3;
+  const registerAddressTypeCode=(bus>>>18)&3;
+  const registerDataTypeCode=(bus>>>20)&3;
+  return {
+    schema:'sp11-camera-scfg-observed-v1',sourceSHA256:decoded.sha256,
+    names:{sensorModule:fields[0].value,tuning:fields[1].value},
+    bus:{offset:fields[2].payloadOffset,packed:`0x${bus.toString(16).padStart(8,'0')}`,
+      windowsSlaveAddress:bus&0xffff,observedInterfaceAddressByte:bus&0xff,frequencyCode,
+      observedFrequencySetting:[100,400,1000,400][frequencyCode],
+      registerAddressTypeCode,registerDataTypeCode,
+      observedAddressType:[1,2,3,1][registerAddressTypeCode],
+      observedDataType:[1,2,3,1][registerDataTypeCode],
+      uninterpretedUpperBits:bus>>>22},
+    probe:{offset:fields[3].payloadOffset,register:probe&0xffff,expectedValue:probe>>>16},
+    uninterpretedTail:{offset:fields[4].payloadOffset,value:tail},
+    limits:['Names are labels only; no referenced file is opened.',
+      'The raw Windows slave-address field is not a proven Linux seven-bit address.',
+      'Frequency setting units and CCI bus mapping are not established by this consumer.',
+      'Enum code three uses a logged Windows fallback; it does not establish hardware capability.',
+      'Observed type two uses a two-byte register address and a big-endian two-byte probe value.',
+      'These probe fields do not establish power sequencing, mode tables or device-tree wiring.'],
+  };
+}
+
 export function decodePrivacyConfiguration(input) {
   const source=words(input);
   if(source.words.length!==6)throw new Error('Observed privacy configuration requires six descriptors');
@@ -49,8 +82,9 @@ export function decodePlatformConfiguration(input) {
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const args=process.argv.slice(2);
   try {
-    if(args.length!==4||args[0]!=='--kind'||!['prld','pcfg'].includes(args[1])||args[2]!=='--input')throw new Error('Usage: node camera-config.mjs --kind prld|pcfg --input FILE');
+    const decoders={prld:decodePrivacyConfiguration,pcfg:decodePlatformConfiguration,scfg:decodeSensorConfiguration};
+    if(args.length!==4||args[0]!=='--kind'||!Object.hasOwn(decoders,args[1])||args[2]!=='--input')throw new Error('Usage: node camera-config.mjs --kind prld|pcfg|scfg --input FILE');
     const input=await readAeobBytes(args[3]);
-    console.log(JSON.stringify((args[1]==='prld'?decodePrivacyConfiguration:decodePlatformConfiguration)(input),null,2));
+    console.log(JSON.stringify(decoders[args[1]](input),null,2));
   }catch(error){console.error(JSON.stringify({error:error.code??error.name,message:error.message}));process.exitCode=1;}
 }

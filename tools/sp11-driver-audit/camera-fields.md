@@ -65,6 +65,69 @@ Windows master 3 still needs an independent mapping to Linux `cci1_i2c1`.
 The PHY match is corroboration; it does not alone prove the identities of every
 sensor slot or justify enabling the rear or IR hardware.
 
+## SCFG
+
+The inspected front and rear sensor configuration files each contain two
+string labels and three numeric words. REA inspected the front consumer's
+getter at `0x140001b48`, probe at `0x140009f18` and read helper at `0x14000ad68`;
+the rear equivalents are `0x140005188`, `0x14000d8a0` and `0x14000e6c8`.
+The front consumer SHA-256 is
+`80a8e4a1ef8f0dacfbc2e8c6919cb269993057ffd3133c2ef7016ff742e46f03`;
+the rear consumer SHA-256 is
+`b7d7a278c5e7b92ebf35f870a7e06cbad670ffb35bfaf40106e27b09bf33fabb`.
+
+| First numeric word | Observed role |
+| --- | --- |
+| Bits 0–15 | Raw Windows slave-address field |
+| Bits 16–17 | Frequency code: 0/1/2 map to 100/400/1000; 3 falls back to 400 |
+| Bits 18–19 | Register-address type: 0/1/2 map to 1/2/3; 3 falls back to 1 |
+| Bits 20–21 | Register-data type: same enumeration mapping |
+| Bits 22–31 | Uninterpreted |
+
+The second word contains the probe register in bits 0–15 and expected value
+in bits 16–31. The third word remains opaque. Observed type two uses a two-byte
+register address and combines two returned bytes high first. The numerical
+frequency-setting units are not established by this consumer. Enum fallback
+is observed Windows behavior, not an endorsement of unsupported hardware.
+
+Rear `0xd855300b` means a probe of register `0x300b` for bytes `d8 55`, agreeing
+with the native OV13858 driver's three-byte `00 d8 55` check at `0x300a`.
+Front `0x0aff0004` instead describes a probe at `0x0004` for `0aff`; it is not
+the existing native IMX681 model-ID check at `0x0016` for `0681` and does not
+justify replacing that check. Both inspected files contain raw address `0x20`.
+Neither consumer establishes seven-bit normalization or Linux CCI bus mapping.
+The 16-bit stored field is copied into a byte in the inspected interface;
+both the stored field and that byte are reported without normalizing either.
+The tool retains names as inert labels and opens no referenced paths.
+
+## Power-resource delays
+
+Static analysis of `qcpep8380.sys`, SHA-256
+`e5bdeb8c0fb8823990f7520a19c00807711cf909f91f8d67db78ffb18c1b2277`,
+establishes milliseconds for the normal runtime `DELAY` resource path:
+
+1. The provider registered at `0x140089880` handles the interface queried by
+   the camera platform; `0x14003de98` validates the AeoB signature.
+2. Type-nine parsing at `0x140414680` copies the first integer unscaled into
+   resource data at offset `0x18`.
+3. Conversion at `0x14040aa74` and construction at `0x1404265f0` preserve it
+   into runtime-node offset `0x20`.
+4. Execution at `0x140128170` converts it to negative `value * 10000` relative
+   100-nanosecond ticks for the sleep path, or `value * 1000` microseconds for
+   the busy-wait path.
+
+Thus the front and rear resource values 1 and 10 represent 1 ms and 10 ms.
+Elapsed time can already satisfy a delay, and the crashdump path only logs its
+completion; this is not a claim that every path always sleeps. The platform's
+fixed 20-microsecond polling and named sensor-mode delay fields are separate.
+These observations do not establish supply mapping, regulator ownership or
+safe Linux sequencing by themselves.
+
+References: [ACPI output-buffer layout](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acpiioct/ns-acpiioct-_acpi_eval_output_buffer_v1),
+[argument storage](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acpiioct/ns-acpiioct-_acpi_method_argument_v1),
+[relative sleep units](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kedelayexecutionthread),
+[stall units](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kestallexecutionprocessor).
+
 ## Linux boundary
 
 The production driver must use native Linux firmware-node properties and

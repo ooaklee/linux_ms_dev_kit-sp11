@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Original structural reader for the observed AeoB variant. No driver execution.
+// Original reader for observed ACPI_EVAL_OUTPUT_BUFFER_V1 files. No execution.
+// https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/acpiioct/ns-acpiioct-_acpi_method_argument_v1
 import { createHash } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -35,10 +36,12 @@ function limitsFor(options) {
 }
 
 /**
- * Decode structure only, using observations from this Surface driver bundle.
- * Header count is checked against parsed top-level records. Unknown tags are
- * opaque and use the observed TLV length convention; incompatible variants
- * fail rather than falling back to guessed padding or alternate counts.
+ * Decode structure only. ACPI_METHOD_ARGUMENT_V1 has a four-byte minimum data
+ * union, even for shorter strings or buffers; this is not four-byte alignment
+ * of longer payloads. The bundle also uses eight-byte integer payloads, which
+ * are preserved in full alongside the documented four-byte ULONG form.
+ * Header count is checked against parsed top-level records. Unknown tags stay
+ * opaque; incompatible layouts fail rather than guessing alternate counts.
  * Integer values do not imply GPIOs, physical addresses, rates or policy.
  */
 export function decodeAeob(input, options = {}) {
@@ -86,17 +89,21 @@ export function decodeAeob(input, options = {}) {
       const payloadBytes = bytes.readUInt16LE(offset + 2);
       const payloadOffset = offset + 4;
       const payloadEnd = payloadOffset + payloadBytes;
-      if (payloadEnd > end) {
-        fail('RECORD_OVERRUN', 'TLV payload extends past its container', offset);
+      const recordEnd = payloadOffset + Math.max(4, payloadBytes);
+      if (recordEnd > end) {
+        fail('RECORD_OVERRUN', 'Argument storage extends past its container', offset);
       }
       const node = { offset, kind, payloadOffset, payloadBytes };
+      if (payloadBytes < 4) node.paddingBytes = 4 - payloadBytes;
       const payload = bytes.subarray(payloadOffset, payloadEnd);
       if (kind === 0) {
-        if (payloadBytes !== 8) {
-          fail('INTEGER_LENGTH', 'Observed integer kind requires an 8-byte payload', offset);
+        if (payloadBytes !== 4 && payloadBytes !== 8) {
+          fail('INTEGER_LENGTH', 'Integer requires a 4- or 8-byte payload', offset);
         }
-        node.encoding = 'uint64-le';
-        node.value = payload.readBigUInt64LE().toString(10);
+        node.encoding = payloadBytes === 8 ? 'uint64-le' : 'uint32-le';
+        node.value = payloadBytes === 8
+          ? payload.readBigUInt64LE().toString(10)
+          : payload.readUInt32LE().toString(10);
       } else if (kind === 1) {
         if (payloadBytes === 0 || payload[payloadBytes - 1] !== 0) {
           fail('STRING_TERMINATOR', 'Observed string kind requires a terminal NUL', offset);
@@ -112,12 +119,12 @@ export function decodeAeob(input, options = {}) {
         node.encoding = 'nested-tlv';
         node.children = records(payloadOffset, payloadEnd, depth + 1);
       } else {
-        node.encoding = 'opaque';
+        node.encoding = kind === 2 ? 'buffer' : 'opaque';
         node.sha256 = digest(payload);
-        unknownKinds.add(kind);
+        if (kind !== 2) unknownKinds.add(kind);
       }
       result.push(node);
-      offset = payloadEnd;
+      offset = recordEnd;
     }
     return result;
   }
@@ -127,8 +134,8 @@ export function decodeAeob(input, options = {}) {
     fail('COUNT_MISMATCH', 'Header count differs from parsed top-level record count', 8);
   }
   return {
-    schema: 'sp11-aeob-observed-v1',
-    interpretation: 'structure only; field meanings and other AeoB variants are unverified',
+    schema: 'sp11-acpi-output-observed-v2',
+    interpretation: 'ACPI output structure only; device field meanings remain unverified',
     sha256: digest(bytes),
     bytes: bytes.length,
     header: { magic: 'AeoB', declaredBytes, declaredTopLevelCount },

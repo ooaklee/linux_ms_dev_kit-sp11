@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {decodePrivacyConfiguration,decodePlatformConfiguration} from './camera-config.mjs';
+import {decodePrivacyConfiguration,decodePlatformConfiguration,decodeSensorConfiguration} from './camera-config.mjs';
 
 function fixture(values) {
   const records=values.map(v=>{const bytes=Buffer.alloc(12);bytes.writeUInt16LE(0);bytes.writeUInt16LE(8,2);bytes.writeBigUInt64LE(BigInt(v),4);return bytes;});
@@ -54,4 +54,54 @@ test('slot bit four is opaque and timer bits remain separate from trigger type',
   assert.equal(decoded.flags.uninterpretedBits4To7,1);
   assert.equal(decoded.sensorWords[0].flashCciTimerIndex,2);
   assert.equal(decoded.sensorWords[0].triggerType,3);
+});
+
+function sensorFixture(values=[0x00150020,0x12345678,0],names=['sensor-label','tuning-label']) {
+  const numberRecords=fixture(values).subarray(16);
+  const strings=names.map(name=>{
+    const payload=Buffer.from(`${name}\0`,'ascii');
+    const bytes=Buffer.alloc(4+Math.max(4,payload.length));
+    bytes.writeUInt16LE(1);bytes.writeUInt16LE(payload.length,2);payload.copy(bytes,4);
+    return bytes;
+  });
+  const children=Buffer.concat([...strings,numberRecords]);
+  const header=Buffer.alloc(16);header.write('AeoB');
+  header.writeUInt32LE(16+children.length,4);header.writeUInt32LE(1,8);
+  header.writeUInt16LE(3,12);header.writeUInt16LE(children.length,14);
+  return Buffer.concat([header,children]);
+}
+
+test('sensor probe fields separate Windows address, enum codes and identity',()=>{
+  const decoded=decodeSensorConfiguration(sensorFixture());
+  assert.equal(decoded.bus.windowsSlaveAddress,0x20);
+  assert.equal(decoded.bus.frequencyCode,1);
+  assert.equal(decoded.bus.observedFrequencySetting,400);
+  assert.equal(decoded.bus.observedAddressType,2);
+  assert.equal(decoded.bus.observedDataType,2);
+  assert.equal(decoded.probe.register,0x5678);
+  assert.equal(decoded.probe.expectedValue,0x1234);
+  assert.equal('linuxAddress' in decoded.bus,false);
+  assert.equal('frequencyHz' in decoded.bus,false);
+  assert.equal(decoded.names.sensorModule,'sensor-label');
+});
+
+test('sensor labels stay inert and opaque fields and enum fallback remain visible',()=>{
+  const decoded=decodeSensorConfiguration(sensorFixture([0xfff00023,0xffffffff,7],['../missing','a']));
+  assert.equal(decoded.names.sensorModule,'../missing');
+  assert.equal(decoded.bus.windowsSlaveAddress,0x23);
+  assert.equal(decoded.bus.registerDataTypeCode,3);
+  assert.equal(decoded.bus.observedDataType,1);
+  assert.equal(decoded.bus.uninterpretedUpperBits,0x3ff);
+  assert.equal(decoded.uninterpretedTail.value,7);
+  const wide=decodeSensorConfiguration(sensorFixture([0x00151234,0,0]));
+  assert.equal(wide.bus.windowsSlaveAddress,0x1234);
+  assert.equal(wide.bus.observedInterfaceAddressByte,0x34);
+});
+
+test('sensor interpreter rejects unverified extensions, missing labels and wide fields',()=>{
+  assert.throws(()=>decodeSensorConfiguration(fixture([1,2,3])),/two strings/);
+  assert.throws(()=>decodeSensorConfiguration(sensorFixture([1,2])),/two strings/);
+  assert.throws(()=>decodeSensorConfiguration(sensorFixture([1,2,3,4])),/two strings/);
+  assert.throws(()=>decodeSensorConfiguration(sensorFixture([0x100000000n,2,3])),/32-bit/);
+  assert.throws(()=>decodeSensorConfiguration(sensorFixture([1,2,3],['one'])),/two strings/);
 });
