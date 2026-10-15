@@ -16,7 +16,7 @@ description: |-
  The STMicroelectronics VD55G1 family (VD55G0, VD55G1, and VD65G4) consists of
  global shutter image sensors. The VD55G0 has an array size of 644H x 604V.
  The VD55G1 and VD65G4 have an array size of 804H x 704V. They are programmable
- through I2C interface. The I2C address is fixed to 0x10.
+ through I2C interface.
 
  Image data is sent through MIPI CSI-2, which is configured as only 1 data
  lane. The sensor provides 4 GPIOS that can be used for external LED signal
