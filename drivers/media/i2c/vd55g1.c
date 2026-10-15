@@ -2,6 +2,7 @@
 /*
  * Driver for VD55G1 global shutter sensor family driver
  *
+ * Copyright (C) 2024 STMicroelectronics SA (VD55G0 firmware patches)
  * Copyright (C) 2025 STMicroelectronics SA
  */
 
@@ -1569,7 +1570,7 @@ static void vd55g1_get_frame_timings(struct vd55g1 *sensor,
 
 	timings->expo_max = timings->frame_length - VD55G1_EXPO_MAX_TERM;
 
-	if (sensor->model->limit_flash_duty_cycle &&
+	if (sensor->model->limit_flash_duty_cycle && sensor->led_ctrl &&
 	    sensor->led_ctrl->val == V4L2_FLASH_LED_MODE_FLASH) {
 		timings->expo_max = timings->expo_max / 2;
 	}
@@ -1907,7 +1908,7 @@ static int vd55g1_update_exposure_target(struct vd55g1 *sensor, int index)
 static int vd55g1_apply_cold_start(struct vd55g1 *sensor,
 				   struct v4l2_rect *crop)
 {
-	int ret;
+	int ret = 0;
 
 	if (sensor->model->ae_coldstart_exposure_in_us) {
 		/*
@@ -2065,7 +2066,8 @@ static int vd55g1_update_gpios(struct vd55g1 *sensor, unsigned long gpio_mask)
 		gpio_val = sensor->gpios[io];
 
 		if (gpio_val == VD55G1_GPIO_MODE_STROBE &&
-		    sensor->led_ctrl->val == V4L2_FLASH_LED_MODE_NONE) {
+		    (!sensor->led_ctrl ||
+		     sensor->led_ctrl->val == V4L2_FLASH_LED_MODE_NONE)) {
 			gpio_val = VD55G1_GPIO_MODE_IN;
 			if (sensor->model->hdr &&
 			    sensor->hdr_ctrl->val == VD55G1_HDR_SUB) {
@@ -2866,6 +2868,10 @@ static int vd55g1_parse_dt_gpios_array(struct vd55g1 *sensor,
 		*nb = 0;
 		return 0;
 	}
+	if (*nb < 0)
+		return *nb;
+	if (!*nb || *nb > VD55G1_NB_GPIOS)
+		return -EINVAL;
 
 	ret = device_property_read_u32_array(sensor->dev,
 					     prop_name, array, *nb);
