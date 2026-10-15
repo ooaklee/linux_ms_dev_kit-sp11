@@ -14,7 +14,35 @@ property, byte order or installed provider is correct. Do not add or remove
 that quirk by guesswork, invent a replacement factory address or start scanning
 raw storage from a new Linux driver to work around unverified boot integration.
 
-## Native source candidate
+## Current complete native source candidate
+
+The source-only `sp11-native-dpp-source-20261015-r3` bundle contains the complete
+five-commit series over [dtbloader](https://github.com/TravMurav/dtbloader) at
+`b1bf23e88b779ac323fbcbe547cf3ba939433df3`. It adds sized DTB inputs and staged
+publication (`3489cd54a96f1a1e9397894bef101da220eb3e10`) to the four commits
+listed below. The resulting tree is
+`86123f3325150775539e3ba3ae16f6a69b873b76`. Apply it to that original base,
+not on top of the earlier archives.
+
+The revision-3 archive SHA-256 is
+`dea11979cfa914cf12614d37b257dd4cb925f74bd98d62e5c37354fcb98346ab`.
+Its 90,397 bytes contain 38 text files: five patch emails, 29 exact source and
+licence snapshots, and four metadata files. Two deterministic packs matched
+byte-for-byte. Independent fresh Linux extraction checked all 37 checksum
+entries and compared all 38 extracted files against the reviewed staging.
+
+Independent Linux replay of all five emails reproduced the exact tree and
+preserved raw author identities/dates, complete messages, parsed trailers and
+stable patch IDs. All six public test targets passed after replay. Repository
+integrity also passed with the complete 117-commit base ancestry; initial
+offline integrity checks lacked that ancestry, and their failures are retained
+separately from the accepted result. Replay committer metadata may differ.
+
+This is buildable research source, not an installable kernel or a qualified
+EFI provider. The bundle contains no compiled image, Windows payload, private
+capture or provisioning record. Earlier archives remain unchanged.
+
+## Historical revision-2 reader and matcher series
 
 The source-only `sp11-native-dpp-source-20261015-r2` bundle applies four focused
 commits to [dtbloader](https://github.com/TravMurav/dtbloader) at
@@ -54,7 +82,7 @@ not assertions about factory-format maxima. No proprietary format header,
 Windows binary, recovered pseudocode or real provisioning record is included.
 The original BSD-3-Clause licence and contributors' attribution are retained.
 
-## What the checks establish
+## Historical revision-2 checks
 
 The actual standalone core passed 4,691 synthetic calls and 300,856 assertions
 per optimized and sanitizer host run. The actual EFI adapter/Surface wrapper,
@@ -121,12 +149,11 @@ separate migration decision. Current source checks preserve the legacy ABI.
 
 ## Remaining deployment gates
 
-### Separate follow-up: sized inputs and staged publication
+### Revision-3 sized inputs and staged publication
 
-Local native commit `3489cd54a96f1a1e9397894bef101da220eb3e10` adds the sized
-input/staging prerequisite on a separate branch over the four-commit source
-above. Its tree is `86123f3325150775539e3ba3ae16f6a69b873b76`. It is not yet
-included in the immutable revision-2 source archive or a firmware release.
+Native commit `3489cd54a96f1a1e9397894bef101da220eb3e10` adds the sized
+input/staging prerequisite over the four-commit source above. It is included
+in revision 3, not retroactively added to revision 2 or a firmware release.
 
 The file path now checks a bounded metadata query and exact read, validates
 against the bytes actually read and closes file/volume handles. A shared
@@ -156,8 +183,11 @@ standalone core/matcher suites still pass with unchanged test dependencies.
 Separate private actual-source fixtures additionally cover loader lifecycle
 with 52 scenarios and the historical partial-mutation negative control. These
 do not qualify actual filesystem opening, SHA/NVRAM authorization or factory
-provisioning. The full native 86-object ARM64 COFF link passed without warnings;
-retained source/object/image bytes were independently audited. OpenCode's
+provisioning. The full native 86-object ARM64 COFF link passed without warnings
+from a pre-commit snapshot whose compiled inputs match the final commit;
+retained source/object/image bytes were independently audited. The historical
+87-scenario adapter fixture predates the utility-header change; it was not
+rerun against revision 3 and is not a whole-revision regression claim. OpenCode's
 direct GLM 5.1 supplied-source review found no introduced blocker. Its review
 and these tests are not proof of firmware ABI, deployment or hardware parity.
 
@@ -167,12 +197,12 @@ The existing GPT-name comparison and broad/ambiguous partition selection still
 need hardening. A stable media ID does not authenticate storage or rule out
 in-place mutation. WLAN/Bluetooth success remains coupled. In revision 2 the
 two FDT updates are sequential and a failed second update leaves the first
-applied. The separate follow-up above isolates those updates in a private tree;
+applied. Revision 3 isolates those updates in a private tree;
 it does not change the callback's address-source or compatible-node policy.
 Valid existing addresses, exact compatible-node selection, actual factory
 record semantics and the installed Stubble/provider path need independent
 qualification. The host adapter tests intentionally reproduce the partial-FDT
-failure in the original callback; the separate staged-entry tests verify its
+failure in the original callback; the revision-3 staged-entry tests verify its
 failure-isolation boundary.
 
 The sole current GPT-name caller passes the fixed literal `DPP`; the pinned
@@ -183,14 +213,14 @@ a hardware-ID priority array; the follow-up above corrects its indexed lookup.
 Actual SMBIOS generation and device selection still require qualification
 before provider deployment.
 
-The follow-up establishes complete successful reads and validation against
+Revision 3 establishes complete successful reads and validation against
 supplied byte extents before staged mutation. A header's `totalsize` still
 does not prove pointer accessibility. Existing `GetVolume()` and `FileOpen()`
 collapse native errors into missing handles; the new missing-file flag only
 separates the failed-open control flow from post-open I/O errors. Precise
 opening-error classification, real cleanup services and actual installed
 caller/provider behavior remain unqualified. The revision-2 archive must not
-be described as containing the follow-up.
+be described as containing revision-3 changes.
 
 No raw-storage capture, provider invocation, boot-order/Secure Boot change or
 hardware radio test follows from these source checks. Those require separately
