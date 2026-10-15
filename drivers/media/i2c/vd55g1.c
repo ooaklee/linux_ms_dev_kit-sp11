@@ -2190,14 +2190,16 @@ static int vd55g1_disable_streams(struct v4l2_subdev *sd,
 	vd55g1_poll_reg(sensor, REG_STREAMING, 0, &stop_ret);
 	vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &stop_ret);
 
-	if (stop_ret)
+	if (stop_ret) {
 		dev_warn(sensor->dev, "Can't disable stream\n");
+		return stop_ret;
+	}
 
 	vd55g1_grab_ctrls(sensor, false);
 
 	pm_runtime_put_autosuspend(sensor->dev);
 
-	return stop_ret ? stop_ret : ret;
+	return 0;
 }
 
 static int vd55g1_patch(struct vd55g1 *sensor)
