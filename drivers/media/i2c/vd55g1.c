@@ -1813,10 +1813,16 @@ static int vd55g1_update_expo_cluster(struct vd55g1 *sensor, bool is_auto)
 	int ret = 0;
 
 	if (sensor->ae_ctrl->is_new) {
+		u32 expo_max = sensor->expo_ctrl->maximum;
+
+		if (sensor->model->hdr && sensor->hdr_ctrl &&
+		    sensor->hdr_ctrl->val == VD55G1_HDR_SUB)
+			expo_max = VD55G1_EXPOSURE_MAX_COARSE_SUB;
+
 		vd55g1_write_ctx(sensor, REG_CTX_EXP_MODE, 0, expo_state,
 				 &ret);
 		vd55g1_write(sensor, REG_EXPOSURE_MAX_COARSE,
-			     sensor->expo_ctrl->maximum, &ret);
+			     expo_max, &ret);
 	}
 
 	if (sensor->model->hdr &&
