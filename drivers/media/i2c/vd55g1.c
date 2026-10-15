@@ -188,7 +188,6 @@ static const int vd55g0_reg_map[REG_MAX_INDEX] = {
 	[REG_AE_FORCE_COLDSTART] = CCI_REG8(0x042c),
 	[REG_AE_COLDSTART_COARSE_EXPOSURE] = CCI_REG16_LE(0x042e),
 	[REG_NEXT_CTX] = CCI_REG16_LE(0x0478),
-	[REG_EXPOSURE_MAX_COARSE] = CCI_REG16_LE(0x096c),
 	[REG_CTX_REPEAT_COUNT_CTX0] = CCI_REG16_LE(0x0476),
 	[REG_CTX_REPEAT_COUNT_CTX1] = CCI_REG16_LE(0x04a6),
 
@@ -1821,8 +1820,9 @@ static int vd55g1_update_expo_cluster(struct vd55g1 *sensor, bool is_auto)
 
 		vd55g1_write_ctx(sensor, REG_CTX_EXP_MODE, 0, expo_state,
 				 &ret);
-		vd55g1_write(sensor, REG_EXPOSURE_MAX_COARSE,
-			     expo_max, &ret);
+		if (sensor->model != &vd55g0_model)
+			vd55g1_write(sensor, REG_EXPOSURE_MAX_COARSE,
+				     expo_max, &ret);
 	}
 
 	if (sensor->model->hdr &&
