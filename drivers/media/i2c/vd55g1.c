@@ -3076,13 +3076,12 @@ static int vd55g1_probe(struct i2c_client *client)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to power on during probe\n");
 
-	/* Enable pm_runtime and power off the sensor */
+	/* Retain the probe PM reference until the subdevice is published. */
 	pm_runtime_set_active(dev);
 	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
 	pm_runtime_set_autosuspend_delay(dev, 4000);
 	pm_runtime_use_autosuspend(dev);
-	pm_runtime_put_autosuspend(dev);
 
 	ret = vd55g1_subdev_init(sensor);
 	if (ret) {
@@ -3095,6 +3094,8 @@ static int vd55g1_probe(struct i2c_client *client)
 		dev_err_probe(dev, ret, "async subdev register failed\n");
 		goto err_subdev;
 	}
+
+	pm_runtime_put_autosuspend(dev);
 
 	return 0;
 
