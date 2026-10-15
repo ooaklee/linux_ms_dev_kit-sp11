@@ -94,6 +94,10 @@ the tested v8 carrier and the inspected jglathe 7.2.9 tree before these edits.
   the ARM64 `W=1` driver-object build passed against those carrier headers,
   with no Windows package present in the build environment.
 
-These are source and driver-object checks, not a newly qualified combined
-kernel. Full kernel/module linkage, integration with later carrier changes
-and physical OF/ACPI regression tests remain required before a release claim.
+The unchanged OV13858 snapshot was also included in the previous 23-patch
+revision's complete ARM64 kernel/module link. Revision 2 adds only the
+separately tested IR HDR correction; see
+[the validation summary](native-camera-validation.md) for that distinction.
+These checks do not qualify a combined hardware release. Integration with later
+carrier changes and physical OF/ACPI regression tests remain required before a
+release claim.

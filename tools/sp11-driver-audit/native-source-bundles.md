@@ -35,6 +35,12 @@ including the separate touch-autoload repair, require their own integration
 and regression checks. Fork research tools and CI are not part of the native
 driver patch sets.
 
+Revision 2 retains the first 23 patch emails unchanged and appends one
+VD55G1-family correction: changing automatic/manual exposure must retain the
+existing 446-line limit in HDR subtraction mode. It does not add illumination
+support or change manual exposure, frame timing or GPIO policy. The previous
+bundle remains a separately identified historical revision.
+
 VD55G0 source is based on
 [Peter Marshall's native series](https://github.com/petm5/linux/commit/4a04accd5f688ac4fdca1ad4d3959ef17825085c),
 the existing ST driver, and
@@ -72,9 +78,35 @@ make O=../sp11-native-camera-build ARCH=arm64 W=1 -j4 \
 
 `olddefconfig` adapts to the available compiler/tools; review its configuration
 delta rather than calling it an identical release configuration. Cross builds
-also require an appropriate `CROSS_COMPILE`. Driver-object compilation does
-not link a full kernel/module, produce an installable package, or validate
-CSI capture. Do not use the resulting objects with `insmod`.
+also require an appropriate `CROSS_COMPILE`. These example object commands do
+not produce an installable package or validate CSI capture. Do not use the
+resulting objects with `insmod`.
+
+## Source validation, not hardware qualification
+
+A complete ARM64 `W=1` build of `vmlinux` and all 7,817 ordered modules passed
+for the **previous 23-patch revision**, whose IR source ends at
+`14bb8959fc37812a23ed55af73a2eb273acdb043`. Its configuration was unchanged
+by `olddefconfig`; it was a validation configuration, not an identical release
+toolchain/configuration. Warnings elsewhere in the carrier remain documented.
+That full build does not include revision 2's HDR correction.
+
+The **current 24-patch revision** ends at IR commit
+`5c961dcbcb4e7742124e402800317f693634ddb4`. Its corrected driver passed a
+focused ARM64 `W=1` object and module link against that prepared kernel, plus
+779 exact-function synthetic cases on each of host sanitizers and native
+ARM64 Linux. The pre-correction driver failed 176 HDR-sensitive cases in the
+same test set. These tests use stubs, not a sensor or the live PM/CCI core.
+All 24 patch emails also applied with `git am` to the complete original v8
+commit/tree on a Linux filesystem, preserving author identities, exact dates,
+commit messages and ordered trailers. The resulting four snapshots matched;
+all other carrier files except the declared `MAINTAINERS` addition were
+unchanged.
+
+See [the validation summary](native-camera-validation.md) and the bundle's
+manifest for exact source, configuration and artifact hashes. Neither revision
+is an installable kernel release or evidence of camera, suspend or
+optical-safety qualification.
 
 ## Deliberate qualification gates
 
@@ -94,7 +126,9 @@ IR board identity, actual I2C routing/address, supplies/reset, CSI graph,
 capture timing, calibration and sensor-only runtime behaviour remain to be
 qualified. Illuminator wiring, first-frame and live-control exposure limits,
 current control and independent safety requirements need a separate review
-before illumination support can be added. Full capture, module linkage,
-failure recovery, suspend/resume and existing VD55G1/G4 regressions remain
-unproven. No device installation instructions are supplied for this
-unqualified foundation.
+before illumination support can be added. Live VBLANK changes still do not
+explicitly synchronize the hardware auto-exposure ceiling with the changed
+frame length; that inherited behavior is not corrected here. Full capture,
+runtime failure recovery, suspend/resume and physical VD55G1/G4 regression
+compatibility remain unproven. No device installation instructions are
+supplied for this unqualified foundation.

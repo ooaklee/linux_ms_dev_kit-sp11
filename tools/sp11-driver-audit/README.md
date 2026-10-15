@@ -136,9 +136,9 @@ hardware-qualification gates remain explicit.
 
 The [source-only camera bundle guide](native-source-bundles.md) describes
 the independent OV13858 and VD55G0 patch sets, their native upstream/vendor
-provenance and the source/object-check workflow. They are foundations for
-qualification, not installable camera fixes. In particular, a native IR
-sensor driver is not equivalent to safely enabling an illuminator.
+provenance and the source, object and module validation workflow. They are
+foundations for qualification, not installable camera fixes. In particular, a
+native IR sensor driver is not equivalent to safely enabling an illuminator.
 
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that
