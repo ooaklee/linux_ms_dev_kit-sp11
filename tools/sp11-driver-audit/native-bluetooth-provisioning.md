@@ -121,14 +121,59 @@ separate migration decision. Current source checks preserve the legacy ABI.
 
 ## Remaining deployment gates
 
+### Separate follow-up: sized inputs and staged publication
+
+Local native commit `3489cd54a96f1a1e9397894bef101da220eb3e10` adds the sized
+input/staging prerequisite on a separate branch over the four-commit source
+above. Its tree is `86123f3325150775539e3ba3ae16f6a69b873b76`. It is not yet
+included in the immutable revision-2 source archive or a firmware release.
+
+The file path now checks a bounded metadata query and exact read, validates
+against the bytes actually read and closes file/volume handles. A shared
+helper stages the complete existing callback on a private bounded tree, then
+validates, packs and validates again before copying the packed extent back.
+Failures leave the original buffer unchanged under the documented accessible,
+exclusively owned memory/callback contract. Successful calls preserve the
+pointer and unused tail. This is not concurrency-atomic or a whole-firmware/
+NVRAM transaction, and does not change factory-data or board-selection policy.
+
+The separate native ADR records the 2 MiB AArch64 boot/workspace ceiling,
+existing 1 MiB local allocation, legacy protocol ABI/headroom negotiation and
+successfully published ACPI-page ownership. Zeroing the local allocation before
+reading makes pre-fixup normalized-hash padding deterministic; it does not
+introduce authentication or change confirmation/NVRAM policy. Metadata uses a
+bounded pool, avoiding a large stack frame and an unavailable stack-probe
+helper without adding a Windows runtime dependency.
+
+All six public targets (`check`, `sanitize`, `check-fdt`, `sanitize-fdt`,
+`check-io`, `sanitize-io`) passed on ARM64 macOS and native ARM64 Linux. The
+optional FDT suite exercises 95 scenarios/795 assertions with real libfdt;
+the file-helper suite exercises 2,802 calls with real GNU-EFI types and fake
+allocation/file callbacks. Neither target fetches dependencies. Six and eight
+malformed source-extraction controls respectively fail closed. The original
+standalone core/matcher suites still pass with unchanged test dependencies.
+
+Separate private actual-source fixtures additionally cover loader lifecycle
+with 52 scenarios and the historical partial-mutation negative control. These
+do not qualify actual filesystem opening, SHA/NVRAM authorization or factory
+provisioning. The full native 86-object ARM64 COFF link passed without warnings;
+retained source/object/image bytes were independently audited. OpenCode's
+direct GLM 5.1 supplied-source review found no introduced blocker. Its review
+and these tests are not proof of firmware ABI, deployment or hardware parity.
+
+### Still open
+
 The existing GPT-name comparison and broad/ambiguous partition selection still
 need hardening. A stable media ID does not authenticate storage or rule out
-in-place mutation. WLAN/Bluetooth success remains coupled, and the two FDT
-updates remain sequential: a failed second update leaves the first applied.
+in-place mutation. WLAN/Bluetooth success remains coupled. In revision 2 the
+two FDT updates are sequential and a failed second update leaves the first
+applied. The separate follow-up above isolates those updates in a private tree;
+it does not change the callback's address-source or compatible-node policy.
 Valid existing addresses, exact compatible-node selection, actual factory
 record semantics and the installed Stubble/provider path need independent
 qualification. The host adapter tests intentionally reproduce the partial-FDT
-failure instead of claiming transactional publication.
+failure in the original callback; the separate staged-entry tests verify its
+failure-isolation boundary.
 
 The sole current GPT-name caller passes the fixed literal `DPP`; the pinned
 native comparison reads at most four units of its 36-unit media name. A current
@@ -138,13 +183,14 @@ a hardware-ID priority array; the follow-up above corrects its indexed lookup.
 Actual SMBIOS generation and device selection still require qualification
 before provider deployment.
 
-The next publication change must establish complete, successful file reads and
-validate each FDT against its actual supplied byte extent before staging any
-mutation. A header's `totalsize` does not establish accessible buffer capacity.
-Use the actual bounded libfdt validator and retain the existing caller-owned
-buffer; a failed update must not expose earlier WLAN or Bluetooth mutations.
-This source architecture remains work to implement and test, not a guarantee
-of the current candidate.
+The follow-up establishes complete successful reads and validation against
+supplied byte extents before staged mutation. A header's `totalsize` still
+does not prove pointer accessibility. Existing `GetVolume()` and `FileOpen()`
+collapse native errors into missing handles; the new missing-file flag only
+separates the failed-open control flow from post-open I/O errors. Precise
+opening-error classification, real cleanup services and actual installed
+caller/provider behavior remain unqualified. The revision-2 archive must not
+be described as containing the follow-up.
 
 No raw-storage capture, provider invocation, boot-order/Secure Boot change or
 hardware radio test follows from these source checks. Those require separately
