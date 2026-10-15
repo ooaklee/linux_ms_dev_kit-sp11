@@ -56,6 +56,46 @@ supplied production source and recommended source-only status. Its requested
 tests were mapped to actual coverage; review imprecision was qualified rather
 than used as authority. No source review or compilation proves device parity.
 
+## Follow-up: declared board-selection priority
+
+The separate native commit `0d88509c82a3752fa3b9afb982b344612f1dcc31`
+corrects a pre-existing board matcher issue: use `hwids[priority[i]]`, not
+`hwids[i]`. The original loop checked IDs 0 through 8, ignoring the declared
+specificity order and omitting IDs 9 through 11. The priority array, device
+descriptors, additional match predicates, registration-order ties and
+successful-match cache are unchanged. This commit is not part of the immutable
+two-patch source bundle described above.
+
+The exact function passed 191 synthetic scenarios per optimized and
+AddressSanitizer/UndefinedBehaviorSanitizer run on both macOS and native ARM64
+Linux. Reversing only the indexed expression reproduced the same 75 expected
+failures per run. Cases cover every declared priority pair in both registry
+orders, sole identities, rejected predicates, ties, missing identities and
+cache/error retry behavior. Actual project headers are used, but EFI services,
+SMBIOS population and registry boundaries are synthetic; these tests do not
+exercise the COFF linker registry or identify a real board.
+
+The corrected source also completed the full 85-object native ARM64 EFI
+compile/link without warnings. OpenCode recommended the focused correction
+and these source-level gates, not deployment of the unqualified provider.
+
+## Versioned protocol gate
+
+The inspected dtbloader header and
+[Stubble's pinned header](https://github.com/ubuntu/stubble/blob/08218605b5ac014f7064ef7129e84ba7ec582dca/include/proto/dt-fixup.h)
+agree on the legacy `e617d64c-fe08-46da-f4dc-bbd5870c7300` interface with four
+arguments, including flags. Stubble's official main still had that exact
+revision when checked on 15 October 2026. This source agreement does not identify
+the provider or consumer installed on a particular device.
+
+The [published protocol specification](https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL/blob/c98cfac7b4daed69bb097a579981b877b765569a/README.rst)
+records an incompatible January 2026 change: GUID
+`60ed6ba9-dfef-4799-ac7b-75e0f833456c`, three arguments and no flags/reservation
+operation. The protocol revision value alone does not distinguish these ABIs.
+Do not change only the GUID, cast between signatures or add speculative memory
+reservation behavior. Pin the actual installed caller/provider pair before any
+separate migration decision. Current source checks preserve the legacy ABI.
+
 ## Remaining deployment gates
 
 The existing GPT-name comparison and broad/ambiguous partition selection still
@@ -66,6 +106,22 @@ Valid existing addresses, exact compatible-node selection, actual factory
 record semantics and the installed Stubble/provider path need independent
 qualification. The host adapter tests intentionally reproduce the partial-FDT
 failure instead of claiming transactional publication.
+
+The sole current GPT-name caller passes the fixed literal `DPP`; the pinned
+native comparison reads at most four units of its 36-unit media name. A current
+GPT-name overread has not been demonstrated. Generic API hardening must not be
+reported as an observed exploit. Separately, the native board matcher declares
+a hardware-ID priority array; the follow-up above corrects its indexed lookup.
+Actual SMBIOS generation and device selection still require qualification
+before provider deployment.
+
+The next publication change must establish complete, successful file reads and
+validate each FDT against its actual supplied byte extent before staging any
+mutation. A header's `totalsize` does not establish accessible buffer capacity.
+Use the actual bounded libfdt validator and retain the existing caller-owned
+buffer; a failed update must not expose earlier WLAN or Bluetooth mutations.
+This source architecture remains work to implement and test, not a guarantee
+of the current candidate.
 
 No raw-storage capture, provider invocation, boot-order/Secure Boot change or
 hardware radio test follows from these source checks. Those require separately

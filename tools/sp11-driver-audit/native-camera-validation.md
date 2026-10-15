@@ -17,8 +17,9 @@ contained 2 OV13858 and 21 IR patches. Its IR source ended at
   `make ARCH=arm64 W=1 -j4 vmlinux modules`.
 - `vmlinux` and all 7,817 modules listed in `modules.order` were present and
   identified as little-endian AArch64 ELF files. The modified drivers had no
-  compiler warnings or errors. There were 1,308 compiler-warning lines
-  elsewhere in the carrier; this was not a warning-free whole-kernel build.
+  compiler warnings or errors. Warnings elsewhere in the carrier are
+  classified in the subsequent-build comparison below; this was not a
+  warning-free whole-kernel build.
 - The effective configuration was unchanged by `olddefconfig`, SHA-256
   `bccba597adeb6475571f813c278ca02e6a478c2134f862cf64e1319ada10bdf7`.
   It enabled both sensor drivers as modules for validation and disabled debug
@@ -114,10 +115,48 @@ configuration and `Module.symvers`. The object SHA-256 is
 `17859f8fb91b595577ce28fc002fcbbb31f3f51227ccf4555e828be33a5600ab`;
 the test-module SHA-256 is
 `ad15bc5252eadba578b53c8e2f2c18f0c94b72a9ae2a0be54c9e18b311d8d8cf`.
-No complete kernel build was repeated for revision 3. These test artifacts
-are not standalone installation modules. The final diff passed strict
+At bundle creation, revision 3 had only the focused build above; the later
+complete build is recorded below. These test artifacts are not standalone
+installation modules. The final diff passed strict
 checkpatch and whitespace checks; OpenCode GLM 5.1 found no source-level
 blocker in the bounded correction.
+
+## Revision 3: subsequent complete kernel and module link
+
+The exact 27-patch replay, tree
+`aa48347a793826819475a078eee05759fadc7f26`, subsequently completed a clean
+native ARM64 GCC 13.3.0/binutils 2.42 build with
+`make ARCH=arm64 W=1 -j4 vmlinux modules`. The same validation configuration
+remained unchanged by `olddefconfig`. This includes all four source corrections
+added after the earlier complete build, not just the original 23 patches.
+
+Independent read-only checks verified `vmlinux` and all 7,817 ordered modules
+as ELF64 little-endian AArch64 files, with unique canonical paths, no object/
+module aliases and recorded hashes. The frozen build wrapper had returned a
+post-build verification error because it expected `.ko` entries in
+`modules.order`. The kernel's own `scripts/Makefile.modfinal` instead maps its
+listed `.o` entries to `.ko`. A separate corrected checker verified every
+mapped output; neither the build nor its original failed report was replaced.
+
+Both full logs contain 1,307 source-positioned compiler warnings and 2,467 raw
+warning-colon lines, including diagnostics without source positions. Neither
+modified sensor appears in those warning lines. The ten category counts match.
+Review of all added/removed signatures found only typographic versus ASCII
+apostrophes; complete warning multisets match after that exact normalization.
+This is explicit review of a presentation difference, not a warning-free build
+or an assertion that existing carrier warnings are harmless.
+
+The complete-build artifact SHA-256 values are:
+
+- `vmlinux`: `f73d23291d20eca9c5305b61a06923274089364aacd37b5639c53028a8a748ed`.
+- `ov13858.ko`: `bb4f5551712351a307e9b5d87bae02d9f22b4e77297a9945676ecd4add35fb69`.
+- `vd55g1.ko`: `902d482c62721a8552f8f042adf35602a5417452b441da881e766f72bfa47abd`.
+
+The existing source archive remains immutable. These later checks qualify
+compilation/linking of its exact source, not Debian packaging, binding or
+`MAINTAINERS` semantics, release-toolchain equivalence, installation, capture,
+firmware behavior or physical hardware safety. Generated signing material was
+not read, hashed or exported by the audit.
 
 ## Remaining boundaries
 
