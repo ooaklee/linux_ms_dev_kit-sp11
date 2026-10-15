@@ -44,16 +44,26 @@ silently substitute either sequence for verified board/module requirements.
 
 No Denali DTS node is enabled by this series. Resolve and review:
 
-- Linux CCI controller and bus. The platform HAL now establishes raw Windows
-  address `0x20` as CCI/Linux address `0x10`, but logical master indices still
-  need matching to the actual firmware resource ordering.
-- Reset routing and polarity, supply identities and ordering, including the
-  separate 2.9 V module/actuator resource.
+- Sensor-to-PCFG-slot lookup and current-board confirmation. The platform
+  HAL establishes raw address `0x20` as CCI/Linux `0x10`; the saved MSHW0495
+  allocation plus the HAL consumer now match logical masters 0/1 to CCI0
+  and 2/3 to CCI1. This is not a fresh translated-resource hardware trace.
+- Reset-net and sensor pin-to-rail ownership. Static analysis establishes
+  physical GPIO110 low/high levels and the `ldom6`/`ldom1`/`ldom5`/`ldob16`
+  voltage votes, but does not prove that GPIO110 is reset or that the
+  separately sequenced 2.9 V rail belongs to an actuator.
 - Physical CSI lane assignment, link frequency and module-specific mode
   timing. Windows metadata and programmed frame length currently disagree;
   output-size agreement is not enough to infer clock timing.
 - Actuator/OTP calibration ownership and indicator sharing with the front
   and IR cameras, using native Linux interfaces.
+
+The [resource field notes](camera-fields.md) distinguish configured serial
+ordering from the generic driver's asynchronous bulk regulator enable. The
+5 ms generic post-reset delay also differs from the module's configured
+10 ms. Neither difference is a measured failure or a verified sensor-wide
+requirement; do not change generic ACPI behaviour or add a guessed fourth
+sensor supply to reproduce an unverified board sequence.
 
 Runtime qualification must cover chip identification, test-pattern/capture
 layout, start/stop/reopen, fault and probe-deferral paths, indicator release,
