@@ -118,7 +118,7 @@ registers. Neither check establishes CSI timing or successful rear capture.
 | --- | --- | --- |
 | Front IMX681 | Native driver and OLED graph; prior preview and indicator tests | Compare verified power, lane and stream/error lifecycle with this package |
 | Rear OV13858 | Native OF power-management foundation under development; no Denali graph | Verified board resources, module-specific PHY/modes, actuator and indicator ownership |
-| IR VD55G0/VD55G1 | Different sensors and board variants; support differs | Exact module identity, native driver, transport and illumination limits |
+| IR VD55G0/VD55G1 | Native family-driver port isolated from the tested carrier; G0 illumination rejected | Actual module identity, board transport, sensor-only capture and separate illumination qualification |
 | Touch/pen | Native transport and userspace exist; fresh-boot autoload repair is a separate series | Preserve repair and investigate actual lifecycle gaps |
 | Suspend | Several device and SoC resource owners are involved | Decode power policies and compare failed Linux transitions with measured Windows behaviour |
 | Sensors | Surface SAM support is distinct from the Qualcomm sensor hub | Transport, exact board configuration, orientation and calibration |
@@ -133,6 +133,12 @@ The [native OV13858 series](ov13858-native.md) is separate from these research
 tools. It uses Linux resource interfaces, leaves existing sensor tables intact
 and does not load the inspected configuration files. Its board-enablement and
 hardware-qualification gates remain explicit.
+
+The [source-only camera bundle guide](native-source-bundles.md) describes
+the independent OV13858 and VD55G0 patch sets, their native upstream/vendor
+provenance and the source/object-check workflow. They are foundations for
+qualification, not installable camera fixes. In particular, a native IR
+sensor driver is not equivalent to safely enabling an illuminator.
 
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that
