@@ -111,6 +111,9 @@ allOf:
             const: st,vd55g0
     then:
       properties:
+        # Illumination is not qualified by the sensor-only VD55G0 port.
+        st,leds: false
+
         port:
           properties:
             endpoint:
