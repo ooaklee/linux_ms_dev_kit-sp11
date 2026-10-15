@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0-only
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {decodePrivacyConfiguration,decodePlatformConfiguration} from './camera-config.mjs';
+
+function fixture(values) {
+  const records=values.map(v=>{const bytes=Buffer.alloc(12);bytes.writeUInt16LE(0);bytes.writeUInt16LE(8,2);bytes.writeBigUInt64LE(BigInt(v),4);return bytes;});
+  const header=Buffer.alloc(16);header.write('AeoB');header.writeUInt32LE(16+12*values.length,4);header.writeUInt32LE(1,8);header.writeUInt16LE(3,12);header.writeUInt16LE(12*values.length,14);
+  return Buffer.concat([header,...records]);
+}
+
+test('privacy descriptors separate sensor membership, mechanism and resource index',()=>{
+  const decoded=decodePrivacyConfiguration(fixture([0x106,0x501,0,0,0,0]));
+  assert.deepEqual(decoded.descriptors[0].sensorSlots,[1,2]);
+  assert.equal(decoded.descriptors[0].resourceIndex,0);
+  assert.equal(decoded.descriptors[1].resourceIndex,1);
+  assert.equal(decoded.descriptors[1].mechanism,'gpio');
+  assert.equal(decoded.descriptors[1].executionPath,'resource-hub-write');
+  assert.equal('physicalGPIO' in decoded.descriptors[1],false);
+});
+test('privacy polarity and component selection are distinct fields',()=>{
+  const result=decodePrivacyConfiguration(fixture([(1<<13)|(5<<10)|(1<<8)|1,(4<<10)|(3<<8)|2,0,0,0,0]));
+  assert.equal(result.descriptors[0].activeLow,true);assert.equal(result.descriptors[0].resourceIndex,5);
+  assert.equal(result.descriptors[1].componentIndex,4);assert.equal('activeLow' in result.descriptors[1],false);
+});
+test('platform fields preserve both banks without inventing camera identity',()=>{
+  const decoded=decodePlatformConfiguration(fixture([0x107,0x110000,0x230010,0x1000110,0,0,0,0,0,123]));
+  assert.equal(decoded.flags.sensorSlotMask,7);assert.equal(decoded.flags.hasPositionOffsets,true);
+  assert.equal(decoded.sensorWords[0].windowsI2CMaster,1);assert.equal(decoded.sensorWords[0].csiPhyIndex,1);
+  assert.equal(decoded.sensorWords[1].windowsI2CMaster,3);assert.equal(decoded.sensorWords[1].csiPhyIndex,2);
+  assert.equal(decoded.sensorWords[2].faceAuthentication,true);assert.equal(decoded.sensorWords[4].bank,1);
+  assert.equal('sensorName' in decoded.sensorWords[0],false);assert.equal(decoded.uninterpretedTail[0].value,123);
+});
+test('unsupported tuple sizes and large fields cannot be silently truncated',()=>{
+  assert.throws(()=>decodePrivacyConfiguration(fixture([1])),/six/);
+  assert.throws(()=>decodePlatformConfiguration(fixture([1])),/eight/);
+  assert.throws(()=>decodePrivacyConfiguration(fixture([0x100000000n,0,0,0,0,0])),/32-bit/);
+});
+test('platform flags describe four logical slots and retain other bits',()=>{
+  const decoded=decodePlatformConfiguration(fixture([0x1f7,0,0,0,0,0,0,0,0]));
+  assert.equal(decoded.flags.sensorSlotMask,7);
+  assert.equal(decoded.flags.uninterpretedBits4To7,15);
+});
+test('GPIO selectors six and seven are logged rather than written',()=>{
+  const decoded=decodePrivacyConfiguration(fixture([(6<<10)|0x101,(7<<10)|0x101,0,0,0,0]));
+  assert.equal(decoded.descriptors[0].resourceIndex,6);
+  assert.equal(decoded.descriptors[1].resourceIndex,7);
+  assert.equal(decoded.descriptors[0].executionPath,'log-only-selector');
+  assert.equal(decoded.descriptors[1].executionPath,'log-only-selector');
+});
+test('slot bit four is opaque and timer bits remain separate from trigger type',()=>{
+  const decoded=decodePlatformConfiguration(fixture([0x10,(2<<12)|(3<<14),0,0,0,0,0,0,0]));
+  assert.equal(decoded.flags.sensorSlotMask,0);
+  assert.equal(decoded.flags.uninterpretedBits4To7,1);
+  assert.equal(decoded.sensorWords[0].flashCciTimerIndex,2);
+  assert.equal(decoded.sensorWords[0].triggerType,3);
+});
