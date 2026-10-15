@@ -100,6 +100,25 @@ The 16-bit stored field is copied into a byte in the inspected interface;
 both the stored field and that byte are reported without normalizing either.
 The tool retains names as inert labels and opens no referenced paths.
 
+### Platform CCI conversion
+
+Further analysis resolves the address conversion outside those consumers.
+In the platform binary identified at the start of this document, command
+builder `0x14000f838` extracts bits 1–7 of the raw interface byte; instruction
+`0x14000f85c` is the corresponding `ubfx`. It places the result in the CCI
+SET_PARAM address field. Native `drivers/i2c/busses/i2c-qcom-cci.c` puts its
+seven-bit Linux address into the same field without that shift. Consequently
+raw `0x20` corresponds to CCI/Linux address `0x10`, not Linux address `0x20`.
+The interpreter reports that observed conversion alongside both raw fields.
+
+Controller routing remains a separate boundary. Initialization at
+`0x14000a988` splits a nonnegative logical master index into controller
+instance `index / 2` and master `index % 2`. However, `0x14003b850` obtains
+controller bases dynamically from translated firmware resource ordinals two
+and three. Matching those resources to Linux CCI0 at `0x0ac15000` and CCI1 at
+`0x0ac16000` requires the actual platform's resource descriptors. The split
+alone does not prove that Windows instance zero is Linux `cci0`.
+
 ## Power-resource delays
 
 Static analysis of `qcpep8380.sys`, SHA-256
