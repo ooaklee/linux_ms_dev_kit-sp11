@@ -2908,6 +2908,10 @@ static int vd55g1_parse_dt_gpios(struct vd55g1 *sensor)
 	if (ret)
 		return ret;
 
+	/* Qualify VD55G0 illumination separately from the sensor-only port. */
+	if (sensor->model == &vd55g0_model && nb_gpios_leds)
+		return -EOPNOTSUPP;
+
 	for (i = 0; i < nb_gpios_leds; i++) {
 		sensor->gpios[led_gpios[i]] = VD55G1_GPIO_MODE_STROBE;
 		set_bit(led_gpios[i], &sensor->ext_leds_mask);
