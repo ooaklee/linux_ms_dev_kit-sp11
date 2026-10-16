@@ -528,9 +528,13 @@ static ssize_t uc_ping_store(struct device *dev, struct device_attribute *attr,
 	if (!tb_dev)
 		return -ENODEV;
 	tb = container_of(tb_dev, struct tb, dev);
-	put_device(tb_dev);
-	if (!tb->root_switch)
-		return -ENODEV;
+	ret = mutex_lock_interruptible(&tb->lock);
+	if (ret)
+		goto out_put;
+	if (!tb->root_switch) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
 
 	t0 = ktime_get();
 	ret = tb_sw_read(tb->root_switch, &val, TB_CFG_SWITCH, ROUTER_CS_1, 1);
@@ -555,6 +559,10 @@ static ssize_t uc_ping_store(struct device *dev, struct device_attribute *attr,
 			 !!(cs18 & PORT_CS_18_TIP), !!(cs18 & PORT_CS_18_CPS),
 			 !!(cs18 & PORT_CS_18_BE));
 	}
+out_unlock:
+	mutex_unlock(&tb->lock);
+out_put:
+	put_device(tb_dev);
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_WO(uc_ping);
