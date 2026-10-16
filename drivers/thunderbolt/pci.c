@@ -127,22 +127,31 @@ static int nhi_pci_init_msi(struct tb_nhi *nhi)
 				     PCI_IRQ_MSIX);
 	if (nvec < 0) {
 		nvec = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
-		if (nvec < 0)
-			return nvec;
-
-		INIT_WORK(&nhi->interrupt_work, nhi_interrupt_work);
+		if (nvec < 0) {
+			res = nvec;
+			goto err_destroy_ida;
+		}
 
 		irq = pci_irq_vector(pdev, 0);
-		if (irq < 0)
-			return irq;
+		if (irq < 0) {
+			res = irq;
+			goto err_destroy_ida;
+		}
 
 		res = devm_request_irq(&pdev->dev, irq, nhi_msi,
 				       IRQF_NO_SUSPEND, "thunderbolt", nhi);
-		if (res)
-			return dev_err_probe(dev, res, "request_irq failed, aborting\n");
+		if (res) {
+			dev_err_probe(dev, res, "request_irq failed, aborting\n");
+			goto err_destroy_ida;
+		}
 	}
 
 	return 0;
+
+err_destroy_ida:
+	/* pcim_enable_device() owns the interrupt-vector allocation. */
+	ida_destroy(&nhi_pci->msix_ida);
+	return res;
 }
 
 static bool nhi_pci_imr_valid(struct pci_dev *pdev)
@@ -476,21 +485,34 @@ static int nhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_master(pdev);
 
-	return nhi_probe(&nhi_pci->nhi);
+	res = nhi_probe(nhi);
+	if (res)
+		return res;
+
+	device_wakeup_enable(dev);
+
+	pm_runtime_allow(dev);
+	pm_runtime_set_autosuspend_delay(dev, TB_AUTOSUSPEND_DELAY);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return 0;
 }
 
 static void nhi_pci_remove(struct pci_dev *pdev)
 {
 	struct tb *tb = pci_get_drvdata(pdev);
-	struct tb_nhi *nhi = tb->nhi;
+	struct tb_nhi *nhi;
+
+	if (!tb)
+		return;
+	nhi = tb->nhi;
 
 	pm_runtime_get_sync(&pdev->dev);
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_forbid(&pdev->dev);
 
-	tb_domain_remove(tb);
-	wait_for_completion(&nhi->domain_released);
-	nhi_shutdown(nhi);
+	nhi_remove(nhi);
 }
 
 static struct pci_device_id nhi_ids[] = {
