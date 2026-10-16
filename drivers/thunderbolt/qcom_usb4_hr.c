@@ -833,11 +833,11 @@ static ssize_t uc_sb_dump_store(struct device *dev,
 static DEVICE_ATTR_WO(uc_sb_dump);
 
 /*
- * Scan uc_ram (0x15613000, 56K: UC code + data + log ring) for printable
- * runs. The UC firmware logs via in-memory strings ("Waiting for SB RX
- * Connect", "SB Connected %p", ...) - this makes the UC tell us verbatim
- * what it is waiting on. uc_ram is host-safe: firmware is streamed and
- * Windows reads UC status here.
+ * Scan the experimental UC RAM aperture for printable runs. Keep MMIO
+ * reads aligned while preserving the logical byte offsets.
+ *
+ * Physical aperture ownership and host-read safety are not established
+ * by this diagnostic.
  */
 static ssize_t uc_ram_dump_store(struct device *dev,
 				 struct device_attribute *attr,
@@ -858,8 +858,8 @@ static ssize_t uc_ram_dump_store(struct device *dev,
 	ram = hr->regs[5]; /* uc_ram (reads may alias DRAM) */
 	dev_info(dev, "hr-ram: scan start (0xe000 bytes)\n");
 	for (off = 0; off < 0xe000; off += max_t(size_t, run, 4)) {
-		u32 word = readl(ram + off);
-		u8 c0 = word & 0xff;
+		u32 word = readl(ram + (off & ~3u));
+		u8 c0 = (word >> ((off & 3) * 8)) & 0xff;
 
 		if (c0 < 0x20 || c0 > 0x7e) {
 			run = 4;
