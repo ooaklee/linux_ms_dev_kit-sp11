@@ -3092,7 +3092,11 @@ static int vd55g1_probe(struct i2c_client *client)
 		return dev_err_probe(dev, ret, "Failed to power on during probe\n");
 
 	/* Retain the probe PM reference until the subdevice is published. */
-	pm_runtime_set_active(dev);
+	ret = pm_runtime_set_active(dev);
+	if (ret) {
+		dev_err_probe(dev, ret, "Failed to set runtime PM active\n");
+		goto err_power_off;
+	}
 	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
 	pm_runtime_set_autosuspend_delay(dev, 4000);
@@ -3101,7 +3105,7 @@ static int vd55g1_probe(struct i2c_client *client)
 	ret = vd55g1_subdev_init(sensor);
 	if (ret) {
 		dev_err_probe(dev, ret, "V4l2 subdev init failed\n");
-		goto err_power_off;
+		goto err_disable_pm;
 	}
 
 	ret = v4l2_async_register_subdev(&sensor->sd);
@@ -3116,10 +3120,11 @@ static int vd55g1_probe(struct i2c_client *client)
 
 err_subdev:
 	vd55g1_subdev_cleanup(sensor);
-err_power_off:
+err_disable_pm:
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
 	pm_runtime_dont_use_autosuspend(dev);
+err_power_off:
 	vd55g1_power_off(sensor);
 
 	return ret;
