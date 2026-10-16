@@ -81,7 +81,6 @@ static int qcom_usb4_hr_init_interrupts(struct tb_nhi *nhi)
 	struct qcom_usb4_hr *hr = qcom_usb4_hr_from_nhi(nhi);
 	int ret;
 
-	INIT_WORK(&nhi->interrupt_work, nhi_interrupt_work);
 	ret = devm_request_irq(nhi->dev, hr->ring_irq, nhi_msi,
 			       IRQF_NO_SUSPEND, "thunderbolt", nhi);
 	if (ret)
