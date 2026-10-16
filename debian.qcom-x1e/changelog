@@ -1,3 +1,16 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v26) resolute; urgency=medium
+
+  * Qualification-only PMIC GLINK UCSI robustness candidate on the v25 carrier.
+  * Retain the upstream work-disable and drain fix with original attribution.
+  * Reject truncated read and write acknowledgements before payload access.
+  * Preserve partial read replies and the existing protocol/version handling.
+  * Allocate a distinct ABI; do not replace the accepted v25 packages.
+  * Keep annotations, source DTB delivery and existing hardware support intact.
+  * Require full module and package validation before any installation.
+  * Do not infer a firmware fault, USB4 enablement or standby fix from this build.
+
+ -- Leon Silcott <leon@boasi.io>  Fri, 16 Oct 2026 19:51:13 +0100
+
 linux-qcom-x1e (7.2.5-jg-0sp11v25) resolute; urgency=medium
 
   * Qualification-only native Surface Aggregator posture and input candidate.
