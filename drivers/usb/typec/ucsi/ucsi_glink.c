@@ -243,6 +243,9 @@ static void pmic_glink_ucsi_read_ack(struct pmic_glink_ucsi *ucsi, const void *d
 	u32 ret_code, resp_len, buf_len = 0;
 	u8 *buf;
 
+	if (len < sizeof(struct pmic_glink_hdr) + sizeof(u32))
+		return;
+
 	if (ucsi->ucsi->version) {
 		if (ucsi->ucsi->version >= UCSI_VERSION_2_0) {
 			buf = ((struct ucsi_read_buf_resp_msg *)data)->buf.v2_buf;
@@ -288,6 +291,9 @@ static void pmic_glink_ucsi_read_ack(struct pmic_glink_ucsi *ucsi, const void *d
 static void pmic_glink_ucsi_write_ack(struct pmic_glink_ucsi *ucsi, const void *data, int len)
 {
 	const struct ucsi_write_buf_resp_msg *resp = data;
+
+	if (len < sizeof(*resp))
+		return;
 
 	if (resp->ret_code)
 		return;
