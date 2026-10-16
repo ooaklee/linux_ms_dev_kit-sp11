@@ -656,13 +656,14 @@ static ssize_t uc_ram_dump_store(struct device *dev,
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
-	void __iomem *ram = hr->regs[5]; /* uc_ram (reads may alias DRAM) */
+	void __iomem *ram;
 	size_t off, run;
 	char line[96];
 
 	if (!hr || !hr->regs[5])
 		return -ENODEV;
 
+	ram = hr->regs[5]; /* uc_ram (reads may alias DRAM) */
 	dev_info(dev, "hr-ram: scan start (0xe000 bytes)\n");
 	for (off = 0; off < 0xe000; off += max_t(size_t, run, 4)) {
 		u32 word = readl(ram + off);
