@@ -8,6 +8,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -55,6 +56,17 @@ struct qcom_usb4_hr {
 	int fw_irq;
 	bool activated;
 };
+
+static void qcom_usb4_hr_context_release(struct device *dev, void *res)
+{
+	/* devres frees this allocation; hardware teardown is separate. */
+}
+
+static struct qcom_usb4_hr *qcom_usb4_hr_get(struct device *dev)
+{
+	/* The common NHI core owns dev->driver_data once activated. */
+	return devres_find(dev, qcom_usb4_hr_context_release, NULL, NULL);
+}
 
 static inline struct qcom_usb4_hr *qcom_usb4_hr_from_nhi(struct tb_nhi *nhi)
 {
@@ -579,7 +591,7 @@ static ssize_t uc_usbap_rmw_store(struct device *dev,
 				  const char *buf, size_t count)
 {
 	struct platform_device *pdev = to_platform_device(dev);
-	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	void __iomem *usbap;
 	u32 val;
 
@@ -623,8 +635,7 @@ static ssize_t uc_sb_dump_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buf, size_t count)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	void __iomem *sb;
 	int i;
 
@@ -654,8 +665,7 @@ static ssize_t uc_ram_dump_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	void __iomem *ram;
 	size_t off, run;
 	char line[96];
@@ -714,8 +724,7 @@ static irqreturn_t qcom_usb4_hr_uc_irq(int irq, void *data)
 static ssize_t uc_mailbox_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	int i, n = 0;
 
 	if (!hr || !hr->ucsb)
@@ -741,7 +750,7 @@ static ssize_t uc_activate_store(struct device *dev,
 				 const char *buf, size_t count)
 {
 	struct platform_device *pdev = to_platform_device(dev);
-	struct qcom_usb4_hr *hr = platform_get_drvdata(pdev);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	int ret;
 
 	if (!hr)
@@ -767,9 +776,10 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 	struct qcom_usb4_hr *hr;
 	int i, ret;
 
-	hr = devm_kzalloc(&pdev->dev, sizeof(*hr), GFP_KERNEL);
+	hr = devres_alloc(qcom_usb4_hr_context_release, sizeof(*hr), GFP_KERNEL);
 	if (!hr)
 		return -ENOMEM;
+	devres_add(&pdev->dev, hr);
 
 	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
 		hr->regs[i] = devm_platform_ioremap_resource_byname(pdev,
@@ -806,8 +816,6 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 					     "reset %s unavailable\n",
 					     hr->resets[i].id);
 	}
-
-	platform_set_drvdata(pdev, hr);
 
 	ret = qcom_usb4_hr_nhi_preflight(hr, pdev);
 	if (ret)
