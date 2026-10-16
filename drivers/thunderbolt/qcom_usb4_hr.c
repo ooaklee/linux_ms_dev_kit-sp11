@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of_address.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
@@ -43,7 +44,25 @@ static const char * const qcom_usb4_hr_resets[] = {
 	"dp0", "dp1",
 };
 
+enum qcom_usb4_hr_state {
+	QCOM_USB4_HR_RESOURCE_ONLY,
+	QCOM_USB4_HR_PREPARED,
+	QCOM_USB4_HR_ACTIVATING,
+	QCOM_USB4_HR_ACTIVE,
+	QCOM_USB4_HR_FAILED,
+	/* Frontend entry points stopped, not a physical power-state guarantee. */
+	QCOM_USB4_HR_STOPPED,
+};
+
 struct qcom_usb4_hr {
+	/* Serializes preparation, activation and all frontend diagnostics. */
+	struct mutex lock;
+	enum qcom_usb4_hr_state state;
+	void *prepare_group;
+	void *activation_group;
+	bool stopping;
+	bool cleanup_attempted;
+	int cleanup_error;
 	void __iomem *regs[ARRAY_SIZE(qcom_usb4_hr_regs)];
 	void __iomem *ucsb;      /* UCS0 mailbox @ 0x81F20040, ACPI QCOM0CA4 */
 	int uc_irq;
@@ -54,7 +73,12 @@ struct qcom_usb4_hr {
 	struct tb_nhi nhi;
 	int ring_irq;
 	int fw_irq;
-	bool activated;
+	bool ring_irq_requested;
+	bool fw_irq_requested;
+	bool uc_irq_requested;
+	bool clocks_enabled;
+	bool resets_deasserted;
+	bool phy_initialized;
 };
 
 static void qcom_usb4_hr_context_release(struct device *dev, void *res)
@@ -75,6 +99,27 @@ static inline struct qcom_usb4_hr *qcom_usb4_hr_from_nhi(struct tb_nhi *nhi)
 
 static irqreturn_t qcom_usb4_hr_fw_irq(int irq, void *data);
 static irqreturn_t qcom_usb4_hr_fw_thread(int irq, void *data);
+static irqreturn_t qcom_usb4_hr_uc_irq(int irq, void *data);
+
+static void qcom_usb4_hr_shutdown_interrupts(struct tb_nhi *nhi)
+{
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_from_nhi(nhi);
+
+	/* Quiesce every producer before draining work or releasing its storage. */
+	if (hr->uc_irq_requested) {
+		devm_free_irq(nhi->dev, hr->uc_irq, hr);
+		hr->uc_irq_requested = false;
+	}
+	if (hr->fw_irq_requested) {
+		devm_free_irq(nhi->dev, hr->fw_irq, hr);
+		hr->fw_irq_requested = false;
+	}
+	if (hr->ring_irq_requested) {
+		devm_free_irq(nhi->dev, hr->ring_irq, nhi);
+		hr->ring_irq_requested = false;
+	}
+	flush_work(&nhi->interrupt_work);
+}
 
 static int qcom_usb4_hr_init_interrupts(struct tb_nhi *nhi)
 {
@@ -85,6 +130,7 @@ static int qcom_usb4_hr_init_interrupts(struct tb_nhi *nhi)
 			       IRQF_NO_SUSPEND, "thunderbolt", nhi);
 	if (ret)
 		return ret;
+	hr->ring_irq_requested = true;
 
 	/*
 	 * The UC's event/notification line; the common NHI code has no use
@@ -96,8 +142,22 @@ static int qcom_usb4_hr_init_interrupts(struct tb_nhi *nhi)
 					IRQF_NO_SUSPEND | IRQF_ONESHOT,
 					"thunderbolt-fw", hr);
 	if (ret)
-		dev_warn(nhi->dev, "fw_irq request failed: %pe\n", ERR_PTR(ret));
+		goto err_shutdown;
+	hr->fw_irq_requested = true;
+
+	if (hr->uc_irq >= 0) {
+		ret = devm_request_irq(nhi->dev, hr->uc_irq,
+				       qcom_usb4_hr_uc_irq, 0,
+				       "qcom-usb4-hr-uc", hr);
+		if (ret)
+			goto err_shutdown;
+		hr->uc_irq_requested = true;
+	}
 	return 0;
+
+err_shutdown:
+	qcom_usb4_hr_shutdown_interrupts(nhi);
+	return ret;
 }
 
 static bool qcom_usb4_hr_is_present(struct tb_nhi *nhi)
@@ -108,6 +168,7 @@ static bool qcom_usb4_hr_is_present(struct tb_nhi *nhi)
 static const struct tb_nhi_ops qcom_usb4_hr_nhi_ops = {
 	.is_present = qcom_usb4_hr_is_present,
 	.init_interrupts = qcom_usb4_hr_init_interrupts,
+	.shutdown = qcom_usb4_hr_shutdown_interrupts,
 };
 
 /*
@@ -134,48 +195,65 @@ static unsigned long long window0 = 0x1563F000;
 module_param(window0, ullong, 0444);
 MODULE_PARM_DESC(window0, "USB4 router flat window physical base");
 
-static irqreturn_t qcom_usb4_hr_uc_irq(int irq, void *data);
-
 static int __qcom_usb4_hr_nhi_preflight(struct qcom_usb4_hr *hr,
 					struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	void __iomem *ucsb;
+	struct phy *usb4_phy;
+	void *group;
+	int ring_irq, fw_irq, uc_irq;
 	int ret;
 
-	hr->ring_irq = platform_get_irq_byname(pdev, "ring");
-	if (hr->ring_irq < 0)
-		return dev_err_probe(dev, hr->ring_irq,
-				     "missing combined NHI ring interrupt\n");
+	lockdep_assert_held(&hr->lock);
+	if (hr->state == QCOM_USB4_HR_PREPARED)
+		return 0;
+	if (hr->state != QCOM_USB4_HR_RESOURCE_ONLY)
+		return -EBUSY;
 
-	hr->fw_irq = platform_get_irq_byname(pdev, "fw");
-	if (hr->fw_irq < 0)
-		return dev_err_probe(dev, hr->fw_irq,
-				     "missing NHI firmware interrupt\n");
+	group = devres_open_group(dev, NULL, GFP_KERNEL);
+	if (!group)
+		return -ENOMEM;
 
-	hr->nhi.dev = dev;
-	hr->nhi.ops = &qcom_usb4_hr_nhi_ops;
-	hr->nhi.iobase = hr->regs[8];
-	hr->usb4_phy = devm_phy_get(dev, "usb4");
-	if (IS_ERR(hr->usb4_phy))
-		return dev_err_probe(dev, PTR_ERR(hr->usb4_phy),
-				     "USB4 PHY is not available\n");
-
-	hr->uc_irq = platform_get_irq_byname_optional(pdev, "uc");
-	if (hr->uc_irq < 0) {
-		dev_warn(dev, "no \"uc\" interrupt (pre-ACPI DTB?)\n");
-	} else {
-		ret = devm_request_irq(dev, hr->uc_irq,
-				       qcom_usb4_hr_uc_irq, 0,
-				       "qcom-usb4-hr-uc", hr);
-		if (ret)
-			dev_warn(dev, "uc irq request failed: %d\n", ret);
-		else
-			dev_info(dev, "uc irq %d armed\n", hr->uc_irq);
+	ring_irq = platform_get_irq_byname(pdev, "ring");
+	if (ring_irq < 0) {
+		ret = ring_irq;
+		goto err_release;
+	}
+	fw_irq = platform_get_irq_byname(pdev, "fw");
+	if (fw_irq < 0) {
+		ret = fw_irq;
+		goto err_release;
 	}
 
-	hr->ucsb = devm_ioremap(dev, 0x81F20040, 0x40);
-	if (!hr->ucsb)
+	usb4_phy = devm_phy_get(dev, "usb4");
+	if (IS_ERR(usb4_phy)) {
+		ret = dev_err_probe(dev, PTR_ERR(usb4_phy),
+				    "USB4 PHY is not available\n");
+		goto err_release;
+	}
+	uc_irq = platform_get_irq_byname_optional(pdev, "uc");
+	if (uc_irq < 0 && uc_irq != -ENXIO) {
+		ret = uc_irq;
+		goto err_release;
+	}
+	if (uc_irq < 0)
+		dev_warn(dev, "no optional UC interrupt\n");
+
+	ucsb = devm_ioremap(dev, 0x81F20040, 0x40);
+	if (!ucsb)
 		dev_warn(dev, "could not map UCS0 mailbox\n");
+
+	devres_close_group(dev, group);
+	hr->prepare_group = group;
+	hr->ring_irq = ring_irq;
+	hr->fw_irq = fw_irq;
+	hr->uc_irq = uc_irq;
+	hr->usb4_phy = usb4_phy;
+	hr->ucsb = ucsb;
+	hr->nhi.iobase = hr->regs[8];
+	hr->nhi.ops = &qcom_usb4_hr_nhi_ops;
+	hr->state = QCOM_USB4_HR_PREPARED;
 
 	dev_info(dev,
 		 "NHI preflight passed: aperture=%p ring_irq=%d fw_irq=%d; activation=%s\n",
@@ -183,6 +261,10 @@ static int __qcom_usb4_hr_nhi_preflight(struct qcom_usb4_hr *hr,
 		 device_property_read_bool(dev, "qcom,nhi-activate") ?
 		 "requested" : "disabled");
 	return 0;
+
+err_release:
+	devres_release_group(dev, group);
+	return ret;
 }
 
 static int qcom_usb4_hr_nhi_preflight(struct qcom_usb4_hr *hr,
@@ -432,12 +514,63 @@ static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 	return 0;
 }
 
+static void qcom_usb4_hr_release_activation(struct qcom_usb4_hr *hr)
+{
+	struct device *dev = hr->nhi.dev;
+	int ret;
+
+	lockdep_assert_held(&hr->lock);
+	if (hr->cleanup_attempted)
+		return;
+	hr->cleanup_attempted = true;
+	if (hr->state == QCOM_USB4_HR_ACTIVE)
+		nhi_remove(&hr->nhi);
+
+	/* Domain release and IRQ/work quiescence precede managed storage. */
+	if (hr->activation_group) {
+		devres_release_group(dev, hr->activation_group);
+		hr->activation_group = NULL;
+	}
+	hr->nhi.tx_rings = NULL;
+	hr->nhi.rx_rings = NULL;
+	hr->nhi.hop_count = 0;
+
+	/* Keep the existing PHY/reset/clock order; no physical recovery claim. */
+	if (hr->phy_initialized) {
+		ret = phy_exit(hr->usb4_phy);
+		if (ret) {
+			dev_warn(dev, "USB4 PHY exit failed: %d\n", ret);
+			if (!hr->cleanup_error)
+				hr->cleanup_error = ret;
+		} else {
+			hr->phy_initialized = false;
+		}
+	}
+	if (hr->resets_deasserted) {
+		ret = reset_control_bulk_assert(ARRAY_SIZE(hr->resets), hr->resets);
+		if (ret) {
+			dev_warn(dev, "host-router reset assertion failed: %d\n", ret);
+			if (!hr->cleanup_error)
+				hr->cleanup_error = ret;
+		} else {
+			hr->resets_deasserted = false;
+		}
+	}
+	if (hr->clocks_enabled) {
+		clk_bulk_disable_unprepare(ARRAY_SIZE(hr->clocks), hr->clocks);
+		hr->clocks_enabled = false;
+	}
+}
+
 static int qcom_usb4_hr_activate(struct qcom_usb4_hr *hr,
 					struct platform_device *pdev, bool force)
 {
 	struct device *dev = &pdev->dev;
 	int ret;
 
+	lockdep_assert_held(&hr->lock);
+	if (hr->stopping)
+		return -ENODEV;
 	/*
 	 * This is deliberately separate from the resource preflight.  The
 	 * common NHI probe resets and touches the router, so only an explicitly
@@ -447,53 +580,69 @@ static int qcom_usb4_hr_activate(struct qcom_usb4_hr *hr,
 	 */
 	if (!force && !device_property_read_bool(dev, "qcom,nhi-activate"))
 		return 0;
+	if (hr->state == QCOM_USB4_HR_ACTIVE)
+		return 0;
+	if (hr->state == QCOM_USB4_HR_FAILED)
+		return -EIO;
+	if (hr->state == QCOM_USB4_HR_STOPPED)
+		return -ENODEV;
+	ret = __qcom_usb4_hr_nhi_preflight(hr, pdev);
+	if (ret)
+		return ret;
+
+	hr->activation_group = devres_open_group(dev, NULL, GFP_KERNEL);
+	if (!hr->activation_group)
+		return -ENOMEM;
+	hr->state = QCOM_USB4_HR_ACTIVATING;
 
 	dev_info(dev, "hr-act: step0 activation entered%s\n",
 		 force ? " (sysfs)" : "");
 
 	ret = clk_bulk_prepare_enable(ARRAY_SIZE(hr->clocks), hr->clocks);
 	if (ret)
-		return dev_err_probe(dev, ret,
-				     "failed to enable host-router clocks\n");
+		goto err_release;
+	hr->clocks_enabled = true;
 	dev_info(dev, "hr-act: step1 clocks enabled\n");
 
 	ret = reset_control_bulk_deassert(ARRAY_SIZE(hr->resets), hr->resets);
 	if (ret)
-		goto err_disable_clocks;
+		goto err_release;
+	hr->resets_deasserted = true;
 	dev_info(dev, "hr-act: step2 resets deasserted\n");
 
 	dev_info(dev, "hr-act: step3 setting PHY mode TBT3\n");
 	ret = phy_set_mode_ext(hr->usb4_phy, PHY_MODE_TBT, PHY_SUBMODE_TBT3);
 	if (ret)
-		goto err_assert_resets;
+		goto err_release;
 	dev_info(dev, "hr-act: step3a phy_set_mode_ext done\n");
 
 	ret = phy_init(hr->usb4_phy);
 	if (ret)
-		goto err_assert_resets;
+		goto err_release;
+	hr->phy_initialized = true;
 	dev_info(dev, "hr-act: step4 phy_init done\n");
 
 	ret = qcom_usb4_hr_uc_bringup(hr);
 	if (ret)
-		goto err_exit_phy;
+		goto err_release;
 	dev_info(dev, "hr-act: step5 UC bringup done\n");
 
 	dev_info(dev, "hr-act: step6 calling nhi_probe\n");
 	ret = nhi_probe(&hr->nhi);
 	if (ret)
-		goto err_exit_phy;
+		goto err_release;
 
-	hr->activated = true;
+	devres_close_group(dev, hr->activation_group);
+	hr->state = QCOM_USB4_HR_ACTIVE;
 	dev_info(dev,
 		 "experimental Qualcomm USB4 NHI activated with UC firmware\n");
 	return 0;
 
-err_exit_phy:
-	phy_exit(hr->usb4_phy);
-err_assert_resets:
-	reset_control_bulk_assert(ARRAY_SIZE(hr->resets), hr->resets);
-err_disable_clocks:
-	clk_bulk_disable_unprepare(ARRAY_SIZE(hr->clocks), hr->clocks);
+err_release:
+	devres_close_group(dev, hr->activation_group);
+	qcom_usb4_hr_release_activation(hr);
+	/* A software unwind does not establish safe physical UC restart. */
+	hr->state = QCOM_USB4_HR_FAILED;
 	return dev_err_probe(dev, ret, "host-router activation failed\n");
 }
 
@@ -503,10 +652,9 @@ static int qcom_usb4_hr_find_tb_domain(struct device *child, const void *data)
 }
 
 /*
- * Authoritative "is the router live" check: a tb domain child device
- * exists. hr->activated has been observed false after a successful
- * activation (2026-08-26 round-6 incident), so sysfs guards must not
- * trust it — re-running the bring-up on live hardware hard-locks the SoC.
+ * A child domain is an additional reason not to repeat bring-up. The
+ * frontend state remains the readiness/ownership contract; child lookup
+ * alone does not serialize activation against teardown.
  */
 static bool qcom_usb4_hr_is_live(struct platform_device *pdev)
 {
@@ -519,6 +667,21 @@ static bool qcom_usb4_hr_is_live(struct platform_device *pdev)
 	return true;
 }
 
+static int qcom_usb4_hr_lock_active(struct qcom_usb4_hr *hr)
+{
+	int ret;
+
+	ret = mutex_lock_interruptible(&hr->lock);
+	if (ret)
+		return ret;
+	if (hr->stopping || hr->state != QCOM_USB4_HR_ACTIVE) {
+		ret = hr->state == QCOM_USB4_HR_FAILED ? -EIO : -ENODEV;
+		mutex_unlock(&hr->lock);
+		return ret;
+	}
+	return 0;
+}
+
 /*
  * Writes issue a raw config-space read to the host router, testing whether
  * the UC's command processor still answers long after the boot-time
@@ -527,6 +690,7 @@ static bool qcom_usb4_hr_is_live(struct platform_device *pdev)
 static ssize_t uc_ping_store(struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	struct device *tb_dev;
 	struct tb *tb;
 	ktime_t t0;
@@ -535,9 +699,16 @@ static ssize_t uc_ping_store(struct device *dev, struct device_attribute *attr,
 	u32 val = 0;
 	int ret;
 
-	tb_dev = device_find_child(dev, NULL, qcom_usb4_hr_find_tb_domain);
-	if (!tb_dev)
+	if (!hr)
 		return -ENODEV;
+	ret = qcom_usb4_hr_lock_active(hr);
+	if (ret)
+		return ret;
+	tb_dev = device_find_child(dev, NULL, qcom_usb4_hr_find_tb_domain);
+	if (!tb_dev) {
+		ret = -ENODEV;
+		goto out_hr_unlock;
+	}
 	tb = container_of(tb_dev, struct tb, dev);
 	ret = mutex_lock_interruptible(&tb->lock);
 	if (ret)
@@ -574,6 +745,8 @@ out_unlock:
 	mutex_unlock(&tb->lock);
 out_put:
 	put_device(tb_dev);
+out_hr_unlock:
+	mutex_unlock(&hr->lock);
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_WO(uc_ping);
@@ -589,22 +762,21 @@ static ssize_t uc_usbap_rmw_store(struct device *dev,
 				  struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
-	struct platform_device *pdev = to_platform_device(dev);
 	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	void __iomem *usbap;
 	u32 val;
+	int ret;
 
 	if (!hr)
 		return -ENODEV;
+	ret = qcom_usb4_hr_lock_active(hr);
+	if (ret)
+		return ret;
 	if (!uc_usbap_allow) {
 		dev_info(dev,
 			 "uc_usbap: BLOCKED (usbap_allow=0; raw read is a known instant lockup)\n");
-		return -EPERM;
-	}
-	if (!qcom_usb4_hr_is_live(pdev)) {
-		dev_info(dev, "uc_usbap: UC not live yet (activated=%d)\n",
-			 hr->activated);
-		return -EPERM;
+		ret = -EPERM;
+		goto out_unlock;
 	}
 
 	usbap = hr->regs[11]; /* usbap_config @ 0x15681000 */
@@ -619,7 +791,10 @@ static ssize_t uc_usbap_rmw_store(struct device *dev,
 	val = qcom_usb4_hr_rmw(usbap + 0x10, 0xc, 0xc);
 	dev_info(dev, "hr-usbap: RMW 0xc/0xc done, now=%#x\n",
 		 readl(usbap + 0x10));
-	return count;
+	ret = 0;
+out_unlock:
+	mutex_unlock(&hr->lock);
+	return ret ? ret : count;
 }
 static DEVICE_ATTR_WO(uc_usbap_rmw);
 
@@ -636,10 +811,13 @@ static ssize_t uc_sb_dump_store(struct device *dev,
 {
 	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
 	void __iomem *sb;
-	int i;
+	int i, ret;
 
-	if (!hr || !hr->regs[4])
+	if (!hr)
 		return -ENODEV;
+	ret = qcom_usb4_hr_lock_active(hr);
+	if (ret)
+		return ret;
 
 	sb = hr->regs[4]; /* sideband @ 0x15612000 (reads may alias) */
 	dev_info(dev, "hr-sb: dump start\n");
@@ -649,6 +827,7 @@ static ssize_t uc_sb_dump_store(struct device *dev,
 		dev_info(dev, "hr-sb: [%#02x] = %#010x\n", i, v);
 	}
 	dev_info(dev, "hr-sb: dump done\n");
+	mutex_unlock(&hr->lock);
 	return count;
 }
 static DEVICE_ATTR_WO(uc_sb_dump);
@@ -668,9 +847,13 @@ static ssize_t uc_ram_dump_store(struct device *dev,
 	void __iomem *ram;
 	size_t off, run;
 	char line[96];
+	int ret;
 
-	if (!hr || !hr->regs[5])
+	if (!hr)
 		return -ENODEV;
+	ret = qcom_usb4_hr_lock_active(hr);
+	if (ret)
+		return ret;
 
 	ram = hr->regs[5]; /* uc_ram (reads may alias DRAM) */
 	dev_info(dev, "hr-ram: scan start (0xe000 bytes)\n");
@@ -696,6 +879,7 @@ static ssize_t uc_ram_dump_store(struct device *dev,
 			dev_info(dev, "hr-ram: +%#06zx: %s\n", off, line);
 	}
 	dev_info(dev, "hr-ram: scan done\n");
+	mutex_unlock(&hr->lock);
 	return count;
 }
 static DEVICE_ATTR_WO(uc_ram_dump);
@@ -724,17 +908,27 @@ static ssize_t uc_mailbox_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(dev);
-	int i, n = 0;
+	int i, n = 0, ret;
 
-	if (!hr || !hr->ucsb)
+	if (!hr)
 		return -ENODEV;
+	ret = qcom_usb4_hr_lock_active(hr);
+	if (ret)
+		return ret;
+	if (!hr->ucsb) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
 	for (i = 0; i < 0x2f; i += 4) {
 		u32 v = readl(hr->ucsb + i);
 
 		n += scnprintf(buf + n, PAGE_SIZE - n, "[%#02x] %#010x\n",
 			       i, v);
 	}
-	return n;
+	ret = n;
+out_unlock:
+	mutex_unlock(&hr->lock);
+	return ret;
 }
 static DEVICE_ATTR_RO(uc_mailbox);
 
@@ -754,21 +948,66 @@ static ssize_t uc_activate_store(struct device *dev,
 
 	if (!hr)
 		return -ENODEV;
-	if (hr->activated || qcom_usb4_hr_is_live(pdev)) {
-		dev_info(dev, "uc_activate: already active (flag=%d live=%d)\n",
-			 hr->activated, qcom_usb4_hr_is_live(pdev));
-		return count;
+	ret = mutex_lock_interruptible(&hr->lock);
+	if (ret)
+		return ret;
+	if (hr->stopping) {
+		ret = -ENODEV;
+		goto out_unlock;
 	}
-	if (!hr->nhi.ops) {
-		ret = __qcom_usb4_hr_nhi_preflight(hr, pdev);
-		if (ret)
-			return ret;
+	if (hr->state == QCOM_USB4_HR_ACTIVE) {
+		ret = 0;
+		goto out_unlock;
+	}
+	if (qcom_usb4_hr_is_live(pdev)) {
+		ret = -EBUSY;
+		goto out_unlock;
 	}
 
 	ret = qcom_usb4_hr_activate(hr, pdev, true);
+out_unlock:
+	mutex_unlock(&hr->lock);
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_WO(uc_activate);
+
+static struct attribute *qcom_usb4_hr_attrs[] = {
+	&dev_attr_uc_ping.attr,
+	&dev_attr_uc_activate.attr,
+	&dev_attr_uc_usbap_rmw.attr,
+	&dev_attr_uc_sb_dump.attr,
+	&dev_attr_uc_ram_dump.attr,
+	&dev_attr_uc_mailbox.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(qcom_usb4_hr);
+
+static void qcom_usb4_hr_stop(struct qcom_usb4_hr *hr)
+{
+	struct device *dev = hr->nhi.dev;
+
+	mutex_lock(&hr->lock);
+	hr->stopping = true;
+	if (hr->state == QCOM_USB4_HR_STOPPED)
+		goto out_unlock;
+	if (hr->state == QCOM_USB4_HR_ACTIVE)
+		qcom_usb4_hr_release_activation(hr);
+	if (hr->cleanup_error)
+		dev_warn(dev, "frontend stopped; physical cleanup failed: %d\n",
+			 hr->cleanup_error);
+	hr->state = QCOM_USB4_HR_STOPPED;
+	if (hr->prepare_group) {
+		devres_release_group(dev, hr->prepare_group);
+		hr->prepare_group = NULL;
+	}
+	hr->usb4_phy = NULL;
+	hr->ucsb = NULL;
+	hr->nhi.ops = NULL;
+	hr->nhi.iobase = NULL;
+	/* Failed cleanup flags remain historical evidence, not usable handles. */
+out_unlock:
+	mutex_unlock(&hr->lock);
+}
 
 static int qcom_usb4_hr_probe(struct platform_device *pdev)
 {
@@ -779,6 +1018,8 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 	if (!hr)
 		return -ENOMEM;
 	devres_add(&pdev->dev, hr);
+	mutex_init(&hr->lock);
+	hr->nhi.dev = &pdev->dev;
 
 	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
 		hr->regs[i] = devm_platform_ioremap_resource_byname(pdev,
@@ -816,50 +1057,41 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 					     hr->resets[i].id);
 	}
 
+	mutex_lock(&hr->lock);
 	ret = qcom_usb4_hr_nhi_preflight(hr, pdev);
-	if (ret)
+	if (!ret)
+		ret = qcom_usb4_hr_activate(hr, pdev, false);
+	mutex_unlock(&hr->lock);
+	if (ret) {
+		qcom_usb4_hr_stop(hr);
 		return ret;
-
-	ret = qcom_usb4_hr_activate(hr, pdev, false);
-	if (ret)
-		return ret;
-
-	ret = device_create_file(&pdev->dev, &dev_attr_uc_ping);
-	if (!ret)
-		ret = device_create_file(&pdev->dev, &dev_attr_uc_activate);
-	if (!ret)
-		ret = device_create_file(&pdev->dev, &dev_attr_uc_usbap_rmw);
-	if (!ret)
-		ret = device_create_file(&pdev->dev, &dev_attr_uc_sb_dump);
-	if (!ret)
-		ret = device_create_file(&pdev->dev, &dev_attr_uc_ram_dump);
-	if (!ret)
-		ret = device_create_file(&pdev->dev, &dev_attr_uc_mailbox);
-	if (!ret)
-	
+	}
 
 	dev_info(&pdev->dev,
-		 hr->activated ? "resource validation passed; host-router NHI is active\n" :
+		 hr->state == QCOM_USB4_HR_ACTIVE ?
+		 "resource validation passed; host-router NHI is active\n" :
 		 "resource validation passed; host-router hardware access is disabled\n");
 	return 0;
 }
 
-
-
-
-
 static void qcom_usb4_hr_remove(struct platform_device *pdev)
 {
-	/* No .remove meant leaked sysfs attrs survived unbind: a rebind
-	 * then failed with -EEXIST and stores could hit stale module
-	 * memory. Teardown everything probe created. */
-	device_remove_file(&pdev->dev, &dev_attr_uc_ping);
-	device_remove_file(&pdev->dev, &dev_attr_uc_activate);
-	device_remove_file(&pdev->dev, &dev_attr_uc_usbap_rmw);
-	device_remove_file(&pdev->dev, &dev_attr_uc_sb_dump);
-	device_remove_file(&pdev->dev, &dev_attr_uc_ram_dump);
-	device_remove_file(&pdev->dev, &dev_attr_uc_mailbox);
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(&pdev->dev);
 
+	/* Driver core has removed and drained dev_groups before this callback. */
+	qcom_usb4_hr_stop(hr);
+}
+
+static void qcom_usb4_hr_shutdown(struct platform_device *pdev)
+{
+	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(&pdev->dev);
+
+	/* Shutdown, unlike unbind, does not drain the driver's sysfs groups. */
+	mutex_lock(&hr->lock);
+	hr->stopping = true;
+	mutex_unlock(&hr->lock);
+	device_remove_groups(&pdev->dev, qcom_usb4_hr_groups);
+	qcom_usb4_hr_stop(hr);
 }
 
 static const struct of_device_id qcom_usb4_hr_of_match[] = {
@@ -872,9 +1104,11 @@ MODULE_DEVICE_TABLE(of, qcom_usb4_hr_of_match);
 static struct platform_driver qcom_usb4_hr_driver = {
 	.probe = qcom_usb4_hr_probe,
 	.remove = qcom_usb4_hr_remove,
+	.shutdown = qcom_usb4_hr_shutdown,
 	.driver = {
 		.name = "qcom-usb4-hr",
 		.of_match_table = qcom_usb4_hr_of_match,
+		.dev_groups = qcom_usb4_hr_groups,
 	},
 };
 module_platform_driver(qcom_usb4_hr_driver);
