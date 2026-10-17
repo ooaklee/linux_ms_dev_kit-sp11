@@ -12,6 +12,7 @@
 #include <linux/firmware.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -20,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/reset.h>
+#include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -27,11 +29,31 @@
 #include "tb.h"
 #include "tb_regs.h"
 
-static const char * const qcom_usb4_hr_regs[] = {
-	"router", "router_config", "tmu_config", "port_group",
-	"sideband", "uc_ram", "uc_per", "uc_mbox", "nhi", "cfg",
-	"debug", "usbap_config", "pcieap_config", "dpap0_aux",
-	"dpap0_config", "dpap1_aux", "dpap1_config",
+struct qcom_usb4_hr_reg {
+	const char *name;
+	resource_size_t min_size;
+};
+
+/* Cover existing accesses, including the optional frontend diagnostics. */
+static const struct qcom_usb4_hr_reg qcom_usb4_hr_regs[] = {
+	{ "router", 0x20ac },
+	{ "router_config", 0x1c },
+	{ "tmu_config", 0 },
+	{ "port_group", 0x68 },
+	{ "sideband", 0x40 },
+	{ "uc_ram", 56 * SZ_1K },
+	{ "uc_per", 0x1004 },
+	{ "uc_mbox", 0 },
+	/* Retain the complete Qualcomm NHI register aperture for the core. */
+	{ "nhi", SZ_256K },
+	{ "cfg", 0 },
+	{ "debug", 0 },
+	{ "usbap_config", 0x18 },
+	{ "pcieap_config", 0 },
+	{ "dpap0_aux", 0 },
+	{ "dpap0_config", 0 },
+	{ "dpap1_aux", 0 },
+	{ "dpap1_config", 0 },
 };
 
 static const char * const qcom_usb4_hr_clocks[] = {
@@ -81,6 +103,44 @@ struct qcom_usb4_hr {
 	bool resets_deasserted;
 	bool phy_initialized;
 };
+
+static int qcom_usb4_hr_map_resources(struct qcom_usb4_hr *hr,
+				      struct platform_device *pdev)
+{
+	struct resource *resources[ARRAY_SIZE(qcom_usb4_hr_regs)];
+	struct device *dev = &pdev->dev;
+	int i;
+
+	/* Validate every range before mapping any part of the controller. */
+	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
+		const struct qcom_usb4_hr_reg *reg = &qcom_usb4_hr_regs[i];
+		struct resource *res;
+		resource_size_t size;
+
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						   reg->name);
+		if (!res || res->end < res->start)
+			return dev_err_probe(dev, -EINVAL,
+					     "invalid MMIO resource %s\n", reg->name);
+
+		size = resource_size(res);
+		if (!size || size < reg->min_size)
+			return dev_err_probe(dev, -EINVAL,
+					     "MMIO resource %s is too small\n",
+					     reg->name);
+		resources[i] = res;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
+		hr->regs[i] = devm_ioremap_resource(dev, resources[i]);
+		if (IS_ERR(hr->regs[i]))
+			return dev_err_probe(dev, PTR_ERR(hr->regs[i]),
+					     "cannot map MMIO resource %s\n",
+					     qcom_usb4_hr_regs[i].name);
+	}
+
+	return 0;
+}
 
 static void qcom_usb4_hr_context_release(struct device *dev, void *res)
 {
@@ -1061,14 +1121,9 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 	mutex_init(&hr->lock);
 	hr->nhi.dev = &pdev->dev;
 
-	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
-		hr->regs[i] = devm_platform_ioremap_resource_byname(pdev,
-							 qcom_usb4_hr_regs[i]);
-		if (IS_ERR(hr->regs[i]))
-			return dev_err_probe(&pdev->dev, PTR_ERR(hr->regs[i]),
-					     "missing MMIO resource %s\n",
-					     qcom_usb4_hr_regs[i]);
-	}
+	ret = qcom_usb4_hr_map_resources(hr, pdev);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_clocks); i++)
 		hr->clocks[i].id = qcom_usb4_hr_clocks[i];
