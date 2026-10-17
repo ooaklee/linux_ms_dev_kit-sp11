@@ -151,6 +151,11 @@ the source-only firmware-parser correction, later native module/MODPOST proof,
 and event-channel requirements identified by static analysis. It does not
 qualify USB4 activation or provide modules for the running v26 kernel.
 
+The subsequent [USB4 resource-bounds correction](native-usb4-resource-bounds.md)
+adds validation of the existing frontend's MMIO extents, source-linked host
+tests and a fresh ARM64 object check. Its source-only companion patch does not
+inherit R5's module proof or establish a working firmware event channel.
+
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that
 kernel revision and are fork research infrastructure. Hardware changes must
