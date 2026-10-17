@@ -21,6 +21,7 @@
 #include <linux/property.h>
 #include <linux/reset.h>
 #include <linux/string.h>
+#include <linux/unaligned.h>
 
 #include "nhi.h"
 #include "tb.h"
@@ -345,6 +346,41 @@ module_param_named(fw_load_allow, fw_load_allow, bool, 0644);
 MODULE_PARM_DESC(fw_load_allow,
 		 "allow the UC firmware stream into the window0 fw area");
 
+static int qcom_usb4_hr_validate_firmware(const struct firmware *fw)
+{
+	const u8 *data = fw->data;
+	size_t remaining = fw->size;
+
+	if (!remaining || remaining % sizeof(u32))
+		return -EINVAL;
+
+	while (remaining) {
+		u32 target, count;
+		size_t length;
+
+		if (remaining < 2 * sizeof(u32))
+			return -EINVAL;
+
+		target = get_unaligned_le32(data);
+		count = get_unaligned_le32(data + sizeof(u32));
+		data += 2 * sizeof(u32);
+		remaining -= 2 * sizeof(u32);
+
+		if (!count || count > 0x4000 ||
+		    !IS_ALIGNED(target, sizeof(u32)) ||
+		    target > 56 * SZ_1K ||
+		    count > remaining / sizeof(u32) ||
+		    count > (56 * SZ_1K - target) / sizeof(u32))
+			return -EINVAL;
+
+		length = (size_t)count * sizeof(u32);
+		data += length;
+		remaining -= length;
+	}
+
+	return 0;
+}
+
 static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 {
 	static const char * const fw_name =
@@ -353,7 +389,8 @@ static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 	void __iomem *uc_ram = hr->regs[5];         /* uc_ram (writes real;
 						     * reads alias DRAM) */
 	const struct firmware *fw;
-	const __le32 *p, *end;
+	const u8 *data;
+	size_t remaining;
 	unsigned int i;
 	u32 val;
 	int ret;
@@ -381,28 +418,31 @@ static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 			return dev_err_probe(hr->nhi.dev, ret,
 					     "USB4 UC firmware unavailable\n");
 
+		ret = qcom_usb4_hr_validate_firmware(fw);
+		if (ret) {
+			release_firmware(fw);
+			return dev_err_probe(hr->nhi.dev, ret,
+					     "bad UC firmware container\n");
+		}
+
 		/* Halt the UC, then stream {target, count, words[]} segments. */
 		writel(0, uc_ctl);
 		dev_info(hr->nhi.dev, "hr-bring: halted, streaming segments\n");
 
-		p = (const __le32 *)fw->data;
-		end = p + fw->size / sizeof(__le32);
-		while (p + 2 <= end) {
-			u32 target = le32_to_cpu(p[0]);
-			u32 count = le32_to_cpu(p[1]);
+		data = fw->data;
+		remaining = fw->size;
+		while (remaining) {
+			u32 target = get_unaligned_le32(data);
+			u32 count = get_unaligned_le32(data + sizeof(u32));
+			size_t length = (size_t)count * sizeof(u32);
 
-			p += 2;
-			if (!count || count > 0x4000 ||
-			    target > SZ_64K || p + count > end ||
-			    target + count * sizeof(u32) > (56 * SZ_1K)) {
-				dev_err(hr->nhi.dev, "bad UC firmware segment\n");
-				release_firmware(fw);
-				return -EINVAL;
-			}
+			data += 2 * sizeof(u32);
+			remaining -= 2 * sizeof(u32);
 			for (i = 0; i < count; i++)
-				writel(le32_to_cpu(p[i]),
+				writel(get_unaligned_le32(data + i * sizeof(u32)),
 				       uc_ram + target + i * sizeof(u32));
-			p += count;
+			data += length;
+			remaining -= length;
 		}
 		dev_info(hr->nhi.dev, "USB4 UC firmware loaded (%zu bytes)\n",
 			 fw->size);
