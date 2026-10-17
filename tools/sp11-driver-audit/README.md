@@ -146,6 +146,11 @@ records a separate source-only dtbloader candidate, its exact native build and
 synthetic coverage, and the provider/boot-chain gates that remain. It does not
 add a kernel raw-partition reader or change the running device's factory identity.
 
+The [dated USB4 R5 validation supplement](native-usb4-r5-validation.md) records
+the source-only firmware-parser correction, later native module/MODPOST proof,
+and event-channel requirements identified by static analysis. It does not
+qualify USB4 activation or provide modules for the running v26 kernel.
+
 The research checkout began at the older integration revision
 `2cbd1ec3e2da385e7bd91fd65c63ba5a8fb5b865`. These tools are independent of that
 kernel revision and are fork research infrastructure. Hardware changes must
