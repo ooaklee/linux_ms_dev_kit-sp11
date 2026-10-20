@@ -7,6 +7,8 @@
  * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <dt-bindings/phy/phy.h>
+#include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/interconnect.h>
 #include <linux/media-bus-format.h>
@@ -31,6 +33,26 @@
 
 #define CAMSS_CLOCK_MARGIN_NUMERATOR 105
 #define CAMSS_CLOCK_MARGIN_DENOMINATOR 100
+
+#define CAMSS_DENALI_PRIVATE_PHY "qcom,x1e80100-mipi-csi2-combo-phy"
+#define CAMSS_X1E_GENERIC_PHY "qcom,x1e80100-csi2-phy"
+
+struct camss_denali_phy_plan {
+	bool selected;
+	unsigned int private_slot; /* Only meaningful when selected is true. */
+	unsigned long declared_slots;
+	unsigned long available_slots;
+};
+
+struct camss_denali_phy_row {
+	struct of_phandle_args args; /* One owned node reference after parse. */
+	const char *name; /* Borrowed only during this scanner invocation. */
+	int name_ret;
+	bool private_claim;
+};
+
+static int camss_scan_denali_phys(struct camss *camss,
+				struct camss_denali_phy_plan *out);
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
@@ -4696,6 +4718,42 @@ static const struct parent_dev_ops vfe_parent_dev_ops = {
 	.get_base_address = vfe_parent_dev_ops_get_base_address
 };
 
+static bool camss_has_denali_cphy(const struct camss *camss)
+{
+	unsigned int i;
+
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		if (camss->csiphy[i].denali_cphy)
+			return true;
+
+	return false;
+}
+
+static bool camss_denali_slot_ready(struct camss *camss, unsigned int slot,
+				   bool registered)
+{
+	struct csiphy_device *csiphy;
+
+	if (slot >= camss->res->csiphy_num)
+		return false;
+	csiphy = &camss->csiphy[slot];
+	if (!csiphy->phy)
+		return false;
+	if (!csiphy->denali_cphy)
+		return true;
+
+	return registered ? msm_csiphy_denali_is_registered(csiphy) :
+			    msm_csiphy_denali_is_initialized(csiphy);
+}
+
+static void camss_cleanup_denali_phys(struct camss *camss)
+{
+	unsigned int i;
+
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		msm_csiphy_subdev_cleanup_denali(&camss->csiphy[i]);
+}
+
 /*
  * camss_parse_endpoint_node - Parse port endpoint node
  * @dev: CAMSS device
@@ -4709,6 +4767,7 @@ static int camss_parse_endpoint_node(struct device *dev,
 				     struct camss_async_subdev *csd)
 {
 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
+	struct camss *camss = dev_get_drvdata(dev);
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
 	unsigned int i;
@@ -4726,6 +4785,11 @@ static int camss_parse_endpoint_node(struct device *dev,
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
+
+	if (camss_has_denali_cphy(camss) &&
+	    !camss_denali_slot_ready(camss, vep.base.port, false))
+		return dev_err_probe(dev, -ENODEV,
+				     "endpoint has no initialized Denali PHY slot\n");
 
 	csd->interface.csiphy_id = vep.base.port;
 
@@ -4810,14 +4874,31 @@ err_cleanup:
  *
  * Return 0 on success or a negative error code on failure
  */
-static int camss_init_subdevices(struct camss *camss)
+static int camss_init_subdevices(struct camss *camss,
+				 const struct camss_denali_phy_plan *plan)
 {
 	struct platform_device *pdev = to_platform_device(camss->dev);
 	const struct camss_resources *res = camss->res;
 	unsigned int i;
 	int ret;
 
-	if (!res->legacy_phy) {
+	if (plan->selected) {
+		for (i = 0; i < res->csiphy_num; i++) {
+			if (!test_bit(i, &plan->declared_slots))
+				continue;
+			if (i == plan->private_slot)
+				ret = msm_csiphy_subdev_init_denali(camss,
+						&camss->csiphy[i],
+						&res->csiphy_res[i], i);
+			else
+				ret = msm_csiphy_subdev_init(camss,
+						&camss->csiphy[i],
+						&res->csiphy_res[i],
+						res->csiphy_res[i].csiphy.id);
+			if (ret)
+				return ret;
+		}
+	} else if (!res->legacy_phy) {
 		for (i = 0; i < camss->res->csiphy_num; i++) {
 			ret = msm_csiphy_subdev_init(camss, &camss->csiphy[i],
 						     &res->csiphy_res[i],
@@ -4925,6 +5006,10 @@ static int camss_link_entities(struct camss *camss)
 	int ret;
 
 	for (i = 0; i < camss->res->csiphy_num; i++) {
+		if (camss->csiphy[i].phy && camss->csiphy[i].denali_cphy &&
+		    !msm_csiphy_denali_is_registered(&camss->csiphy[i]))
+			return -ENODEV;
+
 		for (j = 0; j < camss->res->csid_num; j++) {
 			if (!camss->csiphy[i].phy)
 				continue;
@@ -5178,7 +5263,12 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct camss_async_subdev *csd =
 		container_of(asd, struct camss_async_subdev, asd);
 	u8 id = csd->interface.csiphy_id;
-	struct csiphy_device *csiphy = &camss->csiphy[id];
+	struct csiphy_device *csiphy;
+
+	if (camss_has_denali_cphy(camss) &&
+	    !camss_denali_slot_ready(camss, id, true))
+		return -ENODEV;
+	csiphy = &camss->csiphy[id];
 
 	csiphy->cfg.csi2 = &csd->interface.csi2;
 	subdev->host_priv = csiphy;
@@ -5200,6 +5290,15 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 
 		if (!csiphy)
 			continue;
+
+		if (camss_has_denali_cphy(camss)) {
+			for (i = 0; i < camss->res->csiphy_num; i++)
+				if (csiphy == &camss->csiphy[i])
+					break;
+			if (i == camss->res->csiphy_num ||
+			    !camss_denali_slot_ready(camss, i, true))
+				return -ENODEV;
+		}
 
 		input = &csiphy->subdev.entity;
 		sensor = &sd->entity;
@@ -5361,6 +5460,7 @@ static void camss_genpd_cleanup(struct camss *camss)
 static int camss_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct camss_denali_phy_plan phy_plan;
 	struct camss *camss;
 	int ret;
 
@@ -5378,6 +5478,12 @@ static int camss_probe(struct platform_device *pdev)
 				     sizeof(*camss->csiphy), GFP_KERNEL);
 	if (!camss->csiphy)
 		return -ENOMEM;
+
+	ret = camss_scan_denali_phys(camss, &phy_plan);
+	if (ret)
+		return ret;
+	if (phy_plan.selected)
+		camss->csiphy[phy_plan.private_slot].denali_cphy = true;
 
 	if (camss->res->tpg_num > 0) {
 		camss->tpg = devm_kcalloc(dev, camss->res->tpg_num,
@@ -5415,7 +5521,7 @@ static int camss_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = camss_init_subdevices(camss);
+	ret = camss_init_subdevices(camss, &phy_plan);
 	if (ret < 0)
 		goto err_genpd_cleanup;
 
@@ -5479,6 +5585,7 @@ err_v4l2_device_unregister:
 err_media_device_cleanup:
 	media_device_cleanup(&camss->media_dev);
 err_genpd_cleanup:
+	camss_cleanup_denali_phys(camss);
 	camss_genpd_cleanup(camss);
 
 	return ret;
@@ -5506,6 +5613,7 @@ static void camss_remove(struct platform_device *pdev)
 	v4l2_async_nf_unregister(&camss->notifier);
 	v4l2_async_nf_cleanup(&camss->notifier);
 	camss_unregister_entities(camss);
+	camss_cleanup_denali_phys(camss);
 
 	if (atomic_read(&camss->ref_count) == 0)
 		camss_delete(camss);
@@ -5760,6 +5868,232 @@ static const struct camss_resources x1e80100_resources = {
 	.csid_num = ARRAY_SIZE(csid_res_x1e80100),
 	.vfe_num = ARRAY_SIZE(vfe_res_x1e80100),
 };
+
+static int camss_denali_slot_for_name(const struct camss *camss,
+				     const char *name)
+{
+	unsigned int slot;
+	char expected[16];
+
+	for (slot = 0; slot < camss->res->csiphy_num; slot++) {
+		snprintf(expected, sizeof(expected), "csiphy%u",
+			 camss->res->csiphy_res[slot].csiphy.id);
+		if (!strcmp(name, expected))
+			return slot;
+	}
+	return -EINVAL;
+}
+
+static bool camss_denali_private_claim(const struct of_phandle_args *args,
+				       bool exact_x1e)
+{
+	u32 type;
+
+	if (of_device_is_compatible(args->np, CAMSS_DENALI_PRIVATE_PHY))
+		return true;
+	if (of_property_count_u32_elems(args->np, "phy-type") == 1 &&
+	    !of_property_read_u32(args->np, "phy-type", &type) &&
+	    type == PHY_TYPE_CPHY)
+		return true;
+
+	/* The current X1E generic route takes one D-PHY argument, never zero. */
+	return exact_x1e && !args->args_count;
+}
+
+static int camss_denali_validate_private(const struct camss_denali_phy_row *row)
+{
+	const struct device_node *np = row->args.np;
+	const char *compatible;
+	u32 cells, type;
+
+	if (of_property_count_strings(np, "compatible") != 1 ||
+	    of_property_read_string(np, "compatible", &compatible) ||
+	    strcmp(compatible, CAMSS_DENALI_PRIVATE_PHY))
+		return -EINVAL;
+	if (row->args.args_count ||
+	    of_property_count_u32_elems(np, "#phy-cells") != 1 ||
+	    of_property_read_u32(np, "#phy-cells", &cells) || cells)
+		return -EINVAL;
+	if (of_property_count_u32_elems(np, "phy-type") != 1 ||
+	    of_property_read_u32(np, "phy-type", &type) ||
+	    type != PHY_TYPE_CPHY)
+		return -EINVAL;
+	return 0;
+}
+
+static int camss_denali_validate_generic(const struct camss_denali_phy_row *row)
+{
+	u32 cells;
+
+	/* This is only the mixed private-X1E set, not a global generic policy. */
+	if (!of_device_is_compatible(row->args.np, CAMSS_X1E_GENERIC_PHY) ||
+	    of_property_count_u32_elems(row->args.np, "#phy-cells") != 1 ||
+	    of_property_read_u32(row->args.np, "#phy-cells", &cells) ||
+	    cells != 1 || row->args.args_count != 1 ||
+	    row->args.args[0] != PHY_TYPE_DPHY)
+		return -EINVAL;
+	return 0;
+}
+
+static int camss_scan_denali_phys(struct camss *camss,
+				struct camss_denali_phy_plan *out)
+{
+	struct camss_denali_phy_row rows[CAMSS_RES_MAX] = {};
+	struct camss_denali_phy_plan staged = {};
+	struct of_phandle_iterator iterator = {};
+	struct device_node *np;
+	const struct property *phys;
+	unsigned int refs = 0, i, j;
+	bool exact_x1e, any_private = false;
+	int length, cells, count, names, ret = 0;
+
+	/* out and existing per-device flags are never changed on refusal. */
+	if (!out || !camss || !camss->dev || !camss->res)
+		return -EINVAL;
+	np = camss->dev->of_node;
+	if (!np) {
+		*out = staged;
+		return 0;
+	}
+	exact_x1e = camss->res == &x1e80100_resources &&
+		camss->res->version == CAMSS_X1E80100 &&
+		of_device_is_compatible(np, "qcom,x1e80100-camss");
+
+	phys = of_find_property(np, "phys", &length);
+	if (!phys) {
+		if (of_find_property(np, "phy-names", NULL))
+			return -EINVAL;
+		/* Existing generic/legacy initialization still decides missing PHYs. */
+		*out = staged;
+		return 0;
+	}
+	/* of_count_phandle_with_args() alone can ignore a fractional final cell. */
+	if (length <= 0 || length % sizeof(__be32))
+		return -EINVAL;
+	cells = of_property_count_u32_elems(np, "phys");
+	if (cells <= 0 || cells > CAMSS_RES_MAX * (MAX_PHANDLE_ARGS + 1))
+		return -EINVAL;
+	ret = of_phandle_iterator_init(&iterator, np, "phys", "#phy-cells", -1);
+	if (ret)
+		return ret;
+
+	/* Parse tuples, not raw u32 indices: mixed providers have variable cells. */
+	while ((ret = of_phandle_iterator_next(&iterator)) == 0) {
+		if (refs == ARRAY_SIZE(rows) || !iterator.node ||
+		    iterator.cur_count > MAX_PHANDLE_ARGS) {
+			ret = -EINVAL;
+			goto put_refs;
+		}
+		i = refs;
+		/* Retain our own reference; iterator_next() owns its separate one. */
+		rows[i].args.np = of_node_get(iterator.node);
+		refs++;
+		/* iterator_args() is not exported to modular CAMSS. */
+		for (j = 0; j < iterator.cur_count; j++)
+			rows[i].args.args[j] = be32_to_cpup(iterator.cur + j);
+		rows[i].args.args_count = iterator.cur_count;
+		rows[i].name_ret = of_property_read_string_index(np, "phy-names",
+							       i, &rows[i].name);
+		rows[i].private_claim =
+			camss_denali_private_claim(&rows[i].args, exact_x1e);
+		any_private |= rows[i].private_claim;
+	}
+	if (ret != -ENOENT)
+		goto put_refs;
+	ret = 0;
+	count = refs;
+	if (!count) {
+		ret = -EINVAL;
+		goto put_refs;
+	}
+	if (!any_private)
+		goto publish; /* No new name/provider policy on valid generic-only sets. */
+	if (!exact_x1e || !of_machine_is_compatible("microsoft,denali")) {
+		ret = -EOPNOTSUPP;
+		goto put_refs;
+	}
+	if (!camss->res->csiphy_num || camss->res->csiphy_num > BITS_PER_LONG ||
+	    count > camss->res->csiphy_num) {
+		ret = -EINVAL;
+		goto put_refs;
+	}
+	names = of_property_count_strings(np, "phy-names");
+	if (names != count) {
+		ret = names < 0 ? names : -EINVAL;
+		goto put_refs;
+	}
+
+	for (i = 0; i < count; i++) {
+		int slot;
+
+		if (rows[i].name_ret) {
+			ret = rows[i].name_ret;
+			goto put_refs;
+		}
+		slot = camss_denali_slot_for_name(camss, rows[i].name);
+		if (slot < 0 || test_and_set_bit(slot, &staged.declared_slots)) {
+			ret = -EINVAL;
+			goto put_refs;
+		}
+		if (rows[i].private_claim) {
+			/* Look up ID2 through the real table; do not index array by ID. */
+			if (camss->res->csiphy_res[slot].csiphy.id != 2 ||
+			    staged.selected) {
+				ret = -EINVAL;
+				goto put_refs;
+			}
+			ret = camss_denali_validate_private(&rows[i]);
+			if (ret)
+				goto put_refs;
+			staged.selected = true;
+			staged.private_slot = slot;
+		} else {
+			ret = camss_denali_validate_generic(&rows[i]);
+			if (ret)
+				goto put_refs;
+		}
+		if (of_device_is_available(rows[i].args.np))
+			__set_bit(slot, &staged.available_slots);
+	}
+	for (i = 0; i < count; i++)
+		for (j = 0; j < i; j++)
+			if (rows[i].args.np == rows[j].args.np &&
+			    (rows[i].private_claim || rows[j].private_claim)) {
+				ret = -EINVAL;
+				goto put_refs;
+			}
+	if (!staged.selected) {
+		ret = -EINVAL;
+		goto put_refs;
+	}
+
+publish:
+	*out = staged; /* Pure plan/bitmaps only: no borrowed node escapes. */
+put_refs:
+	/* Non-NULL only when this scanner exited before iterator_next drained it. */
+	of_node_put(iterator.node);
+	for (i = 0; i < refs; i++)
+		of_node_put(rows[i].args.np);
+	return ret;
+}
+
+/* Internal qcom-camss.o helper: no OF node or borrowed name escapes. */
+int camss_denali_phy_available(struct camss *camss, unsigned int slot)
+{
+	struct camss_denali_phy_plan plan;
+	int ret;
+
+	if (!camss || !camss->res || slot >= camss->res->csiphy_num)
+		return -EINVAL;
+	ret = camss_scan_denali_phys(camss, &plan);
+	if (ret)
+		return ret;
+	if (!plan.selected || plan.private_slot != slot ||
+	    !test_bit(slot, &plan.declared_slots))
+		return -EINVAL;
+
+	return test_bit(slot, &plan.available_slots);
+}
 
 static const struct of_device_id camss_dt_match[] = {
 	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },

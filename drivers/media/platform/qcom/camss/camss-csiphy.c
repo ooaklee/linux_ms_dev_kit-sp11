@@ -923,6 +923,306 @@ static const struct media_entity_operations csiphy_media_ops = {
 };
 
 /*
+ * Denali's named PHY provider owns its registers, clocks and regulators.
+ * This private adapter does not invoke the generic D-PHY or legacy path.
+ * PHY API design source: Bryan O'Donoghue's CAMSS PHY API support:
+ * https://patch.msgid.link/20250711-b4-linux-next-25-03-13-dtsi-x1e80100-camss-v7-4-0bc5da82f526@linaro.org
+ */
+static bool csiphy_denali_ready(const struct csiphy_device *csiphy)
+{
+	return csiphy->denali_phy_initialized &&
+	       csiphy->denali_phy_registered &&
+	       !csiphy->denali_phy_stopping;
+}
+
+static void csiphy_denali_exit(void *data)
+{
+	struct csiphy_device *csiphy = data;
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	csiphy->denali_phy_action_pending = false;
+	if (csiphy->denali_phy_stopping)
+		goto unlock;
+	csiphy->denali_phy_stopping = true;
+	if (!csiphy->denali_phy_initialized)
+		goto unlock;
+
+	ret = phy_exit(csiphy->phy);
+	if (ret)
+		dev_warn(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
+			 csiphy->id, ret);
+	else
+		csiphy->denali_phy_initialized = false;
+unlock:
+	mutex_unlock(&csiphy->denali_phy_lock);
+}
+
+int msm_csiphy_subdev_init_denali(struct camss *camss,
+				 struct csiphy_device *csiphy,
+				 const struct camss_subdev_resources *res,
+				 unsigned int slot)
+{
+	struct device *dev = camss->dev;
+	struct phy *phy;
+	int ret;
+
+	if (!csiphy->denali_cphy || slot >= camss->res->csiphy_num ||
+	    res != &camss->res->csiphy_res[slot] || res->csiphy.id != 2)
+		return -EINVAL;
+
+	csiphy->camss = camss;
+	csiphy->id = res->csiphy.id;
+	csiphy->res = &res->csiphy;
+	csiphy->cfg.combo_mode = 0;
+	csiphy->phy = NULL;
+	mutex_init(&csiphy->denali_phy_lock);
+	csiphy->denali_phy_initialized = false;
+	csiphy->denali_phy_registered = false;
+	csiphy->denali_phy_action_pending = false;
+	csiphy->denali_phy_stopping = false;
+	snprintf(csiphy->name, sizeof(csiphy->name), "csiphy%u", csiphy->id);
+
+	/* Revalidate the same mixed tuple contract; only disabled returns zero. */
+	ret = camss_denali_phy_available(camss, slot);
+	if (ret <= 0)
+		return ret;
+
+	phy = devm_phy_get(dev, csiphy->name);
+	if (IS_ERR(phy))
+		return dev_err_probe(dev, PTR_ERR(phy), "failed to get %s\n",
+				     csiphy->name);
+	csiphy->phy = phy;
+	ret = phy_init(phy);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to initialize %s\n",
+				     csiphy->name);
+	csiphy->denali_phy_initialized = true;
+
+	/* Registered after the managed get, so exit runs before managed put. */
+	ret = devm_add_action_or_reset(dev, csiphy_denali_exit, csiphy);
+	if (ret)
+		return ret;
+	csiphy->denali_phy_action_pending = true;
+
+	return 0;
+}
+
+void msm_csiphy_subdev_cleanup_denali(struct csiphy_device *csiphy)
+{
+	bool release;
+
+	/* An earlier generic slot can fail before this slot's mutex is set up. */
+	if (!csiphy->denali_cphy ||
+	    !READ_ONCE(csiphy->denali_phy_action_pending))
+		return;
+	mutex_lock(&csiphy->denali_phy_lock);
+	release = csiphy->denali_phy_action_pending;
+	csiphy->denali_phy_action_pending = false;
+	mutex_unlock(&csiphy->denali_phy_lock);
+	if (release)
+		devm_release_action(csiphy->camss->dev, csiphy_denali_exit, csiphy);
+}
+
+bool msm_csiphy_denali_is_initialized(struct csiphy_device *csiphy)
+{
+	bool ready;
+
+	if (!csiphy->denali_cphy ||
+	    !READ_ONCE(csiphy->denali_phy_action_pending))
+		return false;
+	mutex_lock(&csiphy->denali_phy_lock);
+	ready = csiphy->denali_phy_initialized && !csiphy->denali_phy_stopping;
+	mutex_unlock(&csiphy->denali_phy_lock);
+
+	return ready;
+}
+
+bool msm_csiphy_denali_is_registered(struct csiphy_device *csiphy)
+{
+	bool ready;
+
+	if (!csiphy->denali_cphy ||
+	    !READ_ONCE(csiphy->denali_phy_action_pending))
+		return false;
+	mutex_lock(&csiphy->denali_phy_lock);
+	ready = csiphy_denali_ready(csiphy);
+	mutex_unlock(&csiphy->denali_phy_lock);
+
+	return ready;
+}
+
+/* The caller holds denali_phy_lock across validation and the base pad op. */
+static int csiphy_denali_validate_pad(struct csiphy_device *csiphy,
+				      struct v4l2_subdev_state *state,
+				      unsigned int pad,
+				      enum v4l2_subdev_format_whence which)
+{
+	if (!csiphy_denali_ready(csiphy))
+		return -ENODEV;
+	if (pad >= MSM_CSIPHY_PADS_NUM ||
+	    (which != V4L2_SUBDEV_FORMAT_ACTIVE &&
+	     which != V4L2_SUBDEV_FORMAT_TRY) ||
+	    (which == V4L2_SUBDEV_FORMAT_TRY && !state))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int csiphy_denali_enum_mbus_code(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_mbus_code_enum *code)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	ret = csiphy_denali_validate_pad(csiphy, state, code->pad, code->which);
+	if (!ret)
+		ret = csiphy_enum_mbus_code(sd, state, code);
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static int csiphy_denali_enum_frame_size(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
+					struct v4l2_subdev_frame_size_enum *fse)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	ret = csiphy_denali_validate_pad(csiphy, state, fse->pad, fse->which);
+	if (!ret)
+		ret = csiphy_enum_frame_size(sd, state, fse);
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static int csiphy_denali_get_format(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_state *state,
+				    struct v4l2_subdev_format *fmt)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	ret = csiphy_denali_validate_pad(csiphy, state, fmt->pad, fmt->which);
+	if (!ret)
+		ret = csiphy_get_format(sd, state, fmt);
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static int csiphy_denali_set_format(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_state *state,
+				    struct v4l2_subdev_format *fmt)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	ret = csiphy_denali_validate_pad(csiphy, state, fmt->pad, fmt->which);
+	if (!ret)
+		ret = csiphy_set_format(sd, state, fmt);
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static int csiphy_denali_open(struct v4l2_subdev *sd,
+			    struct v4l2_subdev_fh *fh)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	ret = csiphy_denali_ready(csiphy) ? csiphy_init_formats(sd, fh) : -ENODEV;
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+/* No PHY hardware operation until the separate constrained C-PHY route. */
+static int csiphy_denali_set_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	int ret;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	if (!csiphy_denali_ready(csiphy))
+		ret = -ENODEV;
+	else
+		ret = enable ? -EOPNOTSUPP : 0;
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static int csiphy_denali_link_setup(struct media_entity *entity,
+				  const struct media_pad *local,
+				  const struct media_pad *remote, u32 flags)
+{
+	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	struct camss *camss = csiphy->camss;
+	unsigned int i;
+	int ret = -EINVAL;
+
+	mutex_lock(&csiphy->denali_phy_lock);
+	if (!csiphy_denali_ready(csiphy)) {
+		ret = -ENODEV;
+		goto unlock;
+	}
+	if (!local || !remote || !remote->entity ||
+	    local->entity != entity || local->index >= MSM_CSIPHY_PADS_NUM ||
+	    local != &csiphy->pads[local->index] ||
+	    remote->index >= remote->entity->num_pads ||
+	    remote != &remote->entity->pads[remote->index] ||
+	    !is_media_entity_v4l2_subdev(remote->entity))
+		goto unlock;
+	if (local->index == MSM_CSIPHY_PAD_SRC) {
+		if (remote->index != MSM_CSID_PAD_SINK)
+			goto unlock;
+		for (i = 0; i < camss->res->csid_num; i++)
+			if (remote->entity == &camss->csid[i].subdev.entity)
+				break;
+		if (i == camss->res->csid_num)
+			goto unlock;
+	} else {
+		sd = media_entity_to_v4l2_subdev(remote->entity);
+		if (!(remote->flags & MEDIA_PAD_FL_SOURCE) || sd->host_priv != csiphy)
+			goto unlock;
+	}
+	ret = csiphy_link_setup(entity, local, remote, flags);
+unlock:
+	mutex_unlock(&csiphy->denali_phy_lock);
+	return ret;
+}
+
+static const struct v4l2_subdev_video_ops csiphy_denali_video_ops = {
+	.s_stream = csiphy_denali_set_stream,
+};
+
+static const struct v4l2_subdev_pad_ops csiphy_denali_pad_ops = {
+	.enum_mbus_code = csiphy_denali_enum_mbus_code,
+	.enum_frame_size = csiphy_denali_enum_frame_size,
+	.get_fmt = csiphy_denali_get_format,
+	.set_fmt = csiphy_denali_set_format,
+};
+
+static const struct v4l2_subdev_ops csiphy_denali_v4l2_ops = {
+	.video = &csiphy_denali_video_ops,
+	.pad = &csiphy_denali_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops csiphy_denali_internal_ops = {
+	.open = csiphy_denali_open,
+};
+
+static const struct media_entity_operations csiphy_denali_media_ops = {
+	.link_setup = csiphy_denali_link_setup,
+	.link_validate = v4l2_subdev_link_validate,
+};
+
+/*
  * msm_csiphy_register_entity - Register subdev node for CSIPHY module
  * @csiphy: CSIPHY device
  * @v4l2_dev: V4L2 device
@@ -937,12 +1237,19 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	struct device *dev = csiphy->camss->dev;
 	int ret;
 
-	if (IS_ERR(csiphy->phy))
-		v4l2_subdev_init(sd, &csiphy_v4l2_ops_legacy);
-	else
-		v4l2_subdev_init(sd, &csiphy_v4l2_ops);
+	if (csiphy->denali_cphy) {
+		if (!msm_csiphy_denali_is_initialized(csiphy))
+			return -ENODEV;
+		v4l2_subdev_init(sd, &csiphy_denali_v4l2_ops);
+		sd->internal_ops = &csiphy_denali_internal_ops;
+	} else {
+		if (IS_ERR(csiphy->phy))
+			v4l2_subdev_init(sd, &csiphy_v4l2_ops_legacy);
+		else
+			v4l2_subdev_init(sd, &csiphy_v4l2_ops);
 
-	sd->internal_ops = &csiphy_v4l2_internal_ops;
+		sd->internal_ops = &csiphy_v4l2_internal_ops;
+	}
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d",
 		 MSM_CSIPHY_NAME, csiphy->id);
@@ -959,7 +1266,10 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	pads[MSM_CSIPHY_PAD_SRC].flags = MEDIA_PAD_FL_SOURCE;
 
 	sd->entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
-	sd->entity.ops = &csiphy_media_ops;
+	if (csiphy->denali_cphy)
+		sd->entity.ops = &csiphy_denali_media_ops;
+	else
+		sd->entity.ops = &csiphy_media_ops;
 	ret = media_entity_pads_init(&sd->entity, MSM_CSIPHY_PADS_NUM, pads);
 	if (ret < 0) {
 		dev_err(dev, "Failed to init media entity: %d\n", ret);
@@ -970,6 +1280,10 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	if (ret < 0) {
 		dev_err(dev, "Failed to register subdev: %d\n", ret);
 		media_entity_cleanup(&sd->entity);
+	} else if (csiphy->denali_cphy) {
+		mutex_lock(&csiphy->denali_phy_lock);
+		csiphy->denali_phy_registered = true;
+		mutex_unlock(&csiphy->denali_phy_lock);
 	}
 
 	return ret;
@@ -981,6 +1295,19 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
  */
 void msm_csiphy_unregister_entity(struct csiphy_device *csiphy)
 {
+	if (csiphy->denali_cphy) {
+		mutex_lock(&csiphy->denali_phy_lock);
+		if (!csiphy->denali_phy_registered) {
+			mutex_unlock(&csiphy->denali_phy_lock);
+			return;
+		}
+		csiphy->denali_phy_registered = false;
+		mutex_unlock(&csiphy->denali_phy_lock);
+		v4l2_device_unregister_subdev(&csiphy->subdev);
+		media_entity_cleanup(&csiphy->subdev.entity);
+		return;
+	}
+
 	if (!IS_ERR(csiphy->phy))
 		phy_exit(csiphy->phy);
 	v4l2_device_unregister_subdev(&csiphy->subdev);
