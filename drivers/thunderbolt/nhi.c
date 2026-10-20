@@ -16,6 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
+#include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/property.h>
 #include <linux/string_choices.h>
@@ -1165,10 +1166,12 @@ static struct tb *nhi_select_cm(struct tb_nhi *nhi)
 	struct tb *tb;
 
 	/*
+	 * Non-PCI devices always use software CM.
+	 *
 	 * USB4 case is simple. If we got control of any of the
 	 * capabilities, we use software CM.
 	 */
-	if (tb_acpi_is_native())
+	if (!dev_is_pci(nhi->dev) || tb_acpi_is_native())
 		return tb_probe(nhi);
 
 	/*
@@ -1195,6 +1198,10 @@ int nhi_probe(struct tb_nhi *nhi)
 	if (!nhi->ops->init_interrupts)
 		return dev_err_probe(dev, -EINVAL, "missing required NHI ops\n");
 
+	spin_lock_init(&nhi->lock);
+	INIT_WORK(&nhi->interrupt_work, nhi_interrupt_work);
+	init_completion(&nhi->domain_released);
+
 	nhi->hop_count = ioread32(nhi->iobase + REG_CAPS) & 0x3ff;
 	dev_dbg(dev, "total paths: %d\n", nhi->hop_count);
 
@@ -1214,24 +1221,29 @@ int nhi_probe(struct tb_nhi *nhi)
 	if (res)
 		return dev_err_probe(dev, res, "cannot enable interrupts, aborting\n");
 
-	spin_lock_init(&nhi->lock);
-
 	res = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
-	if (res)
-		return dev_err_probe(dev, res, "failed to set DMA mask\n");
+	if (res) {
+		dev_err_probe(dev, res, "failed to set DMA mask\n");
+		goto err_shutdown;
+	}
 
 	if (nhi->ops->init) {
 		res = nhi->ops->init(nhi);
-		if (res)
-			return dev_err_probe(dev, res, "NHI specific init failed\n");
+		if (res) {
+			dev_err_probe(dev, res, "NHI specific init failed\n");
+			goto err_shutdown;
+		}
 	}
 
-	init_completion(&nhi->domain_released);
-
 	tb = nhi_select_cm(nhi);
-	if (!tb)
-		return dev_err_probe(dev, -ENODEV,
-			"failed to determine connection manager, aborting\n");
+	if (!tb) {
+		res = dev_err_probe(dev, -ENODEV,
+				    "failed to determine connection manager, aborting\n");
+		goto err_shutdown;
+	}
+
+	/* Track the release of this selected domain, not a rejected candidate. */
+	reinit_completion(&nhi->domain_released);
 
 	dev_dbg(dev, "NHI initialized, starting thunderbolt\n");
 
@@ -1243,19 +1255,38 @@ int nhi_probe(struct tb_nhi *nhi)
 		 */
 		tb_domain_put(tb);
 		wait_for_completion(&nhi->domain_released);
-		nhi_shutdown(nhi);
-		return dev_err_probe(dev, res, "failed to add domain\n");
+		dev_err_probe(dev, res, "failed to add domain\n");
+		goto err_shutdown;
 	}
 	dev_set_drvdata(dev, tb);
 
-	device_wakeup_enable(dev);
-
-	pm_runtime_allow(dev);
-	pm_runtime_set_autosuspend_delay(dev, TB_AUTOSUSPEND_DELAY);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_put_autosuspend(dev);
-
 	return 0;
+
+err_shutdown:
+	nhi_shutdown(nhi);
+	return res;
+}
+
+/**
+ * nhi_remove() - Remove a successfully probed NHI domain
+ * @nhi: NHI whose frontend has stopped new users
+ *
+ * Frontends must drain their own entry points before calling this function,
+ * and must not hold a domain reference while waiting for its release here.
+ * Calls must be serialized by the frontend. Bus-specific runtime-PM
+ * ownership remains with the frontend.
+ */
+void nhi_remove(struct tb_nhi *nhi)
+{
+	struct tb *tb = dev_get_drvdata(nhi->dev);
+
+	if (!tb)
+		return;
+
+	tb_domain_remove(tb);
+	wait_for_completion(&nhi->domain_released);
+	nhi_shutdown(nhi);
+	dev_set_drvdata(nhi->dev, NULL);
 }
 
 /*
