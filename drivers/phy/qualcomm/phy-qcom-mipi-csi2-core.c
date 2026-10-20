@@ -353,7 +353,29 @@ static struct platform_driver phy_qcom_mipi_csi2_driver = {
 	},
 };
 
-module_platform_driver(phy_qcom_mipi_csi2_driver);
+/*
+ * Temporary containment for this fork's 7.2.9 CAMSS transition: only Denali
+ * currently selects its external-PHY adapter. Other machines retain the
+ * upstream package's disabled-provider behavior, even though this package
+ * builds the PHY module for Denali. This is not a generic support policy.
+ *
+ * Reject before registering the platform driver: a .probe-only guard is too
+ * late to prevent platform clock defaults and power-domain attachment.
+ */
+static int __init phy_qcom_mipi_csi2_init(void)
+{
+	if (!of_machine_is_compatible("microsoft,denali"))
+		return -ENODEV;
+
+	return platform_driver_register(&phy_qcom_mipi_csi2_driver);
+}
+module_init(phy_qcom_mipi_csi2_init);
+
+static void __exit phy_qcom_mipi_csi2_exit(void)
+{
+	platform_driver_unregister(&phy_qcom_mipi_csi2_driver);
+}
+module_exit(phy_qcom_mipi_csi2_exit);
 
 MODULE_DESCRIPTION("Qualcomm MIPI CSI2 PHY driver");
 MODULE_DESCRIPTION("Bryan O'Donoghue <bryan.odonoghue@linaro.org>");
