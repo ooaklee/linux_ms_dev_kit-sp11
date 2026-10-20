@@ -35,6 +35,7 @@ void nhi_interrupt_work(struct work_struct *work);
 irqreturn_t nhi_msi(int irq, void *data);
 irqreturn_t ring_msix(int irq, void *data);
 int nhi_probe(struct tb_nhi *nhi);
+void nhi_remove(struct tb_nhi *nhi);
 void nhi_shutdown(struct tb_nhi *nhi);
 extern const struct dev_pm_ops nhi_pm_ops;
 
@@ -51,7 +52,9 @@ extern const struct dev_pm_ops nhi_pm_ops;
  * @request_ring_irq: NHI specific interrupt retrieval hook
  * @release_ring_irq: NHI specific interrupt release hook
  * @is_present: Whether the device is currently present on the parent bus
- * @init_interrupts: NHI specific interrupt initialization hook
+ * @init_interrupts: NHI specific interrupt initialization hook; must quiesce
+ *                  partial IRQ/work setup on error. The frontend releases
+ *                  any remaining managed storage during probe unwind.
  */
 struct tb_nhi_ops {
 	int (*init)(struct tb_nhi *nhi);

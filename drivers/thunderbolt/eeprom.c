@@ -424,10 +424,23 @@ static int tb_drom_parse_entries(struct tb_switch *sw, size_t header_size)
 		struct tb_drom_entry_header *entry = (void *) (sw->drom + pos);
 		if (pos + 1 == drom_size || pos + entry->len > drom_size
 				|| !entry->len) {
-			tb_sw_warn(sw, "DROM buffer overrun\n");
-			return -EIO;
+			/*
+			 * Qualcomm's UC DROM (rev 3) packs vendor/model text
+			 * entries and terminates with a trailing entry whose
+			 * len overruns the buffer by a few bytes. Tolerate:
+			 * keep everything parsed so far instead of failing
+			 * the whole DROM (which leaves the CM port-less).
+			 */
+			tb_sw_warn(sw,
+				   "DROM tail overrun: pos=%u drom_size=%u entry.len=%u entry.type=%u - keeping parsed entries\n",
+				   pos, drom_size, entry->len, entry->type);
+			print_hex_dump(KERN_WARNING, "qcom-drom ",
+				       DUMP_PREFIX_OFFSET, 16, 1, sw->drom,
+				       drom_size, true);
+			return 0;
 		}
 
+		res = 0;
 		switch (entry->type) {
 		case TB_DROM_ENTRY_GENERIC:
 			res = tb_drom_parse_entry_generic(sw, entry);
@@ -644,7 +657,9 @@ static int tb_drom_parse(struct tb_switch *sw, u16 size)
 		goto err;
 	}
 
-	tb_sw_dbg(sw, "DROM version: %d\n", header->device_rom_revision);
+	tb_sw_info(sw,
+		   "DROM header: data_len=%u revision=%d uid=%llx\n",
+		   header->data_len, header->device_rom_revision, header->uid);
 
 	switch (header->device_rom_revision) {
 	case 3:

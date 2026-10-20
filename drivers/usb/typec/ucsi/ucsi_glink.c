@@ -333,8 +333,13 @@ static void pmic_glink_ucsi_callback(const void *data, size_t len, void *priv)
 {
 	struct pmic_glink_ucsi *ucsi = priv;
 	const struct pmic_glink_hdr *hdr = data;
+	u32 opcode = le32_to_cpu(hdr->opcode);
 
-	switch (le32_to_cpu(hdr->opcode)) {
+	dev_info(ucsi->dev,
+		 "raw UCSI GLINK message owner=%u type=%u opcode=0x%08x len=%zu\n",
+		 le32_to_cpu(hdr->owner), le32_to_cpu(hdr->type), opcode, len);
+
+	switch (opcode) {
 	case UC_UCSI_READ_BUF_REQ:
 		pmic_glink_ucsi_read_ack(ucsi, data, len);
 		break;

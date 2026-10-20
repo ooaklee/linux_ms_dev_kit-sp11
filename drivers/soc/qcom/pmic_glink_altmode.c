@@ -173,6 +173,22 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 	return 0;
 }
 
+/*
+ * Surface/X1P USB4 experiments: the ADSP policy engine always enters TBT
+ * tunneling for TBT-capable partners and has no DP fallback, but the
+ * UC sideband link required for tunneling never comes up on Linux.
+ * force_dp: answer TBT notifications by configuring plain DP instead
+ * (mux + retimer + synthetic HPD). nack_on_tbt_reject: withhold the
+ * PAN ACK when the retimer rejects TBT, starving the ADSP state machine
+ * in case it retries with DP.
+ */
+static bool force_dp;
+module_param(force_dp, bool, 0644);
+MODULE_PARM_DESC(force_dp, "answer TBT tunneling notifications with plain DP");
+static bool nack_on_tbt_reject;
+module_param(nack_on_tbt_reject, bool, 0644);
+MODULE_PARM_DESC(nack_on_tbt_reject, "skip PAN ACK when retimer rejects TBT");
+
 static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 					 struct pmic_glink_altmode_port *port,
 					 u8 mode, bool hpd_state,
@@ -251,6 +267,11 @@ static void pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
 	port->state.mode = TYPEC_MODAL_STATE(port->mode);
 
 	ret = typec_mux_set(port->typec_mux, &port->state);
+	if (ret && nack_on_tbt_reject) {
+		dev_err(altmode->dev,
+			"mux rejected TBT; withholding PAN ACK (nack_on_tbt_reject)\n");
+		return;
+	}
 	if (ret)
 		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
 
@@ -351,6 +372,12 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 	struct pmic_glink_altmode *altmode = alt_port->altmode;
 	enum drm_connector_status conn_status;
 
+	dev_info(altmode->dev,
+		 "port %u: altmode notification svid=0x%04x mux=%u mode=%u orientation=%u hpd=%u irq=%u\n",
+		 alt_port->index, alt_port->svid, alt_port->mux_ctrl,
+		 alt_port->mode, alt_port->orientation, alt_port->hpd_state,
+		 alt_port->hpd_irq);
+
 	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
 
 	/*
@@ -375,7 +402,14 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 
 		drm_aux_hpd_bridge_notify(&alt_port->bridge->dev, conn_status);
 	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
-		if (alt_port->svid == USB_TYPEC_TBT_SID)
+		if (force_dp) {
+			dev_info(altmode->dev,
+				 "port %u: force_dp: answering TBT notification with DP (4-lane) + HPD\n",
+				 alt_port->index);
+			pmic_glink_altmode_enable_dp(altmode, alt_port, 2, true, false);
+			drm_aux_hpd_bridge_notify(&alt_port->bridge->dev,
+						  connector_status_connected);
+		} else if (alt_port->svid == USB_TYPEC_TBT_SID)
 			pmic_glink_altmode_enable_tbt(altmode, alt_port);
 		else
 			pmic_glink_altmode_enable_usb4(altmode, alt_port);
@@ -488,6 +522,10 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 	alt_port->svid = svid;
 	alt_port->mux_ctrl = notify->mux_ctrl;
 
+	dev_info(altmode->dev,
+		 "port %u: received altmode notification svid=0x%04x mux=%u orientation=%u\n",
+		 port, svid, alt_port->mux_ctrl, alt_port->orientation);
+
 	if (svid == USB_TYPEC_DP_SID) {
 		dp = &notify->extended_data.dp;
 
@@ -513,6 +551,11 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 
 	opcode = le32_to_cpu(hdr->opcode) & 0xff;
 	svid = le32_to_cpu(hdr->opcode) >> 16;
+
+	dev_info(altmode->dev,
+		 "raw altmode message owner=%u type=%u opcode=0x%02x svid=0x%04x len=%zu\n",
+		 le32_to_cpu(hdr->owner), le32_to_cpu(hdr->type), opcode, svid,
+		 len);
 
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:

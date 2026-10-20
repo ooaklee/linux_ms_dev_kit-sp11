@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Isolated X1P LCD USB4 activation experiment. */
+
+/dts-v1/;
+
+#include "x1p64100-microsoft-denali.dts"
+
+&usb4_hr0 {
+	status = "okay";
+	/*
+	 * Activation is deferred to `echo 1 > .../uc_activate` so the UC
+	 * boots only after the Type-C stack has brought the ps883x retimer
+	 * out of reset (first plug event). Its init-time sideband discovery
+	 * needs a live target. Add qcom,nhi-activate for boot-time activation.
+	 */
+	/*
+	 * ACPI DSDT (UBF0/PRT0, QCOM0C6D) gives three interrupts: GSIs
+	 * 504/287/611 = SPIs 472/255/579. hamoa.dtsi only declared 472
+	 * ("ring") and 579 ("fw"); SPI 255 (edge, wake-capable) was missing
+	 * and is the UC firmware/completion interrupt candidate.
+	 */
+	interrupts = <GIC_SPI 472 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 255 IRQ_TYPE_EDGE_RISING>,
+		     <GIC_SPI 579 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "ring", "uc", "fw";
+};
+
+/ {
+	reserved-memory {
+		/* Survives warm reboot: pstore console for freeze diagnosis. */
+		ramoops@bffc00000 {
+			compatible = "ramoops";
+			reg = <0xb 0xffc00000 0x0 0x400000>;
+			no-map;
+			record-size = <0x40000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x20000>;
+			ecc-size = <0>;
+		};
+		/*
+		 * UCS0 connector-policy mailbox (ACPI QCOM0CA4, DSDT
+		 * OperationRegion USBC @ 0x81F20040, 0x2F bytes). Reserve a
+		 * page no-map so Linux neither allocates over it nor loses
+		 * whatever the previous boot left there.
+		 */
+		ucs0-mailbox@81f20000 {
+			reg = <0x0 0x81f20000 0x0 0x1000>;
+			no-map;
+		};
+	};
+};

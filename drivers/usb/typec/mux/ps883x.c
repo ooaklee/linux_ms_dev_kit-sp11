@@ -209,6 +209,16 @@ static void ps883x_apply_dp_altmode(int *cfg0, int *cfg1, int dp_state)
 	}
 }
 
+/*
+ * Surface/X1P experiment: rejecting TBT altmode makes the ADSP policy
+ * engine fall back to plain DP altmode (same mechanism as the upstream
+ * parade,disable-usb4 fallback), which lights up the display without
+ * the UC sideband link. Runtime-toggleable.
+ */
+static bool reject_tbt;
+module_param_named(reject_tbt, reject_tbt, bool, 0644);
+MODULE_PARM_DESC(reject_tbt, "reject TBT altmode to force DP fallback");
+
 static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state *state)
 {
 	struct typec_thunderbolt_data *tb_data;
@@ -227,6 +237,11 @@ static int ps883x_set(struct ps883x_retimer *retimer, struct typec_retimer_state
 			ps883x_apply_dp_altmode(&cfg0, &cfg1, state->mode);
 			break;
 		case USB_TYPEC_TBT_SID:
+			if (reject_tbt) {
+				dev_info(&retimer->client->dev,
+					 "TBT rejected (reject_tbt=1) -> requesting DP fallback\n");
+				return -EOPNOTSUPP;
+			}
 			tb_data = state->data;
 
 			/* Unconditional */

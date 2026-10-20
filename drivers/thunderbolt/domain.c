@@ -316,6 +316,8 @@ const struct bus_type tb_bus_type = {
 	.shutdown = tb_service_shutdown,
 };
 
+EXPORT_SYMBOL_GPL(tb_bus_type);
+
 static void tb_domain_release(struct device *dev)
 {
 	struct tb *tb = container_of(dev, struct tb, dev);

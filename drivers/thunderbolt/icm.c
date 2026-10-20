@@ -2598,6 +2598,8 @@ struct tb *icm_probe(struct tb_nhi *nhi)
 	if (!icm->is_supported || !icm->is_supported(tb)) {
 		dev_dbg(nhi->dev, "ICM not supported on this controller\n");
 		tb_domain_put(tb);
+		/* The release may be delayed by CONFIG_DEBUG_KOBJECT_RELEASE. */
+		wait_for_completion(&nhi->domain_released);
 		return NULL;
 	}
 
