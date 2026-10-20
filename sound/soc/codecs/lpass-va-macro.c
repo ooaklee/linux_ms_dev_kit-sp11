@@ -209,6 +209,12 @@ struct va_macro {
 	u16 dmic_clk_div;
 	bool has_swr_master;
 	bool has_npl_clk;
+	bool denali_pm;
+	bool denali_runtime_clks_enabled;
+	bool denali_probe_pm_held;
+	bool denali_fsgen_pm_held;
+	int denali_num_clks;
+	struct clk_bulk_data *denali_clks;
 
 	int dec_mode[VA_MACRO_NUM_DECIMATORS];
 	struct regmap *regmap;
@@ -1353,6 +1359,37 @@ static int fsgen_gate_enable(struct clk_hw *hw)
 	struct regmap *regmap = va->regmap;
 	int ret;
 
+	if (va->denali_pm) {
+		ret = pm_runtime_resume_and_get(va->dev);
+		if (ret < 0)
+			return ret;
+
+		va_clk_rsc_fs_gen_request(va, true);
+		regcache_mark_dirty(regmap);
+		ret = regcache_sync_region(regmap, 0x0, VA_MAX_OFFSET);
+		if (ret) {
+			va_macro_mclk_enable(va, false);
+			goto err_denali_pm;
+		}
+
+		if (va->has_swr_master) {
+			ret = regmap_update_bits(regmap,
+					 CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+					 CDC_VA_SWR_CLK_EN_MASK,
+					 CDC_VA_SWR_CLK_ENABLE);
+			if (ret) {
+				regmap_update_bits(regmap,
+						   CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+						   CDC_VA_SWR_CLK_EN_MASK, 0x0);
+				va_macro_mclk_enable(va, false);
+				goto err_denali_pm;
+			}
+		}
+
+		va->denali_fsgen_pm_held = true;
+		return 0;
+	}
+
 	if (va->has_swr_master) {
 		ret = clk_prepare_enable(va->mclk);
 		if (ret)
@@ -1365,12 +1402,30 @@ static int fsgen_gate_enable(struct clk_hw *hw)
 				   CDC_VA_SWR_CLK_EN_MASK, CDC_VA_SWR_CLK_ENABLE);
 
 	return ret;
+
+err_denali_pm:
+	pm_runtime_mark_last_busy(va->dev);
+	pm_runtime_put_autosuspend(va->dev);
+	return ret;
 }
 
 static void fsgen_gate_disable(struct clk_hw *hw)
 {
 	struct va_macro *va = to_va_macro(hw);
 	struct regmap *regmap = va->regmap;
+
+	if (va->denali_pm) {
+		if (va->has_swr_master)
+			regmap_update_bits(regmap,
+					   CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+					   CDC_VA_SWR_CLK_EN_MASK, 0x0);
+
+		va_macro_mclk_enable(va, false);
+		va->denali_fsgen_pm_held = false;
+		pm_runtime_mark_last_busy(va->dev);
+		pm_runtime_put_autosuspend(va->dev);
+		return;
+	}
 
 	if (va->has_swr_master)
 		regmap_update_bits(regmap, CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
@@ -1531,6 +1586,93 @@ static int va_macro_set_lpass_codec_version(struct va_macro *va)
 	return 0;
 }
 
+static void va_macro_disable_denali_clks(struct va_macro *va)
+{
+	if (!va->denali_runtime_clks_enabled)
+		return;
+
+	clk_bulk_disable_unprepare(va->denali_num_clks, va->denali_clks);
+	va->denali_runtime_clks_enabled = false;
+}
+
+static int va_macro_enable_denali_clks(struct va_macro *va)
+{
+	int ret;
+
+	if (va->denali_runtime_clks_enabled)
+		return 0;
+
+	ret = clk_bulk_prepare_enable(va->denali_num_clks, va->denali_clks);
+	if (ret)
+		return ret;
+
+	va->denali_runtime_clks_enabled = true;
+	return 0;
+}
+
+static void va_macro_release_denali_clks(void *data)
+{
+	struct va_macro *va = data;
+	struct device *dev = va->dev;
+
+	/* Component and fsgen devres have already stopped their callbacks. */
+	/* Disabling runtime PM drains its pending work and callbacks. */
+	pm_runtime_disable(dev);
+	pm_runtime_dont_use_autosuspend(dev);
+	if (va->denali_probe_pm_held) {
+		pm_runtime_put_noidle(dev);
+		va->denali_probe_pm_held = false;
+	}
+	if (va->denali_fsgen_pm_held) {
+		if (va->has_swr_master)
+			regmap_update_bits(va->regmap,
+					   CDC_VA_CLK_RST_CTRL_SWR_CONTROL,
+					   CDC_VA_SWR_CLK_EN_MASK, 0x0);
+		va_macro_mclk_enable(va, false);
+		pm_runtime_put_noidle(dev);
+		va->denali_fsgen_pm_held = false;
+	}
+
+	regcache_cache_only(va->regmap, true);
+	regcache_mark_dirty(va->regmap);
+	va_macro_disable_denali_clks(va);
+	pm_runtime_set_suspended(dev);
+}
+
+static int va_macro_setup_denali_clks(struct va_macro *va)
+{
+	struct device *dev = va->dev;
+	int ret;
+
+	/* DT input clocks only: never acquire this macro's fsgen output here. */
+	ret = devm_clk_bulk_get_all(dev, &va->denali_clks);
+	if (ret < 0)
+		return ret;
+	if (!ret)
+		return -ENODEV;
+	va->denali_num_clks = ret;
+
+	ret = pm_runtime_set_suspended(dev);
+	if (ret)
+		return ret;
+
+	regcache_cache_only(va->regmap, true);
+	regcache_mark_dirty(va->regmap);
+	pm_runtime_set_autosuspend_delay(dev, 3000);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_enable(dev);
+	ret = devm_add_action_or_reset(dev, va_macro_release_denali_clks, va);
+	if (ret)
+		return ret;
+
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+	va->denali_probe_pm_held = true;
+
+	return 0;
+}
+
 static int va_macro_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1545,6 +1687,8 @@ static int va_macro_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	va->dev = dev;
+	va->denali_pm = IS_ENABLED(CONFIG_PM) &&
+			 of_machine_is_compatible("microsoft,denali");
 
 	va->macro = devm_clk_get_optional(dev, "macro");
 	if (IS_ERR(va->macro))
@@ -1561,6 +1705,14 @@ static int va_macro_probe(struct platform_device *pdev)
 	va->pds = lpass_macro_pds_init(dev);
 	if (IS_ERR(va->pds))
 		return PTR_ERR(va->pds);
+
+	if (va->denali_pm) {
+		ret = devm_add_action_or_reset(dev,
+					       lpass_macro_pds_exit_action,
+					       va->pds);
+		if (ret)
+			return ret;
+	}
 
 	ret = of_property_read_u32(dev->of_node, "qcom,dmic-sample-rate",
 				   &sample_rate);
@@ -1606,22 +1758,31 @@ static int va_macro_probe(struct platform_device *pdev)
 		clk_set_rate(va->npl, 2 * VA_MACRO_MCLK_FREQ);
 	}
 
-	ret = clk_prepare_enable(va->macro);
-	if (ret)
-		goto err;
-
-	ret = clk_prepare_enable(va->dcodec);
-	if (ret)
-		goto err_dcodec;
-
-	ret = clk_prepare_enable(va->mclk);
-	if (ret)
-		goto err_mclk;
-
-	if (va->has_npl_clk) {
-		ret = clk_prepare_enable(va->npl);
+	if (va->denali_pm) {
+		ret = va_macro_setup_denali_clks(va);
+		if (ret) {
+			ret = dev_err_probe(dev, ret,
+					    "failed to initialize Denali input clocks\n");
+			goto err;
+		}
+	} else {
+		ret = clk_prepare_enable(va->macro);
 		if (ret)
-			goto err_npl;
+			goto err;
+
+		ret = clk_prepare_enable(va->dcodec);
+		if (ret)
+			goto err_dcodec;
+
+		ret = clk_prepare_enable(va->mclk);
+		if (ret)
+			goto err_mclk;
+
+		if (va->has_npl_clk) {
+			ret = clk_prepare_enable(va->npl);
+			if (ret)
+				goto err_npl;
+		}
 	}
 
 	/**
@@ -1660,11 +1821,31 @@ static int va_macro_probe(struct platform_device *pdev)
 				   CDC_VA_SWR_RESET_MASK, 0x0);
 	}
 
+	/* DAPM teardown must be able to unprepare fsgen before it is removed. */
+	if (va->denali_pm) {
+		ret = va_macro_register_fsgen_output(va);
+		if (ret)
+			goto err_clkout;
+
+		va->fsgen = devm_clk_hw_get_clk(dev, &va->hw, "fsgen");
+		if (IS_ERR(va->fsgen)) {
+			ret = PTR_ERR(va->fsgen);
+			goto err_clkout;
+		}
+	}
+
 	ret = devm_snd_soc_register_component(dev, &va_macro_component_drv,
 					      va_macro_dais,
 					      ARRAY_SIZE(va_macro_dais));
 	if (ret)
 		goto err_clkout;
+
+	if (va->denali_pm) {
+		va->denali_probe_pm_held = false;
+		pm_runtime_mark_last_busy(dev);
+		pm_runtime_put_autosuspend(dev);
+		return 0;
+	}
 
 	pm_runtime_set_autosuspend_delay(dev, 3000);
 	pm_runtime_use_autosuspend(dev);
@@ -1685,6 +1866,8 @@ static int va_macro_probe(struct platform_device *pdev)
 	return 0;
 
 err_clkout:
+	if (va->denali_pm)
+		return ret;
 	if (va->has_npl_clk)
 		clk_disable_unprepare(va->npl);
 err_npl:
@@ -1694,7 +1877,8 @@ err_mclk:
 err_dcodec:
 	clk_disable_unprepare(va->macro);
 err:
-	lpass_macro_pds_exit(va->pds);
+	if (!va->denali_pm)
+		lpass_macro_pds_exit(va->pds);
 
 	return ret;
 }
@@ -1702,6 +1886,10 @@ err:
 static void va_macro_remove(struct platform_device *pdev)
 {
 	struct va_macro *va = dev_get_drvdata(&pdev->dev);
+
+	/* Denali devres keeps component/fsgen teardown ahead of PM and PDS. */
+	if (va->denali_pm)
+		return;
 
 	if (va->has_npl_clk)
 		clk_disable_unprepare(va->npl);
@@ -1720,6 +1908,11 @@ static int va_macro_runtime_suspend(struct device *dev)
 	regcache_cache_only(va->regmap, true);
 	regcache_mark_dirty(va->regmap);
 
+	if (va->denali_pm) {
+		va_macro_disable_denali_clks(va);
+		return 0;
+	}
+
 	if (va->has_npl_clk)
 		clk_disable_unprepare(va->npl);
 
@@ -1732,6 +1925,21 @@ static int va_macro_runtime_resume(struct device *dev)
 {
 	struct va_macro *va = dev_get_drvdata(dev);
 	int ret;
+
+	if (va->denali_pm) {
+		ret = va_macro_enable_denali_clks(va);
+		if (ret)
+			return ret;
+
+		regcache_cache_only(va->regmap, false);
+		ret = regcache_sync(va->regmap);
+		if (ret) {
+			regcache_cache_only(va->regmap, true);
+			regcache_mark_dirty(va->regmap);
+			va_macro_disable_denali_clks(va);
+		}
+		return ret;
+	}
 
 	ret = clk_prepare_enable(va->mclk);
 	if (ret) {
