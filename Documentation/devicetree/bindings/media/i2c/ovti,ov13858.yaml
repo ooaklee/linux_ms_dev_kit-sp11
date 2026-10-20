@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/ovti,ov13858.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: OmniVision OV13858 CMOS image sensor
+
+maintainers:
+  - Leon Silcott <leon@boasi.io>
+
+description: |
+  The OV13858 is a CMOS image sensor controlled over I2C/SCCB. The supported
+  modes output 10-bit Bayer data over four CSI-2 D-PHY data lanes and use a
+  19.2 MHz external clock.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: ovti,ov13858
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    description: External sensor clock (XVCLK), running at 19.2 MHz.
+    maxItems: 1
+
+  dovdd-supply:
+    description: Digital I/O supply.
+
+  avdd-supply:
+    description: Analog supply.
+
+  dvdd-supply:
+    description: Digital core supply.
+
+  reset-gpios:
+    description: Active-low sensor reset signal.
+    maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-type:
+            const: 4
+
+          clock-lanes:
+            const: 0
+
+          clock-noncontinuous: false
+
+          data-lanes:
+            items:
+              - const: 1
+              - const: 2
+              - const: 3
+              - const: 4
+
+          lane-polarities:
+            items:
+              - const: 0
+              - const: 0
+              - const: 0
+              - const: 0
+              - const: 0
+
+          link-frequencies:
+            minItems: 1
+            maxItems: 2
+            uniqueItems: true
+            items:
+              enum: [270000000, 540000000]
+
+        required:
+          - data-lanes
+          - link-frequencies
+
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - dovdd-supply
+  - avdd-supply
+  - dvdd-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@10 {
+            compatible = "ovti,ov13858";
+            reg = <0x10>;
+            clocks = <&camera_clk>;
+            avdd-supply = <&camera_avdd>;
+            dovdd-supply = <&camera_dovdd>;
+            dvdd-supply = <&camera_dvdd>;
+            reset-gpios = <&gpio 0 GPIO_ACTIVE_LOW>;
+
+            port {
+                endpoint {
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <270000000 540000000>;
+                    remote-endpoint = <&csi_in>;
+                };
+            };
+        };
+    };
+...
