@@ -278,10 +278,15 @@ static int phy_qcom_mipi_csi2_probe_dispatch(struct platform_device *pdev)
 
 static const struct of_device_id phy_qcom_mipi_csi2_of_match_table[] = {
 	{ .compatible	= "qcom,x1e80100-csi2-phy", .data = &mipi_csi2_dphy_4nm_x1e },
+	{ }
+};
+
+static const struct of_device_id phy_qcom_mipi_csi2_denali_of_match_table[] = {
+	{ .compatible	= "qcom,x1e80100-csi2-phy", .data = &mipi_csi2_dphy_4nm_x1e },
 	{ .compatible	= "qcom,x1e80100-mipi-csi2-combo-phy", .data = &x1e80100_cphy_match },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, phy_qcom_mipi_csi2_of_match_table);
+MODULE_DEVICE_TABLE(of, phy_qcom_mipi_csi2_denali_of_match_table);
 
 static struct platform_driver phy_qcom_mipi_csi2_driver = {
 	.probe		= phy_qcom_mipi_csi2_probe_dispatch,
@@ -291,7 +296,20 @@ static struct platform_driver phy_qcom_mipi_csi2_driver = {
 	},
 };
 
-module_platform_driver(phy_qcom_mipi_csi2_driver);
+static int __init phy_qcom_mipi_csi2_init(void)
+{
+	if (of_machine_is_compatible("microsoft,denali"))
+		phy_qcom_mipi_csi2_driver.driver.of_match_table =
+			phy_qcom_mipi_csi2_denali_of_match_table;
+	return platform_driver_register(&phy_qcom_mipi_csi2_driver);
+}
+module_init(phy_qcom_mipi_csi2_init);
+
+static void __exit phy_qcom_mipi_csi2_exit(void)
+{
+	platform_driver_unregister(&phy_qcom_mipi_csi2_driver);
+}
+module_exit(phy_qcom_mipi_csi2_exit);
 
 MODULE_DESCRIPTION("Qualcomm MIPI CSI2 PHY driver");
 MODULE_AUTHOR("Bryan O'Donoghue <bryan.odonoghue@linaro.org>");
