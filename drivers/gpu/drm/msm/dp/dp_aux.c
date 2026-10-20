@@ -3,9 +3,11 @@
  * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/iopoll.h>
 #include <linux/phy/phy.h>
+#include <linux/workqueue.h>
 #include <drm/drm_print.h>
 
 #include "dp_reg.h"
@@ -40,11 +42,43 @@ struct msm_dp_aux_private {
 	bool initted;
 	bool is_edp;
 	bool enable_xfers;
+	/* All owner/fault fields below are protected by mutex. */
+	int phy_fault;
+	bool fault_pm_held;
+	bool owner_stopping;
+	const struct msm_dp_aux_owner_ops *owner_ops;
+	void *owner_data;
+	unsigned int active_admissions;
+	struct completion owner_idle;
+	struct work_struct fault_work;
 	u32 offset;
 	u32 segment;
 
 	struct drm_dp_aux msm_dp_aux;
 };
+
+static void msm_dp_aux_fault_work(struct work_struct *work)
+{
+	struct msm_dp_aux_private *aux = container_of(work,
+			struct msm_dp_aux_private, fault_work);
+	const struct msm_dp_aux_owner_ops *ops;
+	void *data;
+
+	mutex_lock(&aux->mutex);
+	if (!aux->fault_pm_held) {
+		mutex_unlock(&aux->mutex);
+		return;
+	}
+	ops = aux->owner_ops;
+	data = aux->owner_data;
+	mutex_unlock(&aux->mutex);
+
+	/* Stop retains the callback until this work has been flushed. */
+	if (WARN_ON_ONCE(!ops || !ops->recover))
+		return;
+	ops->recover(data);
+	/* The owner finished/adopted/put the lease; do not clear flags here. */
+}
 
 static inline u32 msm_dp_read_aux(struct msm_dp_aux_private *aux, u32 offset)
 {
@@ -108,16 +142,33 @@ static void msm_dp_aux_disable(struct msm_dp_aux_private *aux)
 	msm_dp_write_aux(aux, REG_DP_AUX_CTRL, aux_ctrl);
 }
 
+static int msm_dp_aux_read_hpd_state(struct msm_dp_aux_private *aux)
+{
+	int state;
+
+	/* Each core-only read must finish before aux_deinit allows clock-off. */
+	mutex_lock(&aux->mutex);
+	/* Core-only panel HPD remains valid across a temporary DRM unbind. */
+	if (!aux->initted)
+		state = -EIO;
+	else
+		state = !!(msm_dp_read_aux(aux, REG_DP_DP_HPD_INT_STATUS) &
+			   DP_DP_HPD_STATE_STATUS_CONNECTED);
+	mutex_unlock(&aux->mutex);
+	return state;
+}
+
 static int msm_dp_aux_wait_for_hpd_connect_state(struct msm_dp_aux_private *aux,
 					     unsigned long wait_us)
 {
-	u32 state;
+	int state, ret;
 
-	/* poll for hpd connected status every 2ms and timeout after wait_us */
-	return readl_poll_timeout(aux->aux_base +
-				  REG_DP_DP_HPD_INT_STATUS,
-				  state, state & DP_DP_HPD_STATE_STATUS_CONNECTED,
-				  min(wait_us, 2000), wait_us);
+	/* No state/aux mutex is held across the sleep or the whole panel wait. */
+	ret = read_poll_timeout(msm_dp_aux_read_hpd_state, state, state != 0,
+				min(wait_us, 2000), wait_us, false, aux);
+	if (ret)
+		return ret;
+	return state < 0 ? state : 0;
 }
 
 #define MAX_AUX_RETRIES			5
@@ -346,6 +397,8 @@ static ssize_t msm_dp_aux_transfer(struct drm_dp_aux *msm_dp_aux,
 			       struct drm_dp_aux_msg *msg)
 {
 	ssize_t ret;
+	int calibration_ret;
+	bool put_temporary = true;
 	int const aux_cmd_native_max = 16;
 	int const aux_cmd_i2c_max = 128;
 	struct msm_dp_aux_private *aux;
@@ -374,20 +427,63 @@ static ssize_t msm_dp_aux_transfer(struct drm_dp_aux *msm_dp_aux,
 		return  ret;
 
 	mutex_lock(&aux->mutex);
+	if (aux->owner_stopping) {
+		ret = -ENODEV;
+		goto exit;
+	}
 	if (!aux->initted) {
 		ret = -EIO;
 		goto exit;
 	}
 
-	/*
-	 * If we're using DP and an external display isn't connected then the
-	 * transfer won't succeed. Return right away. If we don't do this we
-	 * can end up with long timeouts if someone tries to access the DP AUX
-	 * character device when no DP device is connected.
-	 */
-	if (!aux->is_edp && !aux->enable_xfers) {
-		ret = -ENXIO;
+	/* A completed worker may leave a retained fault for checked retry. */
+	if (aux->phy_fault && aux->fault_pm_held) {
+		ret = aux->phy_fault;
 		goto exit;
+	}
+
+	/* Both DP and eDP need the display owner to admit PHY-backed transfers. */
+	if (!aux->enable_xfers) {
+		const struct msm_dp_aux_owner_ops *ops = aux->owner_ops;
+		void *data = aux->owner_data;
+
+		if (!ops) {
+			ret = -ENXIO;
+			goto exit;
+		}
+		if (!aux->active_admissions)
+			reinit_completion(&aux->owner_idle);
+		aux->active_admissions++;
+		mutex_unlock(&aux->mutex);
+		/* The owner may only trylock state: hw_mutex can be held here. */
+		ret = ops->admit(data, &put_temporary);
+		mutex_lock(&aux->mutex);
+		aux->active_admissions--;
+		if (!aux->active_admissions)
+			complete_all(&aux->owner_idle);
+		if (WARN_ON_ONCE(ret > 0 || (!ret && !put_temporary))) {
+			aux->enable_xfers = false;
+			ret = -EIO;
+		}
+		if (ret)
+			goto exit;
+		/* Disconnect/stop/fault may have won while aux.mutex was dropped. */
+		if (aux->owner_stopping) {
+			ret = -ENODEV;
+			goto exit;
+		}
+		if (!aux->initted) {
+			ret = -EIO;
+			goto exit;
+		}
+		if (aux->phy_fault) {
+			ret = aux->phy_fault;
+			goto exit;
+		}
+		if (!aux->enable_xfers) {
+			ret = -ENXIO;
+			goto exit;
+		}
 	}
 
 	msm_dp_aux_update_offset_and_segment(aux, msg);
@@ -408,8 +504,24 @@ static ssize_t msm_dp_aux_transfer(struct drm_dp_aux *msm_dp_aux,
 	if (ret < 0) {
 		if (aux->native) {
 			aux->retry_cnt++;
-			if (!(aux->retry_cnt % MAX_AUX_RETRIES))
-				phy_calibrate(aux->phy);
+			if (!(aux->retry_cnt % MAX_AUX_RETRIES)) {
+				calibration_ret = phy_calibrate(aux->phy);
+				if (calibration_ret < 0) {
+					DRM_ERROR("PHY calibration failed after AUX error %zd: %d\n",
+						  ret, calibration_ret);
+					ret = calibration_ret;
+					if (!aux->phy_fault)
+						aux->phy_fault = calibration_ret;
+					aux->enable_xfers = false;
+					if (!aux->fault_pm_held) {
+						aux->fault_pm_held = true;
+						put_temporary = false;
+						/* Queue before stop can finish draining mutex. */
+						schedule_work(&aux->fault_work);
+					}
+					goto clear_busy;
+				}
+			}
 		}
 		/* reset aux if link is in connected state */
 		if (msm_dp_aux_is_link_connected(msm_dp_aux))
@@ -437,11 +549,13 @@ static ssize_t msm_dp_aux_transfer(struct drm_dp_aux *msm_dp_aux,
 		}
 	}
 
+clear_busy:
 	aux->cmd_busy = false;
 
 exit:
 	mutex_unlock(&aux->mutex);
-	pm_runtime_put_sync(msm_dp_aux->dev);
+	if (put_temporary)
+		pm_runtime_put_sync(msm_dp_aux->dev);
 
 	return ret;
 }
@@ -499,12 +613,143 @@ irqreturn_t msm_dp_aux_isr(struct drm_dp_aux *msm_dp_aux, u32 isr)
 	return IRQ_HANDLED;
 }
 
-void msm_dp_aux_enable_xfers(struct drm_dp_aux *msm_dp_aux, bool enabled)
+bool msm_dp_aux_enable_xfers(struct drm_dp_aux *msm_dp_aux, bool enabled)
 {
 	struct msm_dp_aux_private *aux;
+	bool was_enabled;
 
 	aux = container_of(msm_dp_aux, struct msm_dp_aux_private, msm_dp_aux);
-	aux->enable_xfers = enabled;
+	/* Closing the gate also drains a normal transfer holding this mutex. */
+	mutex_lock(&aux->mutex);
+	was_enabled = aux->enable_xfers;
+	aux->enable_xfers = enabled && !aux->phy_fault && !aux->owner_stopping;
+	mutex_unlock(&aux->mutex);
+
+	return was_enabled;
+}
+
+int msm_dp_aux_admit_xfers(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	int ret = 0;
+
+	mutex_lock(&aux->mutex);
+	if (aux->owner_stopping)
+		ret = -ENODEV;
+	else if (aux->phy_fault)
+		ret = aux->phy_fault;
+	else if (!aux->initted)
+		ret = -EIO;
+	else
+		aux->enable_xfers = true;
+	mutex_unlock(&aux->mutex);
+	return ret;
+}
+
+int msm_dp_aux_get_fault(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	int fault;
+
+	mutex_lock(&aux->mutex);
+	fault = aux->phy_fault;
+	mutex_unlock(&aux->mutex);
+	return fault;
+}
+
+bool msm_dp_aux_fault_pending(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	bool pending;
+
+	mutex_lock(&aux->mutex);
+	pending = aux->fault_pm_held;
+	mutex_unlock(&aux->mutex);
+	return pending;
+}
+
+bool msm_dp_aux_finish_fault(struct drm_dp_aux *msm_dp_aux, bool fully_drained)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	bool held;
+
+	/* Caller serializes recovery/admission with display state_lock. */
+	mutex_lock(&aux->mutex);
+	held = aux->fault_pm_held;
+	aux->fault_pm_held = false;
+	aux->enable_xfers = false;
+	if (fully_drained) {
+		aux->phy_fault = 0;
+		aux->retry_cnt = 0;
+	}
+	mutex_unlock(&aux->mutex);
+	return held;
+}
+
+int msm_dp_aux_owner_set(struct drm_dp_aux *msm_dp_aux,
+			 const struct msm_dp_aux_owner_ops *ops, void *data)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	int ret = 0;
+
+	if (!ops || !ops->admit || !ops->recover || !data)
+		return -EINVAL;
+	mutex_lock(&aux->mutex);
+	if (aux->active_admissions || aux->phy_fault || aux->fault_pm_held ||
+	    (aux->owner_ops && (!aux->owner_stopping || aux->owner_ops != ops ||
+				aux->owner_data != data)))
+		ret = -EBUSY;
+	else {
+		aux->owner_ops = ops;
+		aux->owner_data = data;
+		aux->owner_stopping = false;
+	}
+	mutex_unlock(&aux->mutex);
+	return ret;
+}
+
+void msm_dp_aux_owner_stop(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+
+	mutex_lock(&aux->mutex);
+	aux->owner_stopping = true;
+	aux->enable_xfers = false;
+	mutex_unlock(&aux->mutex);
+}
+
+void msm_dp_aux_owner_drain(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+
+	/* owner_stop forbids new admissions/reports before either wait. */
+	wait_for_completion(&aux->owner_idle);
+	flush_work(&aux->fault_work);
+}
+
+int msm_dp_aux_owner_detach(struct drm_dp_aux *msm_dp_aux)
+{
+	struct msm_dp_aux_private *aux = container_of(msm_dp_aux,
+			struct msm_dp_aux_private, msm_dp_aux);
+	int ret = 0;
+
+	mutex_lock(&aux->mutex);
+	if (!aux->owner_stopping || aux->active_admissions || aux->fault_pm_held ||
+	    aux->phy_fault)
+		ret = -EBUSY;
+	else {
+		aux->owner_ops = NULL;
+		aux->owner_data = NULL;
+	}
+	mutex_unlock(&aux->mutex);
+	return ret;
 }
 
 void msm_dp_aux_reconfig(struct drm_dp_aux *msm_dp_aux)
@@ -691,6 +936,11 @@ struct drm_dp_aux *msm_dp_aux_get(struct device *dev,
 		return ERR_PTR(-ENOMEM);
 
 	init_completion(&aux->comp);
+	init_completion(&aux->owner_idle);
+	complete_all(&aux->owner_idle);
+	INIT_WORK(&aux->fault_work, msm_dp_aux_fault_work);
+	/* No raw PHY-backed transaction before the complete owner attaches. */
+	aux->owner_stopping = true;
 	aux->cmd_busy = false;
 	aux->is_edp = is_edp;
 	mutex_init(&aux->mutex);

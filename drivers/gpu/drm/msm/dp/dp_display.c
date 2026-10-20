@@ -12,9 +12,13 @@
 #include <linux/phy/phy.h>
 #include <linux/delay.h>
 #include <linux/string_choices.h>
+#include <linux/workqueue.h>
 #include <drm/display/drm_dp_aux_bus.h>
 #include <drm/display/drm_hdmi_audio_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_modeset_lock.h>
+#include <drm/drm_probe_helper.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
@@ -50,11 +54,36 @@ struct msm_dp_display_private {
 
 	/* state variables */
 	bool core_initialized;
-	bool phy_initialized;
 	bool audio_supported;
 
-	struct mutex plugged_lock;
+	/* Parent runtime PM is acquired before this lock, and put after it. */
+	struct mutex state_lock;
 	bool plugged;
+	bool plugged_pm_held;
+	bool stream_pm_held;
+	bool hpd_pm_held;
+	bool cleanup_pm_held;
+	/* Desired AUX policy is not PHY ownership or the current transfer gate. */
+	bool aux_demand_enabled;
+	bool aux_restore_pending;
+	bool aux_bus_populated;
+	bool aux_registered;
+	bool aux_owner_attached;
+	bool runtime_pm_enabled;
+	bool irq_requested;
+	bool irq_enabled;
+	/* Never held by bind/unbind; component_add may synchronously bind. */
+	struct mutex probe_lock;
+	bool removing;
+	bool component_added;
+	struct work_struct link_status_work;
+	struct work_struct audio_notify_work;
+	bool audio_notify_pending;
+	bool audio_plugged;
+	bool link_status_stopping;
+	bool link_status_bad;
+	bool link_status_notify;
+	int link_error;
 
 	struct drm_device *drm_dev;
 
@@ -65,9 +94,6 @@ struct msm_dp_display_private {
 
 	struct msm_dp_display_mode msm_dp_mode;
 	struct msm_dp msm_dp_display;
-
-	/* wait for audio signaling */
-	struct completion audio_comp;
 
 	/* HPD IRQ handling */
 	spinlock_t irq_thread_lock;
@@ -95,6 +121,190 @@ struct msm_dp_desc {
 	unsigned int id;
 	bool wide_bus_supported;
 };
+
+static int msm_dp_display_start_aux_owner(struct msm_dp_display_private *dp);
+
+static void msm_dp_display_audio_notify_work(struct work_struct *work)
+{
+	struct msm_dp_display_private *dp = container_of(work,
+			struct msm_dp_display_private, audio_notify_work);
+	struct drm_connector *connector;
+	struct drm_device *dev;
+	bool plugged;
+
+	for (;;) {
+		mutex_lock(&dp->state_lock);
+		connector = dp->msm_dp_display.connector;
+		if (dp->link_status_stopping || !dp->audio_notify_pending || !connector) {
+			dp->audio_notify_pending = false;
+			mutex_unlock(&dp->state_lock);
+			return;
+		}
+		plugged = dp->audio_plugged;
+		dp->audio_notify_pending = false;
+		dev = connector->dev;
+		drm_dev_get(dev);
+		drm_connector_get(connector);
+		mutex_unlock(&dp->state_lock);
+
+		/* ALSA jack/DAPM callbacks may re-enter audio prepare/shutdown. */
+		drm_connector_hdmi_audio_plugged_notify(connector, plugged);
+		drm_connector_put(connector);
+		drm_dev_put(dev);
+	}
+}
+
+static void msm_dp_display_handle_plugged_change(struct msm_dp *msm_dp_display,
+		bool plugged)
+{
+	struct msm_dp_display_private *dp = container_of(msm_dp_display,
+			struct msm_dp_display_private, msm_dp_display);
+
+	lockdep_assert_held(&dp->state_lock);
+	if (dp->audio_supported && !dp->link_status_stopping &&
+	    msm_dp_display->connector) {
+		dp->audio_plugged = plugged;
+		dp->audio_notify_pending = true;
+		schedule_work(&dp->audio_notify_work);
+	}
+}
+
+static void msm_dp_display_link_status_work(struct work_struct *work)
+{
+	struct msm_dp_display_private *dp = container_of(work,
+			struct msm_dp_display_private, link_status_work);
+	struct drm_connector *connector;
+	struct drm_device *dev;
+	bool notify = false;
+
+	mutex_lock(&dp->state_lock);
+	connector = dp->msm_dp_display.connector;
+	if (dp->link_status_stopping || !dp->link_status_bad || !connector) {
+		mutex_unlock(&dp->state_lock);
+		return;
+	}
+	dev = connector->dev;
+	drm_dev_get(dev);
+	drm_connector_get(connector);
+	mutex_unlock(&dp->state_lock);
+
+	/* DRM detection takes connection_mutex before the display state lock. */
+	drm_modeset_lock(&dev->mode_config.connection_mutex, NULL);
+	mutex_lock(&dp->state_lock);
+	if (!dp->link_status_stopping && dp->link_status_bad &&
+	    connector == dp->msm_dp_display.connector && connector->state) {
+		connector->state->link_status = DRM_MODE_LINK_STATUS_BAD;
+		notify = dp->link_status_notify;
+		dp->link_status_bad = false;
+		dp->link_status_notify = false;
+	}
+	mutex_unlock(&dp->state_lock);
+	drm_modeset_unlock(&dev->mode_config.connection_mutex);
+
+	if (notify)
+		drm_kms_helper_connector_hotplug_event(connector);
+	drm_connector_put(connector);
+	drm_dev_put(dev);
+}
+
+static void msm_dp_display_link_failed(struct msm_dp_display_private *dp,
+				      int error, bool notify)
+{
+	lockdep_assert_held(&dp->state_lock);
+	dp->link_error = error;
+	if (!dp->link_status_stopping && dp->msm_dp_display.connector) {
+		dp->link_status_bad = true;
+		dp->link_status_notify |= notify;
+		schedule_work(&dp->link_status_work);
+	}
+}
+
+static void msm_dp_display_stop_link_status(struct msm_dp_display_private *dp)
+{
+	mutex_lock(&dp->state_lock);
+	dp->link_status_stopping = true;
+	dp->aux_demand_enabled = false;
+	dp->aux_restore_pending = false;
+	msm_dp_aux_owner_stop(dp->aux);
+	if (dp->core_initialized)
+		msm_dp_aux_hpd_intr_disable(dp->aux);
+	dp->link_status_bad = false;
+	dp->link_status_notify = false;
+	dp->audio_notify_pending = false;
+	mutex_unlock(&dp->state_lock);
+	if (dp->irq_requested)
+		synchronize_irq(dp->irq);
+	/* A fault worker must account for its transferred PM lease, not be cancelled. */
+	msm_dp_aux_owner_drain(dp->aux);
+	cancel_work_sync(&dp->link_status_work);
+	cancel_work_sync(&dp->audio_notify_work);
+}
+
+/* These flags count successful parent-PM leases, not connection/hardware state. */
+static bool msm_dp_display_has_pm_role(struct msm_dp_display_private *dp)
+{
+	lockdep_assert_held(&dp->state_lock);
+	return dp->plugged_pm_held || dp->stream_pm_held || dp->hpd_pm_held;
+}
+
+static bool msm_dp_display_needs_cleanup_pm(struct msm_dp_display_private *dp)
+{
+	lockdep_assert_held(&dp->state_lock);
+	/* Healthy init-only ownership can be drained by runtime_suspend itself. */
+	return msm_dp_aux_get_fault(dp->aux) || dp->msm_dp_display.audio_enabled ||
+		(msm_dp_ctrl_has_phy_refs(dp->ctrl) &&
+		(msm_dp_ctrl_has_power_ref(dp->ctrl) ||
+		 msm_dp_ctrl_has_phy_error(dp->ctrl)));
+}
+
+static void msm_dp_display_keep_cleanup_pm(struct msm_dp_display_private *dp,
+					 bool *put_temporary)
+{
+	lockdep_assert_held(&dp->state_lock);
+	if (*put_temporary && msm_dp_display_needs_cleanup_pm(dp) &&
+	    !msm_dp_display_has_pm_role(dp) && !dp->cleanup_pm_held) {
+		dp->cleanup_pm_held = true;
+		*put_temporary = false;
+	}
+}
+
+static void msm_dp_display_release_pm_role(struct msm_dp_display_private *dp,
+					 bool *role, unsigned int *puts)
+{
+	lockdep_assert_held(&dp->state_lock);
+	if (!*role)
+		return;
+	*role = false;
+	if (msm_dp_display_needs_cleanup_pm(dp) &&
+	    !msm_dp_display_has_pm_role(dp) && !dp->cleanup_pm_held)
+		dp->cleanup_pm_held = true;
+	else
+		(*puts)++;
+}
+
+static void msm_dp_display_release_cleanup_pm(struct msm_dp_display_private *dp,
+					    unsigned int *puts)
+{
+	lockdep_assert_held(&dp->state_lock);
+	if (dp->cleanup_pm_held && (!msm_dp_display_needs_cleanup_pm(dp) ||
+				 msm_dp_display_has_pm_role(dp))) {
+		dp->cleanup_pm_held = false;
+		(*puts)++;
+	}
+}
+
+static void msm_dp_display_put_pm(struct msm_dp_display_private *dp,
+				  unsigned int puts)
+{
+	int ret;
+
+	/* A failing put_sync still consumes its usage reference. */
+	while (puts--) {
+		ret = pm_runtime_put_sync(&dp->msm_dp_display.pdev->dev);
+		if (ret < 0)
+			drm_dbg_dp(dp->drm_dev, "runtime idle refused: %d\n", ret);
+	}
+}
 
 static const struct msm_dp_desc msm_dp_desc_glymur[] = {
 	{ .io_start = 0x0af54000, .id = MSM_DP_CONTROLLER_0, .wide_bus_supported = true },
@@ -185,22 +395,18 @@ static struct msm_dp_display_private *dev_get_dp_display_private(struct device *
 	return container_of(dp, struct msm_dp_display_private, msm_dp_display);
 }
 
-void msm_dp_display_signal_audio_start(struct msm_dp *msm_dp_display)
+static void msm_dp_display_clear_binding(struct msm_dp_display_private *dp,
+					struct msm_drm_private *priv)
 {
-	struct msm_dp_display_private *dp;
-
-	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
-
-	reinit_completion(&dp->audio_comp);
-}
-
-void msm_dp_display_signal_audio_complete(struct msm_dp *msm_dp_display)
-{
-	struct msm_dp_display_private *dp;
-
-	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
-
-	complete_all(&dp->audio_comp);
+	/* Call only after notification, IRQ and raw-owner drains. */
+	mutex_lock(&dp->state_lock);
+	dp->msm_dp_display.connector = NULL;
+	dp->panel->connector = NULL;
+	dp->msm_dp_display.drm_dev = NULL;
+	dp->drm_dev = NULL;
+	dp->aux->drm_dev = NULL;
+	priv->kms->dp[dp->id] = NULL;
+	mutex_unlock(&dp->state_lock);
 }
 
 static int msm_dp_display_bind(struct device *dev, struct device *master,
@@ -211,19 +417,28 @@ static int msm_dp_display_bind(struct device *dev, struct device *master,
 	struct msm_drm_private *priv = dev_get_drvdata(master);
 	struct drm_device *drm = priv->dev;
 
+	rc = msm_dp_display_start_aux_owner(dp);
+	if (rc)
+		return rc;
+	mutex_lock(&dp->state_lock);
 	dp->msm_dp_display.drm_dev = drm;
 	priv->kms->dp[dp->id] = &dp->msm_dp_display;
-
 	dp->drm_dev = drm;
 	dp->aux->drm_dev = drm;
+	dp->link_status_stopping = false;
+	mutex_unlock(&dp->state_lock);
 	rc = msm_dp_aux_register(dp->aux);
 	if (rc) {
 		DRM_ERROR("DRM DP AUX register failed\n");
 		goto end;
 	}
+	dp->aux_registered = true;
 
 	return 0;
 end:
+	/* Component core does not unbind the component whose bind failed. */
+	msm_dp_display_stop_link_status(dp);
+	msm_dp_display_clear_binding(dp, priv);
 	return rc;
 }
 
@@ -233,12 +448,11 @@ static void msm_dp_display_unbind(struct device *dev, struct device *master,
 	struct msm_dp_display_private *dp = dev_get_dp_display_private(dev);
 	struct msm_drm_private *priv = dev_get_drvdata(master);
 
-	of_dp_aux_depopulate_bus(dp->aux);
-
+	msm_dp_display_stop_link_status(dp);
+	/* AUX children belong to the platform device, not this aggregate binding. */
 	msm_dp_aux_unregister(dp->aux);
-	dp->drm_dev = NULL;
-	dp->aux->drm_dev = NULL;
-	priv->kms->dp[dp->id] = NULL;
+	dp->aux_registered = false;
+	msm_dp_display_clear_binding(dp, priv);
 }
 
 static const struct component_ops msm_dp_display_comp_ops = {
@@ -305,66 +519,252 @@ end:
 	return rc;
 }
 
-/**
- * msm_dp_display_host_phy_init() - start up DP PHY
- * @dp: main display data structure
- *
- * Prepare DP PHY for the AUX transactions to succeed.
- *
- * Returns: true if this call has initliazed the PHY and false if the PHY has
- * already been setup beforehand.
- */
-static bool msm_dp_display_host_phy_init(struct msm_dp_display_private *dp)
+static void msm_dp_display_aux_pending(struct msm_dp_display_private *dp)
 {
-	drm_dbg_dp(dp->drm_dev, "type=%d core_init=%d phy_init=%d\n",
-		dp->msm_dp_display.connector_type, dp->core_initialized,
-		dp->phy_initialized);
-
-	if (!dp->phy_initialized) {
-		msm_dp_ctrl_phy_init(dp->ctrl);
-		dp->phy_initialized = true;
-		return true;
-	}
-
-	return false;
+	lockdep_assert_held(&dp->state_lock);
+	if (dp->aux_demand_enabled)
+		dp->aux_restore_pending = true;
 }
 
-static void msm_dp_display_host_phy_exit(struct msm_dp_display_private *dp)
+static void msm_dp_display_aux_revoke(struct msm_dp_display_private *dp)
 {
-	drm_dbg_dp(dp->drm_dev, "type=%d core_init=%d phy_init=%d\n",
-		dp->msm_dp_display.connector_type, dp->core_initialized,
-		dp->phy_initialized);
-
-	if (dp->phy_initialized) {
-		msm_dp_ctrl_phy_exit(dp->ctrl);
-		dp->phy_initialized = false;
-	}
+	lockdep_assert_held(&dp->state_lock);
+	dp->aux_demand_enabled = false;
+	dp->aux_restore_pending = false;
+	msm_dp_aux_enable_xfers(dp->aux, false);
 }
 
-static void msm_dp_display_host_init(struct msm_dp_display_private *dp)
+/* No sink transaction: this must also work for a faulting raw AUX caller. */
+static int msm_dp_display_drain_aux_fault(struct msm_dp_display_private *dp)
 {
-	drm_dbg_dp(dp->drm_dev, "type=%d core_init=%d phy_init=%d\n",
-		dp->msm_dp_display.connector_type, dp->core_initialized,
-		dp->phy_initialized);
+	int ret;
 
-	msm_dp_ctrl_core_clk_enable(dp->ctrl);
+	lockdep_assert_held(&dp->state_lock);
+	msm_dp_aux_enable_xfers(dp->aux, false);
+	msm_dp_display_aux_pending(dp);
+	dp->msm_dp_display.power_on = false;
+	ret = msm_dp_audio_stop(&dp->msm_dp_display);
+	if (ret)
+		return ret;
+	ret = msm_dp_ctrl_off(dp->ctrl);
+	if (ret)
+		return ret;
+	return msm_dp_ctrl_phy_exit(dp->ctrl);
+}
+
+static int msm_dp_display_aux_admit(struct msm_dp_display_private *dp,
+				    bool explicit, bool *newly_owned)
+{
+	int ret;
+
+	lockdep_assert_held(&dp->state_lock);
+	if (newly_owned)
+		*newly_owned = false;
+	if (dp->link_status_stopping)
+		return -ENODEV;
+	if (!dp->core_initialized)
+		return -EIO;
+	/*
+	 * Drain fault publication before inspecting the worker's lease. With the
+	 * gate closed and state held, no new transfer can latch another wave
+	 * between fault_pending(), get_fault() and finish_fault().
+	 */
+	msm_dp_aux_enable_xfers(dp->aux, false);
+	if (!dp->msm_dp_display.is_edp &&
+	    (!msm_dp_aux_is_link_connected(dp->aux) || (!explicit && !dp->plugged))) {
+		msm_dp_display_aux_revoke(dp);
+		return -ENOTCONN;
+	}
+	if (explicit) {
+		dp->aux_demand_enabled = true;
+		dp->aux_restore_pending = true;
+	}
+	if (!dp->aux_demand_enabled || !dp->aux_restore_pending)
+		return -ENXIO;
+	/* Only the queued owner consumes/finishes its transferred reference. */
+	if (msm_dp_aux_fault_pending(dp->aux))
+		return -EAGAIN;
+	if (msm_dp_aux_get_fault(dp->aux)) {
+		ret = msm_dp_display_drain_aux_fault(dp);
+		if (ret)
+			return ret;
+		if (WARN_ON_ONCE(msm_dp_ctrl_has_phy_refs(dp->ctrl) ||
+				 dp->msm_dp_display.audio_enabled))
+			return -EBUSY;
+		/* A prior worker retained the latch, but no longer owns a fault lease. */
+		WARN_ON_ONCE(msm_dp_aux_finish_fault(dp->aux, true));
+	}
+	ret = msm_dp_ctrl_phy_init(dp->ctrl, newly_owned);
+	if (!ret)
+		ret = msm_dp_aux_admit_xfers(dp->aux);
+	if (!ret)
+		dp->aux_restore_pending = false;
+	return ret;
+}
+
+static int msm_dp_display_host_phy_init(struct msm_dp_display_private *dp,
+					bool *newly_owned)
+{
+	return msm_dp_display_aux_admit(dp, true, newly_owned);
+}
+
+static int msm_dp_display_raw_aux_admit(void *data, bool *put_temporary)
+{
+	struct msm_dp_display_private *dp = data;
+	unsigned int puts = 0;
+	int ret;
+
+	/* DRM's hw_mutex may be held: state owners can be waiting for that mutex. */
+	if (!mutex_trylock(&dp->state_lock))
+		return -EAGAIN;
+	ret = msm_dp_display_aux_admit(dp, false, NULL);
+	if (ret)
+		msm_dp_display_keep_cleanup_pm(dp, put_temporary);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts);
+	return ret;
+}
+
+static void msm_dp_display_aux_recover(void *data)
+{
+	struct msm_dp_display_private *dp = data;
+	unsigned int puts = 0;
+	bool put_temporary, fully_drained;
+	int error, cleanup;
+
+	/* AUX hands us the failing raw call's existing lease, without its locks. */
+	mutex_lock(&dp->state_lock);
+	error = msm_dp_aux_get_fault(dp->aux);
+	msm_dp_ctrl_record_aux_fault(dp->ctrl, error);
+	cleanup = msm_dp_display_drain_aux_fault(dp);
+	fully_drained = !cleanup && !msm_dp_ctrl_has_phy_refs(dp->ctrl) &&
+			!dp->msm_dp_display.audio_enabled;
+	msm_dp_display_handle_plugged_change(&dp->msm_dp_display, false);
+	msm_dp_display_link_failed(dp, error ?: cleanup, true);
+	/* Finish under state, so a new admission cannot race the old lease flag. */
+	put_temporary = msm_dp_aux_finish_fault(dp->aux, fully_drained);
+	msm_dp_display_keep_cleanup_pm(dp, &put_temporary);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	/* Even a failing put consumes this lease; do not put or adopt it twice. */
+	msm_dp_display_put_pm(dp, puts + put_temporary);
+}
+
+static const struct msm_dp_aux_owner_ops msm_dp_display_aux_ops = {
+	.admit = msm_dp_display_raw_aux_admit,
+	.recover = msm_dp_display_aux_recover,
+};
+
+static int msm_dp_display_start_aux_owner(struct msm_dp_display_private *dp)
+{
+	unsigned int puts = 0;
+	bool put_temporary = false;
+	int ret;
+
+	mutex_lock(&dp->state_lock);
+	if (READ_ONCE(dp->removing)) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (dp->aux_owner_attached && !dp->link_status_stopping) {
+		ret = 0;
+		goto out;
+	}
+	if (dp->aux_owner_attached) {
+		/* Initial probe attaches before runtime PM is enabled. Rebind does not. */
+		mutex_unlock(&dp->state_lock);
+		ret = pm_runtime_resume_and_get(&dp->msm_dp_display.pdev->dev);
+		if (ret < 0)
+			return ret;
+		put_temporary = true;
+		mutex_lock(&dp->state_lock);
+		if (READ_ONCE(dp->removing)) {
+			ret = -ENODEV;
+			goto out;
+		}
+		if (!dp->link_status_stopping) {
+			ret = 0;
+			goto out;
+		}
+		/* Stop/drain precedes component rebind; never steal a worker's lease. */
+		msm_dp_aux_enable_xfers(dp->aux, false);
+		if (msm_dp_aux_fault_pending(dp->aux)) {
+			ret = -EAGAIN;
+			goto out;
+		}
+		/* Controller acquisition/cleanup failures may have no AUX latch. */
+		if (msm_dp_ctrl_has_phy_error(dp->ctrl)) {
+			ret = msm_dp_display_drain_aux_fault(dp);
+			if (ret)
+				goto out;
+			if (WARN_ON_ONCE(msm_dp_ctrl_has_phy_refs(dp->ctrl) ||
+					 dp->msm_dp_display.audio_enabled)) {
+				ret = -EBUSY;
+				goto out;
+			}
+			WARN_ON_ONCE(msm_dp_aux_finish_fault(dp->aux, true));
+		}
+	}
+	ret = msm_dp_aux_owner_set(dp->aux, &msm_dp_display_aux_ops, dp);
+	if (!ret) {
+		dp->aux_owner_attached = true;
+		dp->link_status_stopping = false;
+		dp->aux_demand_enabled = dp->msm_dp_display.is_edp;
+		dp->aux_restore_pending = dp->aux_demand_enabled;
+	}
+out:
+	if (put_temporary)
+		msm_dp_display_keep_cleanup_pm(dp, &put_temporary);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + put_temporary);
+	return ret;
+}
+
+static int msm_dp_display_host_phy_exit(struct msm_dp_display_private *dp)
+{
+	int ret;
+
+	lockdep_assert_held(&dp->state_lock);
+	msm_dp_display_aux_pending(dp);
+	ret = msm_dp_audio_stop(&dp->msm_dp_display);
+	if (ret)
+		return ret;
+	return msm_dp_ctrl_phy_exit(dp->ctrl);
+}
+
+static int msm_dp_display_host_init(struct msm_dp_display_private *dp)
+{
+	int ret;
+
+	lockdep_assert_held(&dp->state_lock);
+	if (dp->core_initialized)
+		return 0;
+	ret = msm_dp_ctrl_core_clk_enable(dp->ctrl);
+	if (ret)
+		return ret;
 	msm_dp_ctrl_reset(dp->ctrl);
 	msm_dp_ctrl_enable_irq(dp->ctrl);
 	msm_dp_aux_init(dp->aux);
 	dp->core_initialized = true;
+	return 0;
 }
 
-static void msm_dp_display_host_deinit(struct msm_dp_display_private *dp)
+static int msm_dp_display_host_deinit(struct msm_dp_display_private *dp)
 {
-	drm_dbg_dp(dp->drm_dev, "type=%d core_init=%d phy_init=%d\n",
-		dp->msm_dp_display.connector_type, dp->core_initialized,
-		dp->phy_initialized);
+	lockdep_assert_held(&dp->state_lock);
+	if (!dp->core_initialized)
+		return 0;
+	if (dp->msm_dp_display.audio_enabled || msm_dp_ctrl_has_phy_refs(dp->ctrl))
+		return -EBUSY;
 
 	msm_dp_ctrl_reset(dp->ctrl);
 	msm_dp_ctrl_disable_irq(dp->ctrl);
 	msm_dp_aux_deinit(dp->aux);
 	msm_dp_ctrl_core_clk_disable(dp->ctrl);
 	dp->core_initialized = false;
+	return 0;
 }
 
 static void msm_dp_display_handle_video_request(struct msm_dp_display_private *dp)
@@ -378,29 +778,75 @@ static void msm_dp_display_handle_video_request(struct msm_dp_display_private *d
 static int msm_dp_display_handle_irq_hpd(struct msm_dp_display_private *dp)
 {
 	u32 sink_request = dp->link->sink_request;
+	bool had_audio = dp->msm_dp_display.audio_enabled;
+	bool changes_link = sink_request & (DP_TEST_LINK_PHY_TEST_PATTERN |
+			DP_LINK_STATUS_UPDATED | DP_TEST_LINK_TRAINING);
+	int ret, cleanup;
 
 	drm_dbg_dp(dp->drm_dev, "%d\n", sink_request);
 
-	msm_dp_ctrl_handle_sink_request(dp->ctrl);
+	lockdep_assert_held(&dp->state_lock);
+	/* Compliance/retraining can stop clocks inside the controller call. */
+	if (changes_link) {
+		ret = msm_dp_audio_stop(&dp->msm_dp_display);
+		if (ret)
+			goto retained;
+	}
+	ret = msm_dp_ctrl_handle_sink_request(dp->ctrl);
+	if (ret) {
+		cleanup = msm_dp_audio_stop(&dp->msm_dp_display);
+		if (cleanup) {
+			DRM_ERROR("Sink request failed: %d; audio stop retained: %d\n",
+				  ret, cleanup);
+			goto retained;
+		}
+		dp->msm_dp_display.power_on = false;
+		msm_dp_display_aux_pending(dp);
+		msm_dp_aux_enable_xfers(dp->aux, false);
+		msm_dp_display_handle_plugged_change(&dp->msm_dp_display, false);
+		cleanup = msm_dp_ctrl_off(dp->ctrl);
+		if (!cleanup)
+			cleanup = msm_dp_display_host_phy_exit(dp);
+		if (cleanup)
+			DRM_ERROR("Sink request failed: %d; cleanup retained ownership: %d\n",
+				  ret, cleanup);
+		/* Physical connection and existing PM-role leases are not stream success. */
+		msm_dp_display_link_failed(dp, ret, true);
+		return ret;
+	}
+	if (changes_link && (sink_request & DP_TEST_LINK_PHY_TEST_PATTERN) &&
+	    dp->link->phy_params.phy_test_pattern_sel) {
+		/* A PHY test pattern is not a normal video/audio stream. */
+		msm_dp_display_aux_revoke(dp);
+		dp->msm_dp_display.power_on = false;
+		msm_dp_display_handle_plugged_change(&dp->msm_dp_display, false);
+	} else if (changes_link && had_audio) {
+		dp->audio->bw_code = drm_dp_link_rate_to_bw_code(dp->link->link_params.rate);
+		dp->audio->lane_count = dp->link->link_params.num_lanes;
+		ret = msm_dp_audio_restart(&dp->msm_dp_display);
+		if (ret)
+			goto retained;
+	}
 
 	if (sink_request & DP_TEST_LINK_VIDEO_PATTERN)
 		msm_dp_display_handle_video_request(dp);
 
 	return 0;
+retained:
+	dp->msm_dp_display.power_on = false;
+	msm_dp_display_aux_pending(dp);
+	msm_dp_aux_enable_xfers(dp->aux, false);
+	msm_dp_display_handle_plugged_change(&dp->msm_dp_display, false);
+	msm_dp_display_link_failed(dp, ret, true);
+	return ret;
 }
 
 static int msm_dp_hpd_plug_handle(struct msm_dp_display_private *dp)
 {
-	int ret;
+	int ret, cleanup;
 	struct platform_device *pdev = dp->msm_dp_display.pdev;
-	bool was_plugged;
-
-	drm_dbg_dp(dp->drm_dev, "Before, type=%d sink_count=%d\n",
-			dp->msm_dp_display.connector_type,
-			dp->link->sink_count);
-
-	guard(mutex)(&dp->plugged_lock);
-	was_plugged = dp->plugged;
+	bool newly_owned = false, put_temporary = true, was_plugged;
+	unsigned int puts = 0;
 
 	ret = pm_runtime_resume_and_get(&pdev->dev);
 	if (ret) {
@@ -408,62 +854,76 @@ static int msm_dp_hpd_plug_handle(struct msm_dp_display_private *dp)
 		return ret;
 	}
 
-	msm_dp_aux_enable_xfers(dp->aux, true);
-
-	msm_dp_display_host_phy_init(dp);
-
+	mutex_lock(&dp->state_lock);
+	if (dp->link_status_stopping) {
+		ret = -ENODEV;
+		goto out;
+	}
+	was_plugged = dp->plugged;
+	dp->plugged = true;
+	ret = msm_dp_display_host_phy_init(dp, &newly_owned);
+	if (ret)
+		goto failed;
 	ret = msm_dp_display_process_hpd_high(dp);
+	if (ret)
+		goto failed;
 
 	if (!ret && dp->msm_dp_display.power_on && !was_plugged)
-		drm_connector_set_link_status_property(dp->msm_dp_display.connector,
-						       DRM_MODE_LINK_STATUS_BAD);
+		msm_dp_display_link_failed(dp, -EPIPE, false);
+	if (!dp->plugged_pm_held) {
+		dp->plugged_pm_held = true;
+		put_temporary = false;
+	}
+	goto out;
 
-	drm_dbg_dp(dp->drm_dev, "After, type=%d sink_count=%d\n",
-			dp->msm_dp_display.connector_type,
-			dp->link->sink_count);
-
-	dp->plugged = true;
+failed:
+	msm_dp_display_link_failed(dp, ret, true);
+	if (newly_owned) {
+		msm_dp_aux_enable_xfers(dp->aux, false);
+		cleanup = msm_dp_display_host_phy_exit(dp);
+		if (cleanup)
+			DRM_ERROR("HPD PHY cleanup failed: %d (original %d)\n", cleanup, ret);
+	}
+	msm_dp_display_keep_cleanup_pm(dp, &put_temporary);
+out:
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + put_temporary);
 
 	return ret;
-};
-
-static void msm_dp_display_handle_plugged_change(struct msm_dp *msm_dp_display,
-		bool plugged)
-{
-	struct msm_dp_display_private *dp;
-
-	dp = container_of(msm_dp_display,
-			struct msm_dp_display_private, msm_dp_display);
-
-	/* notify audio subsystem only if sink supports audio */
-	if (dp->audio_supported)
-		drm_connector_hdmi_audio_plugged_notify(msm_dp_display->connector,
-							plugged);
 }
 
 static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
 {
 	struct platform_device *pdev = dp->msm_dp_display.pdev;
+	unsigned int puts = 0;
+	int ret, cleanup = 0;
+	bool active;
 
+	ret = pm_runtime_resume_and_get(&pdev->dev);
+	active = ret >= 0;
+	mutex_lock(&dp->state_lock);
 	dp->panel->video_test = false;
-
+	if (dp->msm_dp_display.is_edp)
+		msm_dp_display_aux_pending(dp);
+	else
+		msm_dp_display_aux_revoke(dp);
 	msm_dp_aux_enable_xfers(dp->aux, false);
-
-	drm_dbg_dp(dp->drm_dev, "Before, type=%d sink_count=%d\n",
-			dp->msm_dp_display.connector_type,
-			dp->link->sink_count);
-
-	guard(mutex)(&dp->plugged_lock);
-	if (!dp->plugged)
-		return 0;
+	dp->plugged = false;
+	if (active) {
+		cleanup = msm_dp_audio_stop(&dp->msm_dp_display);
+		if (cleanup)
+			msm_dp_display_link_failed(dp, cleanup, false);
+	}
 
 	/* Don't forget modes for eDP */
 	if (!dp->msm_dp_display.is_edp)
 		msm_dp_panel_unplugged(dp->panel, dp->msm_dp_display.connector);
 
 	/* triggered by irq_hdp with sink_count = 0 */
-	if (dp->link->sink_count == 0)
-		msm_dp_display_host_phy_exit(dp);
+	if (active && !cleanup && dp->link->sink_count == 0 &&
+	    !msm_dp_ctrl_has_power_ref(dp->ctrl))
+		cleanup = msm_dp_display_host_phy_exit(dp);
 
 	/*
 	 * We don't need separate work for disconnect as
@@ -478,22 +938,30 @@ static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
 	/* signal the disconnect event early to ensure proper teardown */
 	msm_dp_display_handle_plugged_change(&dp->msm_dp_display, false);
 
-	drm_dbg_dp(dp->drm_dev, "After, type=%d, sink_count=%d\n",
-			dp->msm_dp_display.connector_type,
-			dp->link->sink_count);
-
-	if (dp->plugged) {
-		pm_runtime_put_sync(&pdev->dev);
-		dp->plugged = false;
-	}
-
-	return 0;
+	msm_dp_display_release_pm_role(dp, &dp->plugged_pm_held, &puts);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + active);
+	if (cleanup)
+		DRM_ERROR("Disconnect retained PHY ownership: %d\n", cleanup);
+	return active ? cleanup : ret;
 }
 
 static int msm_dp_irq_hpd_handle(struct msm_dp_display_private *dp)
 {
 	u32 sink_request;
 	int rc = 0;
+
+	/* Both callers already hold a parent runtime-PM reference. */
+	guard(mutex)(&dp->state_lock);
+	if (!dp->plugged)
+		return -ENOTCONN;
+	/* IRQ-HPD may be the first demand after a retained host-only resume. */
+	rc = msm_dp_display_host_phy_init(dp, NULL);
+	if (rc) {
+		msm_dp_display_link_failed(dp, rc, true);
+		return rc;
+	}
 
 	/* irq_hpd can happen at either connected or disconnected state */
 	drm_dbg_dp(dp->drm_dev, "Before, type=%d, sink_count=%d\n",
@@ -510,6 +978,8 @@ static int msm_dp_irq_hpd_handle(struct msm_dp_display_private *dp)
 		else
 			rc = msm_dp_display_handle_irq_hpd(dp);
 	}
+	if (rc)
+		msm_dp_display_link_failed(dp, rc, true);
 
 	drm_dbg_dp(dp->drm_dev, "After, type=%d, sink_count=%d\n",
 			dp->msm_dp_display.connector_type,
@@ -567,7 +1037,7 @@ static int msm_dp_init_sub_modules(struct msm_dp_display_private *dp)
 	}
 
 	dp->ctrl = msm_dp_ctrl_get(dev, dp->link, dp->panel, dp->aux,
-			       phy, dp->ahb_base, dp->link_base);
+			       phy, &dp->state_lock, dp->ahb_base, dp->link_base);
 	if (IS_ERR(dp->ctrl)) {
 		rc = PTR_ERR(dp->ctrl);
 		DRM_ERROR("failed to initialize ctrl, rc = %d\n", rc);
@@ -575,7 +1045,8 @@ static int msm_dp_init_sub_modules(struct msm_dp_display_private *dp)
 		goto error_ctrl;
 	}
 
-	dp->audio = msm_dp_audio_get(dp->msm_dp_display.pdev, dp->link_base);
+	dp->audio = msm_dp_audio_get(dp->msm_dp_display.pdev, dp->link_base,
+				     dp->ctrl, &dp->state_lock);
 	if (IS_ERR(dp->audio)) {
 		rc = PTR_ERR(dp->audio);
 		pr_err("failed to initialize audio, rc = %d\n", rc);
@@ -628,6 +1099,7 @@ static int msm_dp_display_enable(struct msm_dp_display_private *dp, bool force_l
 static int msm_dp_display_post_enable(struct msm_dp *msm_dp_display)
 {
 	struct msm_dp_display_private *dp;
+	int ret;
 	u32 rate;
 
 	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
@@ -637,6 +1109,9 @@ static int msm_dp_display_post_enable(struct msm_dp *msm_dp_display)
 	if (dp->audio_supported) {
 		dp->audio->bw_code = drm_dp_link_rate_to_bw_code(rate);
 		dp->audio->lane_count = dp->link->link_params.num_lanes;
+		ret = msm_dp_audio_restart(msm_dp_display);
+		if (ret)
+			return ret;
 	}
 
 	/* signal the connect event late to synchronize video and display */
@@ -651,40 +1126,41 @@ static int msm_dp_display_post_enable(struct msm_dp *msm_dp_display)
 static int msm_dp_display_disable(struct msm_dp_display_private *dp)
 {
 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
+	int ret;
 
-	if (!msm_dp_display->power_on)
-		return 0;
+	lockdep_assert_held(&dp->state_lock);
 
-	/* wait only if audio was enabled */
-	if (msm_dp_display->audio_enabled) {
-		/* signal the disconnect event */
-		msm_dp_display_handle_plugged_change(msm_dp_display, false);
-		if (!wait_for_completion_timeout(&dp->audio_comp,
-				HZ * 5))
-			DRM_ERROR("audio comp timeout\n");
+	msm_dp_display_aux_pending(dp);
+	/* Disable the engine ourselves before clocks, never wait for ALSA under state_lock. */
+	ret = msm_dp_audio_stop(msm_dp_display);
+	if (ret) {
+		msm_dp_display_link_failed(dp, ret, true);
+		return ret;
 	}
+	msm_dp_display_handle_plugged_change(msm_dp_display, false);
 
-	msm_dp_display->audio_enabled = false;
-
-	if (dp->link->sink_count == 0) {
+	if (dp->link->sink_count == 0 && dp->plugged) {
 		/*
 		 * irq_hpd with sink_count = 0
 		 * hdmi unplugged out of dongle
 		 */
-		msm_dp_ctrl_off_link_stream(dp->ctrl);
+		ret = msm_dp_ctrl_off_link_stream(dp->ctrl);
 	} else {
 		/*
 		 * unplugged interrupt
 		 * dongle unplugged out of DUT
 		 */
-		msm_dp_ctrl_off(dp->ctrl);
-		msm_dp_display_host_phy_exit(dp);
+		ret = msm_dp_ctrl_off(dp->ctrl);
+		if (!ret)
+			ret = msm_dp_display_host_phy_exit(dp);
 	}
 
 	msm_dp_display->power_on = false;
+	if (ret)
+		DRM_ERROR("Display cleanup retained ownership: %d\n", ret);
 
 	drm_dbg_dp(dp->drm_dev, "sink count: %d\n", dp->link->sink_count);
-	return 0;
+	return ret;
 }
 
 /**
@@ -749,6 +1225,7 @@ int msm_dp_display_get_modes(struct msm_dp *dp)
 	}
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
+	guard(mutex)(&msm_dp_display->state_lock);
 
 	return msm_dp_panel_get_modes(msm_dp_display->panel,
 		dp->connector);
@@ -785,14 +1262,16 @@ void msm_dp_snapshot(struct msm_disp_state *disp_state, struct msm_dp *dp)
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 
 	/*
-	 * if we are reading registers we need the link clocks to be on
-	 * however till DP cable is connected this will not happen as we
-	 * do not know the resolution to power up with. Hence check the
-	 * power_on status before dumping DP registers to avoid crash due
-	 * to unclocked access
+	 * Do not wake an idle display for diagnostics. Hold an active parent
+	 * reference and serialize the reads with link-clock/PHY teardown: a
+	 * power_on check alone cannot protect the following register accesses.
 	 */
-	if (!dp->power_on)
+	if (pm_runtime_get_if_active(&dp->pdev->dev) <= 0)
 		return;
+	mutex_lock(&msm_dp_display->state_lock);
+	if (msm_dp_display->link_status_stopping || !msm_dp_display->core_initialized ||
+	    !dp->power_on || !msm_dp_ctrl_link_regs_accessible(msm_dp_display->ctrl))
+		goto out;
 
 	msm_disp_snapshot_add_block(disp_state, msm_dp_display->ahb_len,
 				    msm_dp_display->ahb_base, "dp_ahb");
@@ -802,11 +1281,15 @@ void msm_dp_snapshot(struct msm_disp_state *disp_state, struct msm_dp *dp)
 				    msm_dp_display->link_base, "dp_link");
 	msm_disp_snapshot_add_block(disp_state, msm_dp_display->p0_len,
 				    msm_dp_display->p0_base, "dp_p0");
+out:
+	mutex_unlock(&msm_dp_display->state_lock);
+	msm_dp_display_put_pm(msm_dp_display, 1);
 }
 
 void msm_dp_display_set_psr(struct msm_dp *msm_dp_display, bool enter)
 {
 	struct msm_dp_display_private *dp;
+	int ret;
 
 	if (!msm_dp_display) {
 		DRM_ERROR("invalid params\n");
@@ -814,7 +1297,14 @@ void msm_dp_display_set_psr(struct msm_dp *msm_dp_display, bool enter)
 	}
 
 	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
-	msm_dp_ctrl_set_psr(dp->ctrl, enter);
+	ret = pm_runtime_resume_and_get(&msm_dp_display->pdev->dev);
+	if (ret < 0)
+		return;
+	mutex_lock(&dp->state_lock);
+	if (msm_dp_display->power_on)
+		msm_dp_ctrl_set_psr(dp->ctrl, enter);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, 1);
 }
 
 /**
@@ -835,23 +1325,29 @@ enum drm_connector_status msm_dp_bridge_detect(struct drm_bridge *bridge,
 	struct msm_dp_display_private *priv;
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
 	struct drm_dp_desc desc;
-	bool phy_deinit;
-	int ret;
+	bool phy_deinit = false, put_temporary = true;
+	unsigned int puts = 0;
+	int ret, cleanup;
 
 	dp = to_dp_bridge(bridge)->msm_dp_display;
 
 	priv = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 
-	guard(mutex)(&priv->plugged_lock);
 	ret = pm_runtime_resume_and_get(&dp->pdev->dev);
 	if (ret) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
 		return status;
 	}
 
-	phy_deinit = msm_dp_display_host_phy_init(priv);
-
-	msm_dp_aux_enable_xfers(priv->aux, true);
+	mutex_lock(&priv->state_lock);
+	if (priv->link_status_stopping)
+		goto out;
+	ret = msm_dp_display_host_phy_init(priv, &phy_deinit);
+	if (ret) {
+		msm_dp_display_link_failed(priv, ret, false);
+		priv->plugged = false;
+		goto end;
+	}
 
 	ret = msm_dp_aux_is_link_connected(priv->aux);
 	DRM_DEBUG_DP("aux link status: %x\n", ret);
@@ -895,12 +1391,20 @@ end:
 	if (!priv->plugged) {
 		if (phy_deinit) {
 			msm_dp_aux_enable_xfers(priv->aux, false);
-			msm_dp_display_host_phy_exit(priv);
+			cleanup = msm_dp_display_host_phy_exit(priv);
+			if (cleanup)
+				DRM_ERROR("Detect PHY cleanup failed: %d\n", cleanup);
 		}
-
-		pm_runtime_put_sync(&dp->pdev->dev);
+		msm_dp_display_release_pm_role(priv, &priv->plugged_pm_held, &puts);
+		msm_dp_display_keep_cleanup_pm(priv, &put_temporary);
+	} else if (!priv->plugged_pm_held) {
+		priv->plugged_pm_held = true;
+		put_temporary = false;
 	}
-
+out:
+	msm_dp_display_release_cleanup_pm(priv, &puts);
+	mutex_unlock(&priv->state_lock);
+	msm_dp_display_put_pm(priv, puts + put_temporary);
 	return status;
 }
 
@@ -955,10 +1459,12 @@ static irqreturn_t msm_dp_display_irq_thread(int irq, void *dev_id)
 		rc = pm_runtime_resume_and_get(&pdev->dev);
 		if (rc)
 			DRM_ERROR("failed to pm_runtime_resume\n");
-		else
-			msm_dp_irq_hpd_handle(dp);
-		if (!rc)
-			pm_runtime_put_sync(&pdev->dev);
+		else {
+			rc = msm_dp_irq_hpd_handle(dp);
+			if (rc)
+				DRM_ERROR("HPD IRQ request failed: %d\n", rc);
+			msm_dp_display_put_pm(dp, 1);
+		}
 	}
 
 	ret = IRQ_HANDLED;
@@ -1016,8 +1522,16 @@ static const struct msm_dp_desc *msm_dp_display_get_desc(struct platform_device 
 static int msm_dp_display_probe_tail(struct device *dev)
 {
 	struct msm_dp *dp = dev_get_drvdata(dev);
+	struct msm_dp_display_private *priv = container_of(dp,
+			struct msm_dp_display_private, msm_dp_display);
 	int ret;
 
+	/* A deferred child must not add a component after final removal starts. */
+	guard(mutex)(&priv->probe_lock);
+	if (priv->removing)
+		return -ENODEV;
+	if (priv->component_added)
+		return 0;
 	/*
 	 * External bridges are mandatory for eDP interfaces: one has to
 	 * provide at least an eDP panel (which gets wrapped into panel-bridge).
@@ -1036,6 +1550,8 @@ static int msm_dp_display_probe_tail(struct device *dev)
 	ret = component_add(dev, &msm_dp_display_comp_ops);
 	if (ret)
 		DRM_ERROR("component add failed, rc=%d\n", ret);
+	else
+		priv->component_added = true;
 
 	return ret;
 }
@@ -1138,6 +1654,82 @@ static int msm_dp_display_get_io(struct msm_dp_display_private *display)
 	return 0;
 }
 
+static int msm_dp_display_fini(struct msm_dp_display_private *dp)
+{
+	struct device *dev = &dp->msm_dp_display.pdev->dev;
+	bool component_added, need_host, put_temporary = false;
+	unsigned int puts = 0;
+	int ret = 0, cleanup = 0;
+
+	mutex_lock(&dp->probe_lock);
+	WRITE_ONCE(dp->removing, true);
+	component_added = dp->component_added;
+	dp->component_added = false;
+	mutex_unlock(&dp->probe_lock);
+	msm_dp_display_stop_link_status(dp);
+	if (component_added)
+		component_del(dev, &msm_dp_display_comp_ops);
+	if (dp->aux_bus_populated) {
+		of_dp_aux_depopulate_bus(dp->aux);
+		dp->aux_bus_populated = false;
+	}
+	if (dp->aux_registered) {
+		msm_dp_aux_unregister(dp->aux);
+		dp->aux_registered = false;
+	}
+	msm_dp_aux_owner_drain(dp->aux);
+
+	mutex_lock(&dp->state_lock);
+	need_host = dp->core_initialized || msm_dp_ctrl_has_phy_refs(dp->ctrl) ||
+		    dp->msm_dp_display.audio_enabled;
+	mutex_unlock(&dp->state_lock);
+	if (dp->runtime_pm_enabled) {
+		if (need_host) {
+			ret = pm_runtime_resume_and_get(dev);
+			put_temporary = ret >= 0;
+		}
+		/* Wait for callbacks before freeing anything a callback can access. */
+		pm_runtime_disable(dev);
+		dp->runtime_pm_enabled = false;
+	}
+	/* No waits on an HPD thread while state_lock is held. */
+	if (dp->irq_requested) {
+		devm_free_irq(dev, dp->irq, dp);
+		dp->irq_requested = false;
+		dp->irq_enabled = false;
+	}
+
+	mutex_lock(&dp->state_lock);
+	if (ret < 0) {
+		cleanup = ret;
+	} else if (dp->core_initialized) {
+		cleanup = msm_dp_display_drain_aux_fault(dp);
+		if (!cleanup) {
+			WARN_ON_ONCE(msm_dp_aux_finish_fault(dp->aux, true));
+			msm_dp_aux_hpd_intr_disable(dp->aux);
+			msm_dp_aux_hpd_disable(dp->aux);
+			cleanup = msm_dp_display_host_deinit(dp);
+		}
+	}
+	msm_dp_display_release_pm_role(dp, &dp->plugged_pm_held, &puts);
+	msm_dp_display_release_pm_role(dp, &dp->stream_pm_held, &puts);
+	msm_dp_display_release_pm_role(dp, &dp->hpd_pm_held, &puts);
+	msm_dp_display_keep_cleanup_pm(dp, &put_temporary);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + put_temporary);
+	if (cleanup) {
+		/* A void platform remove cannot make failed physical cleanup safe. */
+		dev_err(dev, "Final DP cleanup retained resources: %d\n", cleanup);
+		return cleanup;
+	}
+	ret = msm_dp_aux_owner_detach(dp->aux);
+	if (ret)
+		return ret;
+	dp->aux_owner_attached = false;
+	return 0;
+}
+
 static int msm_dp_display_probe(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -1165,7 +1757,10 @@ static int msm_dp_display_probe(struct platform_device *pdev)
 		(dp->msm_dp_display.connector_type == DRM_MODE_CONNECTOR_eDP);
 	dp->hpd_isr_status = 0;
 
-	mutex_init(&dp->plugged_lock);
+	mutex_init(&dp->state_lock);
+	mutex_init(&dp->probe_lock);
+	INIT_WORK(&dp->link_status_work, msm_dp_display_link_status_work);
+	INIT_WORK(&dp->audio_notify_work, msm_dp_display_audio_notify_work);
 
 	rc = msm_dp_display_get_io(dp);
 	if (rc)
@@ -1180,24 +1775,25 @@ static int msm_dp_display_probe(struct platform_device *pdev)
 	/* Store DP audio handle inside DP display */
 	dp->msm_dp_display.msm_dp_audio = dp->audio;
 
-	init_completion(&dp->audio_comp);
-
 	platform_set_drvdata(pdev, &dp->msm_dp_display);
-
-	rc = devm_pm_runtime_enable(&pdev->dev);
-	if (rc)
-		goto err;
 
 	rc = msm_dp_display_request_irq(dp);
 	if (rc)
 		goto err;
+	dp->irq_requested = true;
+	rc = msm_dp_display_start_aux_owner(dp);
+	if (rc)
+		goto err;
+	pm_runtime_enable(&pdev->dev);
+	dp->runtime_pm_enabled = true;
 
 	if (dp->msm_dp_display.is_edp) {
-		rc = devm_of_dp_aux_populate_bus(dp->aux, msm_dp_auxbus_done_probe);
+		rc = of_dp_aux_populate_bus(dp->aux, msm_dp_auxbus_done_probe);
 		if (rc) {
 			DRM_ERROR("eDP auxbus population failed, rc=%d\n", rc);
 			goto err;
 		}
+		dp->aux_bus_populated = true;
 	} else {
 		rc = msm_dp_display_probe_tail(&pdev->dev);
 		if (rc)
@@ -1207,7 +1803,10 @@ static int msm_dp_display_probe(struct platform_device *pdev)
 	return rc;
 
 err:
+	if (WARN_ON(msm_dp_display_fini(dp)))
+		return rc;
 	msm_dp_display_deinit_sub_modules(dp);
+	platform_set_drvdata(pdev, NULL);
 	return rc;
 }
 
@@ -1215,7 +1814,8 @@ static void msm_dp_display_remove(struct platform_device *pdev)
 {
 	struct msm_dp_display_private *dp = dev_get_dp_display_private(&pdev->dev);
 
-	component_del(&pdev->dev, &msm_dp_display_comp_ops);
+	if (WARN_ON(msm_dp_display_fini(dp)))
+		return;
 	msm_dp_display_deinit_sub_modules(dp);
 	platform_set_drvdata(pdev, NULL);
 }
@@ -1223,38 +1823,87 @@ static void msm_dp_display_remove(struct platform_device *pdev)
 static int msm_dp_pm_runtime_suspend(struct device *dev)
 {
 	struct msm_dp_display_private *dp = dev_get_dp_display_private(dev);
+	bool aux_enabled;
+	int ret;
 
-	disable_irq(dp->irq);
-
-	if (dp->msm_dp_display.is_edp) {
-		msm_dp_display_host_phy_exit(dp);
-		msm_dp_aux_hpd_disable(dp->aux);
+	mutex_lock(&dp->state_lock);
+	/* Drain raw fault publication before deciding whether clocks can stop. */
+	aux_enabled = msm_dp_aux_enable_xfers(dp->aux, false);
+	msm_dp_display_aux_pending(dp);
+	if (msm_dp_aux_get_fault(dp->aux) || msm_dp_aux_fault_pending(dp->aux) ||
+	    dp->cleanup_pm_held || dp->msm_dp_display.audio_enabled ||
+	    msm_dp_ctrl_has_power_ref(dp->ctrl)) {
+		mutex_unlock(&dp->state_lock);
+		return -EBUSY;
 	}
-	msm_dp_display_host_deinit(dp);
+	if (!dp->core_initialized) {
+		mutex_unlock(&dp->state_lock);
+		return 0;
+	}
+	/* The hard handler never takes state_lock; never wait for the PM-using thread. */
+	if (dp->irq_enabled && !disable_hardirq(dp->irq)) {
+		msm_dp_aux_enable_xfers(dp->aux, aux_enabled);
+		enable_irq(dp->irq);
+		mutex_unlock(&dp->state_lock);
+		return -EBUSY;
+	}
+	dp->irq_enabled = false;
+	ret = msm_dp_display_host_phy_exit(dp);
+	if (ret)
+		goto retained;
+	if (dp->msm_dp_display.is_edp)
+		msm_dp_aux_hpd_disable(dp->aux);
+	ret = msm_dp_display_host_deinit(dp);
+	if (ret)
+		goto retained;
+	mutex_unlock(&dp->state_lock);
 
 	return 0;
+
+retained:
+	DRM_ERROR("Runtime suspend retained PHY/host resources: %d\n", ret);
+	enable_irq(dp->irq);
+	dp->irq_enabled = true;
+	mutex_unlock(&dp->state_lock);
+	/* A cleanup refusal must not install a sticky runtime-PM error. */
+	return -EBUSY;
 }
 
 static int msm_dp_pm_runtime_resume(struct device *dev)
 {
 	struct msm_dp_display_private *dp = dev_get_dp_display_private(dev);
+	int ret;
 
 	/*
-	 * for eDP, host cotroller, HPD block and PHY are enabled here
-	 * but with HPD irq disabled
-	 *
-	 * for DP, only host controller is enabled here.
-	 * HPD block is enabled at msm_dp_bridge_hpd_enable()
-	 * PHY will be enabled at plugin handler later
+	 * Resume only the host and HPD detector. PHY admission belongs to a real
+	 * AUX/plug/stream demand after this callback, so a transient PHY error
+	 * cannot poison runtime_error. Core clock errors remain real PM errors.
+	 * A stopped owner still permits core-only child PM teardown; it cannot
+	 * admit AUX or PHY work, and final removal disables PM before AUX is freed.
 	 */
-	msm_dp_display_host_init(dp);
-	if (dp->msm_dp_display.is_edp) {
+	mutex_lock(&dp->state_lock);
+	ret = msm_dp_display_host_init(dp);
+	if (ret)
+		goto out;
+	if (dp->msm_dp_display.is_edp || dp->hpd_pm_held) {
 		msm_dp_aux_hpd_enable(dp->aux);
-		msm_dp_display_host_phy_init(dp);
+		if (dp->hpd_pm_held)
+			msm_dp_aux_hpd_intr_enable(dp->aux);
 	}
-
-	enable_irq(dp->irq);
+	if (!dp->irq_enabled) {
+		enable_irq(dp->irq);
+		dp->irq_enabled = true;
+	}
+	mutex_unlock(&dp->state_lock);
 	return 0;
+out:
+	mutex_unlock(&dp->state_lock);
+	/*
+	 * Keep IRQs disabled on a failed resume: genpd may stop and power down
+	 * this device after any callback error. Such failures are quarantined;
+	 * they do not promise automatic runtime-PM or PHY recovery.
+	 */
+	return ret;
 }
 
 static const struct dev_pm_ops msm_dp_pm_ops = {
@@ -1340,6 +1989,7 @@ int msm_dp_modeset_init(struct msm_dp *msm_dp_display, struct drm_device *dev,
 			struct drm_encoder *encoder, bool yuv_supported)
 {
 	struct msm_dp_display_private *msm_dp_priv;
+	struct drm_connector *connector;
 	int ret;
 
 	msm_dp_display->drm_dev = dev;
@@ -1353,16 +2003,18 @@ int msm_dp_modeset_init(struct msm_dp *msm_dp_display, struct drm_device *dev,
 		return ret;
 	}
 
-	msm_dp_display->connector = msm_dp_drm_connector_init(msm_dp_display, encoder);
-	if (IS_ERR(msm_dp_display->connector)) {
-		ret = PTR_ERR(msm_dp_display->connector);
+	connector = msm_dp_drm_connector_init(msm_dp_display, encoder);
+	if (IS_ERR(connector)) {
+		ret = PTR_ERR(connector);
 		DRM_DEV_ERROR(dev->dev,
 			"failed to create dp connector: %d\n", ret);
-		msm_dp_display->connector = NULL;
 		return ret;
 	}
 
-	msm_dp_priv->panel->connector = msm_dp_display->connector;
+	mutex_lock(&msm_dp_priv->state_lock);
+	msm_dp_display->connector = connector;
+	msm_dp_priv->panel->connector = connector;
+	mutex_unlock(&msm_dp_priv->state_lock);
 
 	return 0;
 }
@@ -1375,6 +2027,9 @@ void msm_dp_bridge_atomic_enable(struct drm_bridge *drm_bridge,
 	int rc = 0;
 	struct msm_dp_display_private *msm_dp_display;
 	bool force_link_train = false;
+	bool put_temporary = true;
+	unsigned int puts = 0;
+	int cleanup;
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 	if (!msm_dp_display->msm_dp_mode.drm_mode.clock) {
@@ -1382,44 +2037,80 @@ void msm_dp_bridge_atomic_enable(struct drm_bridge *drm_bridge,
 		return;
 	}
 
-	if (dp->is_edp)
-		msm_dp_hpd_plug_handle(msm_dp_display);
+	if (dp->is_edp) {
+		rc = msm_dp_hpd_plug_handle(msm_dp_display);
+		if (rc)
+			return;
+	}
 
 	if (pm_runtime_resume_and_get(&dp->pdev->dev)) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
 		return;
 	}
 
-	if (msm_dp_display->link->sink_count == 0)
-		return;
+	mutex_lock(&msm_dp_display->state_lock);
+	if (msm_dp_display->link_status_stopping) {
+		rc = -ENODEV;
+		goto failed;
+	}
+	if (msm_dp_display->link->sink_count == 0) {
+		rc = -ENOTCONN;
+		goto failed;
+	}
 
 	rc = msm_dp_display_set_mode(dp, &msm_dp_display->msm_dp_mode);
 	if (rc) {
 		DRM_ERROR("Failed to perform a mode set, rc=%d\n", rc);
-		return;
+		goto failed;
 	}
 
-	if (!dp->power_on) {
-		msm_dp_display_host_phy_init(msm_dp_display);
+	if (!dp->power_on)
 		force_link_train = true;
-	}
+	rc = msm_dp_audio_stop(dp);
+	if (rc)
+		goto failed;
+	rc = msm_dp_display_host_phy_init(msm_dp_display, NULL);
+	if (rc)
+		goto failed;
 
-	rc = msm_dp_ctrl_on_link(msm_dp_display->ctrl);
+	rc = msm_dp_ctrl_on_link(msm_dp_display->ctrl, false);
 	if (rc) {
 		DRM_ERROR("Failed link training (rc=%d)\n", rc);
-		// TODO: schedule drm_connector_set_link_status_property()
-		return;
+		goto failed;
 	}
 
-	msm_dp_display_enable(msm_dp_display, force_link_train);
+	rc = msm_dp_display_enable(msm_dp_display, force_link_train);
+	if (rc)
+		goto failed;
 
 	rc = msm_dp_display_post_enable(dp);
 	if (rc) {
 		DRM_ERROR("DP display post enable failed, rc=%d\n", rc);
-		msm_dp_display_disable(msm_dp_display);
+		goto failed;
 	}
 
+	msm_dp_display->link_error = 0;
+	msm_dp_display->link_status_bad = false;
+	msm_dp_display->link_status_notify = false;
+	if (!msm_dp_display->stream_pm_held) {
+		msm_dp_display->stream_pm_held = true;
+		put_temporary = false;
+	}
 	drm_dbg_dp(dp->drm_dev, "type=%d Done\n", dp->connector_type);
+	goto out;
+
+failed:
+	msm_dp_display_link_failed(msm_dp_display, rc, true);
+	cleanup = msm_dp_display_disable(msm_dp_display);
+	if (cleanup)
+		DRM_ERROR("Enable unwind failed: %d (original %d)\n", cleanup, rc);
+	msm_dp_display_release_pm_role(msm_dp_display,
+				     &msm_dp_display->stream_pm_held, &puts);
+	msm_dp_display_keep_cleanup_pm(msm_dp_display, &put_temporary);
+out:
+	msm_dp_display_release_cleanup_pm(msm_dp_display, &puts);
+	mutex_unlock(&msm_dp_display->state_lock);
+	msm_dp_display_put_pm(msm_dp_display, puts + put_temporary);
 }
 
 void msm_dp_bridge_atomic_disable(struct drm_bridge *drm_bridge,
@@ -1428,10 +2119,21 @@ void msm_dp_bridge_atomic_disable(struct drm_bridge *drm_bridge,
 	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(drm_bridge);
 	struct msm_dp *dp = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *msm_dp_display;
+	int ret;
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 
-	msm_dp_ctrl_push_idle(msm_dp_display->ctrl);
+	ret = pm_runtime_resume_and_get(&dp->pdev->dev);
+	if (ret < 0)
+		return;
+	mutex_lock(&msm_dp_display->state_lock);
+	ret = msm_dp_audio_stop(dp);
+	if (ret)
+		msm_dp_display_link_failed(msm_dp_display, ret, true);
+	else if (dp->power_on)
+		msm_dp_ctrl_push_idle(msm_dp_display->ctrl);
+	mutex_unlock(&msm_dp_display->state_lock);
+	msm_dp_display_put_pm(msm_dp_display, 1);
 }
 
 void msm_dp_bridge_atomic_post_disable(struct drm_bridge *drm_bridge,
@@ -1440,17 +2142,32 @@ void msm_dp_bridge_atomic_post_disable(struct drm_bridge *drm_bridge,
 	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(drm_bridge);
 	struct msm_dp *dp = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *msm_dp_display;
+	unsigned int puts = 0;
+	bool put_temporary;
+	int ret;
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 
-	if (dp->is_edp)
-		msm_dp_hpd_unplug_handle(msm_dp_display);
-
-	msm_dp_display_disable(msm_dp_display);
+	ret = pm_runtime_resume_and_get(&dp->pdev->dev);
+	put_temporary = ret >= 0;
+	mutex_lock(&msm_dp_display->state_lock);
+	if (put_temporary)
+		ret = msm_dp_display_disable(msm_dp_display);
+	else
+		dp->power_on = false;
+	if (ret < 0)
+		DRM_ERROR("Post-disable retained resources: %d\n", ret);
+	msm_dp_display_release_pm_role(msm_dp_display,
+				     &msm_dp_display->stream_pm_held, &puts);
+	msm_dp_display_keep_cleanup_pm(msm_dp_display, &put_temporary);
+	msm_dp_display_release_cleanup_pm(msm_dp_display, &puts);
+	mutex_unlock(&msm_dp_display->state_lock);
 
 	drm_dbg_dp(dp->drm_dev, "type=%d Done\n", dp->connector_type);
 
-	pm_runtime_put_sync(&dp->pdev->dev);
+	msm_dp_display_put_pm(msm_dp_display, puts + put_temporary);
+	if (dp->is_edp)
+		msm_dp_hpd_unplug_handle(msm_dp_display);
 }
 
 void msm_dp_bridge_mode_set(struct drm_bridge *drm_bridge,
@@ -1464,6 +2181,7 @@ void msm_dp_bridge_mode_set(struct drm_bridge *drm_bridge,
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 	msm_dp_panel = msm_dp_display->panel;
+	guard(mutex)(&msm_dp_display->state_lock);
 
 	memset(&msm_dp_display->msm_dp_mode, 0x0, sizeof(struct msm_dp_display_mode));
 
@@ -1497,6 +2215,8 @@ void msm_dp_bridge_hpd_enable(struct drm_bridge *bridge)
 	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(bridge);
 	struct msm_dp *msm_dp_display = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
+	bool put_temporary = true;
+	unsigned int puts = 0;
 
 	/*
 	 * this is for external DP with hpd irq enabled case,
@@ -1511,8 +2231,16 @@ void msm_dp_bridge_hpd_enable(struct drm_bridge *bridge)
 		return;
 	}
 
-	msm_dp_aux_hpd_enable(dp->aux);
-	msm_dp_aux_hpd_intr_enable(dp->aux);
+	mutex_lock(&dp->state_lock);
+	if (!dp->hpd_pm_held && !dp->link_status_stopping) {
+		msm_dp_aux_hpd_enable(dp->aux);
+		msm_dp_aux_hpd_intr_enable(dp->aux);
+		dp->hpd_pm_held = true;
+		put_temporary = false;
+	}
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + put_temporary);
 }
 
 void msm_dp_bridge_hpd_disable(struct drm_bridge *bridge)
@@ -1520,11 +2248,19 @@ void msm_dp_bridge_hpd_disable(struct drm_bridge *bridge)
 	struct msm_dp_bridge *msm_dp_bridge = to_dp_bridge(bridge);
 	struct msm_dp *msm_dp_display = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
+	unsigned int puts = 0;
+	int ret;
 
-	msm_dp_aux_hpd_intr_disable(dp->aux);
-	msm_dp_aux_hpd_disable(dp->aux);
-
-	pm_runtime_put_sync(&msm_dp_display->pdev->dev);
+	ret = pm_runtime_resume_and_get(&msm_dp_display->pdev->dev);
+	mutex_lock(&dp->state_lock);
+	if (ret >= 0 && dp->hpd_pm_held) {
+		msm_dp_aux_hpd_intr_disable(dp->aux);
+		msm_dp_aux_hpd_disable(dp->aux);
+	}
+	msm_dp_display_release_pm_role(dp, &dp->hpd_pm_held, &puts);
+	msm_dp_display_release_cleanup_pm(dp, &puts);
+	mutex_unlock(&dp->state_lock);
+	msm_dp_display_put_pm(dp, puts + (ret >= 0));
 }
 
 void msm_dp_bridge_hpd_notify(struct drm_bridge *bridge,
@@ -1536,13 +2272,21 @@ void msm_dp_bridge_hpd_notify(struct drm_bridge *bridge,
 	struct msm_dp *msm_dp_display = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
 	u32 hpd_link_status = 0;
+	int ret;
+
+	if (status != connector_status_connected) {
+		msm_dp_hpd_unplug_handle(dp);
+		return;
+	}
 
 	if (pm_runtime_resume_and_get(&msm_dp_display->pdev->dev)) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
 		return;
 	}
 
+	mutex_lock(&dp->state_lock);
 	hpd_link_status = msm_dp_aux_is_link_connected(dp->aux);
+	mutex_unlock(&dp->state_lock);
 
 	drm_dbg_dp(dp->drm_dev, "type=%d link hpd_link_status=0x%x, status=%d\n",
 		   msm_dp_display->connector_type, hpd_link_status, status);
@@ -1550,16 +2294,18 @@ void msm_dp_bridge_hpd_notify(struct drm_bridge *bridge,
 	if (status == connector_status_connected) {
 		if (hpd_link_status == ISR_IRQ_HPD_PULSE_COUNT ||
 		    extra_status == DRM_CONNECTOR_DP_IRQ_HPD) {
-			msm_dp_irq_hpd_handle(dp);
+			ret = msm_dp_irq_hpd_handle(dp);
 		} else if (hpd_link_status == ISR_HPD_REPLUG_COUNT) {
 			msm_dp_hpd_unplug_handle(dp);
-			msm_dp_hpd_plug_handle(dp);
+			ret = msm_dp_hpd_plug_handle(dp);
 		} else {
-			msm_dp_hpd_plug_handle(dp);
+			ret = msm_dp_hpd_plug_handle(dp);
 		}
 	} else {
-		msm_dp_hpd_unplug_handle(dp);
+		ret = msm_dp_hpd_unplug_handle(dp);
 	}
+	if (ret)
+		DRM_ERROR("HPD notification failed: %d\n", ret);
 
-	pm_runtime_put_sync(&msm_dp_display->pdev->dev);
+	msm_dp_display_put_pm(dp, 1);
 }

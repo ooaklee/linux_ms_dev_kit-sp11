@@ -6,12 +6,15 @@
 
 #define pr_fmt(fmt)	"[drm-dp] %s: " fmt, __func__
 
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 
 #include <drm/display/drm_dp_helper.h>
 #include <drm/drm_edid.h>
 
 #include "dp_audio.h"
+#include "dp_ctrl.h"
 #include "dp_drm.h"
 #include "dp_panel.h"
 #include "dp_reg.h"
@@ -22,8 +25,12 @@ struct msm_dp_audio_private {
 	struct platform_device *pdev;
 	struct drm_device *drm_dev;
 	void __iomem *link_base;
+	struct mutex *state_lock;
+	struct msm_dp_ctrl *ctrl;
 
 	u32 channels;
+	/* ALSA intent survives a video modeset, unlike engine enable ownership. */
+	bool prepared;
 
 	struct msm_dp_audio msm_dp_audio;
 };
@@ -265,41 +272,122 @@ static struct msm_dp_audio_private *msm_dp_audio_get_data(struct msm_dp *msm_dp_
 	return container_of(msm_dp_audio, struct msm_dp_audio_private, msm_dp_audio);
 }
 
+static bool msm_dp_audio_ready(struct msm_dp_audio_private *audio,
+			       struct msm_dp *msm_dp_display)
+{
+	lockdep_assert_held(audio->state_lock);
+	return msm_dp_display->power_on &&
+		msm_dp_ctrl_link_regs_accessible(audio->ctrl) &&
+		msm_dp_ctrl_has_power_ref(audio->ctrl) &&
+		!msm_dp_ctrl_has_phy_error(audio->ctrl);
+}
+
+static void msm_dp_audio_program(struct msm_dp_audio_private *audio)
+{
+	msm_dp_audio_setup_sdp(audio);
+	msm_dp_audio_setup_acr(audio);
+	msm_dp_audio_safe_to_exit_level(audio);
+	msm_dp_audio_enable(audio, true);
+}
+
+int msm_dp_audio_restart(struct msm_dp *msm_dp_display)
+{
+	struct msm_dp_audio_private *audio = msm_dp_audio_get_data(msm_dp_display);
+
+	if (IS_ERR(audio))
+		return PTR_ERR(audio);
+	lockdep_assert_held(audio->state_lock);
+	if (!audio->prepared)
+		return 0;
+	if (!msm_dp_audio_ready(audio, msm_dp_display) || !audio->channels)
+		return -EIO;
+	if (!msm_dp_display->audio_enabled) {
+		msm_dp_audio_program(audio);
+		msm_dp_display->audio_enabled = true;
+	}
+	return 0;
+}
+
+int msm_dp_audio_stop(struct msm_dp *msm_dp_display)
+{
+	struct msm_dp_audio_private *audio;
+
+	audio = msm_dp_audio_get_data(msm_dp_display);
+	if (IS_ERR(audio))
+		return PTR_ERR(audio);
+
+	lockdep_assert_held(audio->state_lock);
+	if (!msm_dp_display->audio_enabled)
+		return 0;
+	/* Preserve the successful-enable ledger if HW is no longer accessible. */
+	if (!msm_dp_ctrl_link_regs_accessible(audio->ctrl))
+		return -EIO;
+
+	msm_dp_audio_enable(audio, false);
+	msm_dp_display->audio_enabled = false;
+	return 0;
+}
+
+static void msm_dp_audio_put_pm(struct msm_dp_audio_private *audio)
+{
+	int ret;
+
+	/* An idle refusal still consumes this temporary parent-PM lease. */
+	ret = pm_runtime_put_sync(&audio->pdev->dev);
+	if (ret < 0)
+		dev_dbg(&audio->pdev->dev, "audio runtime idle refused: %d\n", ret);
+}
+
 int msm_dp_audio_prepare(struct drm_bridge *bridge,
 			 struct drm_connector *connector,
 			 struct hdmi_codec_daifmt *daifmt,
 			 struct hdmi_codec_params *params)
 {
 	int rc = 0;
+	int active;
 	struct msm_dp_audio_private *audio;
 	struct msm_dp *msm_dp_display;
 
 	msm_dp_display = to_dp_bridge(bridge)->msm_dp_display;
 
-	/*
-	 * Userspace can probe DP PCMs while the connector is unplugged or
-	 * disabled. The controller clocks are off then, so skip register
-	 * programming; jack and ELD state still report sink availability.
-	 */
-	if (!msm_dp_display->power_on)
-		return 0;
-
 	audio = msm_dp_audio_get_data(msm_dp_display);
-	if (IS_ERR(audio)) {
-		rc = PTR_ERR(audio);
-		goto end;
+	if (IS_ERR(audio))
+		return PTR_ERR(audio);
+	/* The HDMI codec advertises two to eight playback channels. */
+	if (params->channels < 2 || params->channels > 8)
+		return -EINVAL;
+
+	/* Parent runtime callbacks take the same state lock. */
+	active = pm_runtime_get_if_active(&audio->pdev->dev);
+	if (active < 0)
+		return active;
+
+	mutex_lock(audio->state_lock);
+	/* Software intent can be staged while inactive, without waking the HW. */
+	if (!msm_dp_display->power_on) {
+		audio->channels = params->channels;
+		audio->prepared = true;
+		goto unlock;
+	}
+	if (!active) {
+		rc = -EAGAIN;
+		goto unlock;
+	}
+	if (!msm_dp_audio_ready(audio, msm_dp_display)) {
+		rc = -EIO;
+		goto unlock;
 	}
 
 	audio->channels = params->channels;
 
-	msm_dp_audio_setup_sdp(audio);
-	msm_dp_audio_setup_acr(audio);
-	msm_dp_audio_safe_to_exit_level(audio);
-	msm_dp_audio_enable(audio, true);
-	msm_dp_display_signal_audio_start(msm_dp_display);
+	msm_dp_audio_program(audio);
 	msm_dp_display->audio_enabled = true;
+	audio->prepared = true;
 
-end:
+unlock:
+	mutex_unlock(audio->state_lock);
+	if (active > 0)
+		msm_dp_audio_put_pm(audio);
 	return rc;
 }
 
@@ -308,6 +396,7 @@ void msm_dp_audio_shutdown(struct drm_bridge *bridge,
 {
 	struct msm_dp_audio_private *audio;
 	struct msm_dp *msm_dp_display;
+	int active, ret = 0;
 
 	msm_dp_display = to_dp_bridge(bridge)->msm_dp_display;
 	audio = msm_dp_audio_get_data(msm_dp_display);
@@ -316,30 +405,36 @@ void msm_dp_audio_shutdown(struct drm_bridge *bridge,
 		return;
 	}
 
-	/*
-	 * if audio was not enabled there is no need
-	 * to execute the shutdown and we can bail out early.
-	 * This also makes sure that we dont cause an unclocked
-	 * access when audio subsystem calls this without DP being
-	 * connected. is_connected cannot be used here as its set
-	 * to false earlier than this call
-	 */
-	if (!msm_dp_display->audio_enabled)
-		return;
-
-	msm_dp_audio_enable(audio, false);
-	/* signal the dp display to safely shutdown clocks */
-	msm_dp_display_signal_audio_complete(msm_dp_display);
+	/* Late ALSA shutdown must not resume a disconnected display. */
+	active = pm_runtime_get_if_active(&audio->pdev->dev);
+	mutex_lock(audio->state_lock);
+	/* Clearing ALSA intent is software-only, not a hardware-stop claim. */
+	audio->prepared = false;
+	if (active > 0)
+		ret = msm_dp_audio_stop(msm_dp_display);
+	else if (msm_dp_display->audio_enabled)
+		ret = active < 0 ? active : -EAGAIN;
+	mutex_unlock(audio->state_lock);
+	if (active < 0)
+		dev_err(&audio->pdev->dev,
+			"audio shutdown PM admission failed: %d\n", active);
+	if (ret)
+		dev_err(&audio->pdev->dev,
+			"audio shutdown could not disable hardware: %d\n", ret);
+	if (active > 0)
+		msm_dp_audio_put_pm(audio);
 }
 
 struct msm_dp_audio *msm_dp_audio_get(struct platform_device *pdev,
-			      void __iomem *link_base)
+			      void __iomem *link_base,
+			      struct msm_dp_ctrl *ctrl,
+			      struct mutex *state_lock)
 {
 	int rc = 0;
 	struct msm_dp_audio_private *audio;
 	struct msm_dp_audio *msm_dp_audio;
 
-	if (!pdev) {
+	if (!pdev || !ctrl || !state_lock) {
 		DRM_ERROR("invalid input\n");
 		rc = -EINVAL;
 		goto error;
@@ -353,6 +448,8 @@ struct msm_dp_audio *msm_dp_audio_get(struct platform_device *pdev,
 
 	audio->pdev = pdev;
 	audio->link_base = link_base;
+	audio->ctrl = ctrl;
+	audio->state_lock = state_lock;
 
 	msm_dp_audio = &audio->msm_dp_audio;
 

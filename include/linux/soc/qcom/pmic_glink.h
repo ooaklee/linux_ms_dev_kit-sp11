@@ -22,6 +22,9 @@ struct pmic_glink_hdr {
 };
 
 int pmic_glink_send(struct pmic_glink_client *client, void *data, size_t len);
+u64 pmic_glink_get_generation(struct pmic_glink_client *client);
+int pmic_glink_send_generation(struct pmic_glink_client *client, void *data,
+			       size_t len, u64 generation);
 
 struct pmic_glink_client *devm_pmic_glink_client_alloc(struct device *dev,
 						       unsigned int id,
