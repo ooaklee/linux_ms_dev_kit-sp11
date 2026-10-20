@@ -6,11 +6,13 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
+#include <linux/kfifo.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/mutex.h>
 #include <linux/property.h>
+#include <linux/spinlock.h>
 #include <linux/soc/qcom/pdr.h>
 #include <drm/bridge/aux-bridge.h>
 
@@ -24,6 +26,8 @@
 #include <linux/soc/qcom/pmic_glink.h>
 
 #define PMIC_GLINK_MAX_PORTS	3
+/* Bound firmware-driven memory use; a full queue is reported, not overwritten. */
+#define PMIC_GLINK_MAX_EVENTS	64
 
 #define USBC_SC8180X_NOTIFY_IND	0x13
 #define USBC_CMD_WRITE_REQ      0x15
@@ -94,6 +98,19 @@ enum pmic_glink_altmode_pin_assignment {
 
 struct pmic_glink_altmode;
 
+struct pmic_glink_altmode_event {
+	u64 generation;
+	enum typec_orientation orientation;
+	u16 svid;
+	struct usbc_sc8280x_tbt_data tbt_data;
+	u8 mode;
+	u8 hpd_state;
+	u8 hpd_irq;
+	u8 mux_ctrl;
+	/* SC8180 notifications do not carry the SC8280 mux-control field. */
+	bool has_mux_ctrl;
+};
+
 #define work_to_altmode_port(w) container_of((w), struct pmic_glink_altmode_port, work)
 
 struct pmic_glink_altmode_port {
@@ -102,24 +119,16 @@ struct pmic_glink_altmode_port {
 
 	struct typec_switch *typec_switch;
 	struct typec_mux *typec_mux;
-	struct typec_mux_state state;
 	struct typec_retimer *typec_retimer;
-	struct typec_retimer_state retimer_state;
 	struct typec_altmode dp_alt;
 	struct typec_altmode tbt_alt;
 
 	struct work_struct work;
+	DECLARE_KFIFO(events, struct pmic_glink_altmode_event, PMIC_GLINK_MAX_EVENTS);
 
 	struct auxiliary_device *bridge;
-
-	enum typec_orientation orientation;
-	u16 svid;
-	struct usbc_sc8280x_tbt_data tbt_data;
-	u8 dp_data;
-	u8 mode;
-	u8 hpd_state;
-	u8 hpd_irq;
-	u8 mux_ctrl;
+	/* Last published HPD status, serialized by lifecycle_lock, not readiness. */
+	bool hpd_connected;
 };
 
 #define work_to_altmode(w) container_of((w), struct pmic_glink_altmode, enable_work)
@@ -131,18 +140,42 @@ struct pmic_glink_altmode {
 
 	/* To synchronize WRITE_REQ acks */
 	struct mutex lock;
+	/* Serializes provider/HPD apply and reconciliation, never request waits. */
+	struct mutex lifecycle_lock;
 
+	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
+	/* Protects queues/state; never held over providers, mutexes or ACK waits. */
+	spinlock_t event_lock;
+	bool stopping;
+	bool service_up;
+	/* Software cleanup completed for generation, not firmware readiness. */
+	bool reconciled;
+	u64 generation;
 
 	struct pmic_glink_altmode_port ports[PMIC_GLINK_MAX_PORTS];
 };
 
-static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cmd, u32 arg)
+static bool pmic_glink_altmode_current(struct pmic_glink_altmode *altmode, u64 generation)
+{
+	unsigned long flags;
+	bool valid;
+
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	valid = !altmode->stopping && altmode->service_up &&
+		generation == altmode->generation;
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+	return valid;
+}
+
+static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
+				      u32 cmd, u32 arg, u64 generation)
 {
 	struct usbc_write_req req = {};
+	unsigned long flags;
 	unsigned long left;
 	int ret;
 
@@ -152,19 +185,33 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 	 */
 	guard(mutex)(&altmode->lock);
 
+	if (!pmic_glink_altmode_current(altmode, generation))
+		return -ECONNRESET;
+
+	/* Clear stored credits, not late replies arriving after a new request. */
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	reinit_completion(&altmode->pan_ack);
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+
 	req.hdr.owner = cpu_to_le32(altmode->owner_id);
 	req.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP);
 	req.hdr.opcode = cpu_to_le32(USBC_CMD_WRITE_REQ);
 	req.cmd = cpu_to_le32(cmd);
 	req.arg = cpu_to_le32(arg);
 
-	ret = pmic_glink_send(altmode->client, &req, sizeof(req));
+	ret = pmic_glink_send_generation(altmode->client, &req, sizeof(req), generation);
 	if (ret) {
 		dev_err(altmode->dev, "failed to send altmode request: %#x (%d)\n", cmd, ret);
 		return ret;
 	}
 
+	if (!pmic_glink_altmode_current(altmode, generation))
+		return -ECONNRESET;
+
 	left = wait_for_completion_timeout(&altmode->pan_ack, 5 * HZ);
+	/* PDR/stop also wake the waiter; neither wake is a firmware response. */
+	if (!pmic_glink_altmode_current(altmode, generation))
+		return -ECONNRESET;
 	if (!left) {
 		dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
 		return -ETIMEDOUT;
@@ -173,13 +220,46 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 	return 0;
 }
 
-static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
+static int pmic_glink_altmode_set_mode(struct pmic_glink_altmode *altmode,
+				      struct pmic_glink_altmode_port *port,
+				      const struct pmic_glink_altmode_event *event,
+				      struct typec_altmode *alt,
+				      unsigned long mode, void *data)
+{
+	struct typec_mux_state state = { .alt = alt, .mode = mode, .data = data };
+	struct typec_retimer_state retimer_state = { .alt = alt, .mode = mode, .data = data };
+	int ret;
+
+	lockdep_assert_held(&altmode->lifecycle_lock);
+	if (!pmic_glink_altmode_current(altmode, event->generation))
+		return -ECONNRESET;
+
+	ret = typec_mux_set(port->typec_mux, &state);
+	if (ret) {
+		dev_err(altmode->dev, "failed to switch mux on port %u: %d\n",
+			port->index, ret);
+		return ret;
+	}
+
+	if (!pmic_glink_altmode_current(altmode, event->generation))
+		return -ECONNRESET;
+
+	ret = typec_retimer_set(port->typec_retimer, &retimer_state);
+	if (ret)
+		dev_err(altmode->dev, "failed to set retimer on port %u: %d\n",
+			port->index, ret);
+	if (!ret && !pmic_glink_altmode_current(altmode, event->generation))
+		return -ECONNRESET;
+	return ret;
+}
+
+static int pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 					 struct pmic_glink_altmode_port *port,
+					 const struct pmic_glink_altmode_event *event,
 					 u8 mode, bool hpd_state,
 					 bool hpd_irq)
 {
 	struct typec_displayport_data dp_data = {};
-	int ret;
 
 	dp_data.status = DP_STATUS_ENABLED;
 	if (hpd_state)
@@ -188,30 +268,17 @@ static void pmic_glink_altmode_enable_dp(struct pmic_glink_altmode *altmode,
 		dp_data.status |= DP_STATUS_IRQ_HPD;
 	dp_data.conf = DP_CONF_SET_PIN_ASSIGN(mode);
 
-	port->state.alt = &port->dp_alt;
-	port->state.data = &dp_data;
-	port->state.mode = TYPEC_MODAL_STATE(mode);
-
-	ret = typec_mux_set(port->typec_mux, &port->state);
-	if (ret)
-		dev_err(altmode->dev, "failed to switch mux to DP: %d\n", ret);
-
-	port->retimer_state.alt = &port->dp_alt;
-	port->retimer_state.data = &dp_data;
-	port->retimer_state.mode = TYPEC_MODAL_STATE(mode);
-
-	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
-	if (ret)
-		dev_err(altmode->dev, "failed to setup retimer to DP: %d\n", ret);
+	return pmic_glink_altmode_set_mode(altmode, port, event, &port->dp_alt,
+					 TYPEC_MODAL_STATE(mode), &dp_data);
 }
 
-static void pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
-					  struct pmic_glink_altmode_port *port)
+static int pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
+					 struct pmic_glink_altmode_port *port,
+					 const struct pmic_glink_altmode_event *event)
 {
-	struct usbc_sc8280x_tbt_data *tbt = &port->tbt_data;
+	const struct usbc_sc8280x_tbt_data *tbt = &event->tbt_data;
 	struct typec_thunderbolt_data tbt_data = {};
 	u32 cable_speed;
-	int ret;
 
 	/* Device Discover Mode VDO */
 	tbt_data.device_mode = TBT_MODE;
@@ -246,29 +313,16 @@ static void pmic_glink_altmode_enable_tbt(struct pmic_glink_altmode *altmode,
 		tbt_data.enter_vdo |= TBT_SET_CABLE_ROUNDED(tbt->rounded_cable);
 	}
 
-	port->state.alt = &port->tbt_alt;
-	port->state.data = &tbt_data;
-	port->state.mode = TYPEC_MODAL_STATE(port->mode);
-
-	ret = typec_mux_set(port->typec_mux, &port->state);
-	if (ret)
-		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
-
-	port->retimer_state.alt = &port->tbt_alt;
-	port->retimer_state.data = &tbt_data;
-	port->retimer_state.mode = TYPEC_MODAL_STATE(port->mode);
-
-	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
-	if (ret)
-		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+	return pmic_glink_altmode_set_mode(altmode, port, event, &port->tbt_alt,
+					 TYPEC_TBT_MODE, &tbt_data);
 }
 
-static void pmic_glink_altmode_enable_usb4(struct pmic_glink_altmode *altmode,
-					   struct pmic_glink_altmode_port *port)
+static int pmic_glink_altmode_enable_usb4(struct pmic_glink_altmode *altmode,
+					  struct pmic_glink_altmode_port *port,
+					  const struct pmic_glink_altmode_event *event)
 {
-	struct usbc_sc8280x_tbt_data *tbt = &port->tbt_data;
+	const struct usbc_sc8280x_tbt_data *tbt = &event->tbt_data;
 	struct enter_usb_data data = {};
-	int ret;
 
 	data.eudo = FIELD_PREP(EUDO_USB_MODE_MASK, EUDO_USB_MODE_USB4);
 
@@ -284,116 +338,152 @@ static void pmic_glink_altmode_enable_usb4(struct pmic_glink_altmode *altmode,
 
 	data.eudo |= FIELD_PREP(EUDO_CABLE_TYPE_MASK, tbt->cable_type);
 
-	port->state.alt = NULL;
-	port->state.data = &data;
-	port->state.mode = TYPEC_MODE_USB4;
-
-	ret = typec_mux_set(port->typec_mux, &port->state);
-	if (ret)
-		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
-
-	port->retimer_state.alt = NULL;
-	port->retimer_state.data = &data;
-	port->retimer_state.mode = TYPEC_MODE_USB4;
-
-	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
-	if (ret)
-		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+	return pmic_glink_altmode_set_mode(altmode, port, event, NULL, TYPEC_MODE_USB4, &data);
 }
 
-static void pmic_glink_altmode_enable_usb(struct pmic_glink_altmode *altmode,
-					  struct pmic_glink_altmode_port *port)
+static int pmic_glink_altmode_enable_usb(struct pmic_glink_altmode *altmode,
+					  struct pmic_glink_altmode_port *port,
+					  const struct pmic_glink_altmode_event *event)
 {
-	int ret;
-
-	port->state.alt = NULL;
-	port->state.data = NULL;
-	port->state.mode = TYPEC_STATE_USB;
-
-	ret = typec_mux_set(port->typec_mux, &port->state);
-	if (ret)
-		dev_err(altmode->dev, "failed to switch mux to USB: %d\n", ret);
-
-	port->retimer_state.alt = NULL;
-	port->retimer_state.data = NULL;
-	port->retimer_state.mode = TYPEC_STATE_USB;
-
-	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
-	if (ret)
-		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+	return pmic_glink_altmode_set_mode(altmode, port, event, NULL, TYPEC_STATE_USB, NULL);
 }
 
-static void pmic_glink_altmode_safe(struct pmic_glink_altmode *altmode,
-				    struct pmic_glink_altmode_port *port)
+static int pmic_glink_altmode_safe(struct pmic_glink_altmode *altmode,
+				    struct pmic_glink_altmode_port *port,
+				    const struct pmic_glink_altmode_event *event)
 {
-	int ret;
-
-	port->state.alt = NULL;
-	port->state.data = NULL;
-	port->state.mode = TYPEC_STATE_SAFE;
-
-	ret = typec_mux_set(port->typec_mux, &port->state);
-	if (ret)
-		dev_err(altmode->dev, "failed to switch mux to safe mode: %d\n", ret);
-
-	port->retimer_state.alt = NULL;
-	port->retimer_state.data = NULL;
-	port->retimer_state.mode = TYPEC_STATE_SAFE;
-
-	ret = typec_retimer_set(port->typec_retimer, &port->retimer_state);
-	if (ret)
-		dev_err(altmode->dev, "failed to setup retimer to USB: %d\n", ret);
+	return pmic_glink_altmode_set_mode(altmode, port, event, NULL, TYPEC_STATE_SAFE, NULL);
 }
 
-static void pmic_glink_altmode_worker(struct work_struct *work)
+static void pmic_glink_altmode_apply(struct pmic_glink_altmode_port *alt_port,
+				     const struct pmic_glink_altmode_event *event)
 {
-	struct pmic_glink_altmode_port *alt_port = work_to_altmode_port(work);
 	struct pmic_glink_altmode *altmode = alt_port->altmode;
-	enum drm_connector_status conn_status;
+	bool dp = event->svid == USB_TYPEC_DP_SID;
+	int ret;
 
-	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
+	lockdep_assert_held(&altmode->lifecycle_lock);
+	if (!pmic_glink_altmode_current(altmode, event->generation))
+		return;
+
+	ret = typec_switch_set(alt_port->typec_switch, event->orientation);
+	if (ret) {
+		dev_err(altmode->dev, "failed to set orientation on port %u: %d\n",
+			alt_port->index, ret);
+		goto out_hpd;
+	}
+
+	if (!pmic_glink_altmode_current(altmode, event->generation))
+		return;
 
 	/*
 	 * MUX_CTRL_STATE_DP4LN/USB3_DP may only be set if SVID=DP, but we need
 	 * to special-case the SVID=DP && mux_ctrl=NO_CONN case to deliver a
 	 * HPD notification
 	 */
-	if (alt_port->svid == USB_TYPEC_DP_SID) {
-		if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
-			pmic_glink_altmode_safe(altmode, alt_port);
+	if (dp) {
+		if (event->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
+			ret = pmic_glink_altmode_safe(altmode, alt_port, event);
 		} else {
-			pmic_glink_altmode_enable_dp(altmode, alt_port,
-						     alt_port->mode,
-						     alt_port->hpd_state,
-						     alt_port->hpd_irq);
+			ret = pmic_glink_altmode_enable_dp(altmode, alt_port,
+						    event,
+						    event->mode,
+						    event->hpd_state,
+						    event->hpd_irq);
 		}
-
-		if (alt_port->hpd_state)
-			conn_status = connector_status_connected;
+	} else if (event->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
+		if (event->svid == USB_TYPEC_TBT_SID)
+			ret = pmic_glink_altmode_enable_tbt(altmode, alt_port, event);
 		else
-			conn_status = connector_status_disconnected;
-
-		drm_aux_hpd_bridge_notify_extra(&alt_port->bridge->dev,
-						conn_status,
-						alt_port->hpd_irq ?
-						DRM_CONNECTOR_DP_IRQ_HPD :
-						DRM_CONNECTOR_NO_EXTRA_STATUS);
-	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
-		if (alt_port->svid == USB_TYPEC_TBT_SID)
-			pmic_glink_altmode_enable_tbt(altmode, alt_port);
-		else
-			pmic_glink_altmode_enable_usb4(altmode, alt_port);
-	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_USB3_ONLY) {
-		pmic_glink_altmode_enable_usb(altmode, alt_port);
-	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
-		pmic_glink_altmode_safe(altmode, alt_port);
+			ret = pmic_glink_altmode_enable_usb4(altmode, alt_port, event);
+	} else if (event->mux_ctrl == MUX_CTRL_STATE_USB3_ONLY) {
+		ret = pmic_glink_altmode_enable_usb(altmode, alt_port, event);
+	} else if (event->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
+		ret = pmic_glink_altmode_safe(altmode, alt_port, event);
 	} else {
 		dev_err(altmode->dev, "Got unknown mux_ctrl: %u on port %u, forcing safe mode\n",
-			alt_port->mux_ctrl, alt_port->index);
-		pmic_glink_altmode_safe(altmode, alt_port);
+			event->mux_ctrl, alt_port->index);
+		ret = pmic_glink_altmode_safe(altmode, alt_port, event);
 	}
 
-	pmic_glink_altmode_request(altmode, ALTMODE_PAN_ACK, alt_port->index);
+out_hpd:
+	if (!pmic_glink_altmode_current(altmode, event->generation))
+		return;
+
+	/* A real disconnect remains meaningful even if hardware programming failed. */
+	if ((dp && (!event->hpd_state ||
+		    (event->has_mux_ctrl && event->mux_ctrl == MUX_CTRL_STATE_NO_CONN))) ||
+	    (event->has_mux_ctrl && event->mux_ctrl == MUX_CTRL_STATE_NO_CONN &&
+	     alt_port->hpd_connected)) {
+		drm_aux_hpd_bridge_notify_extra(&alt_port->bridge->dev,
+						connector_status_disconnected,
+						dp && event->hpd_irq ?
+						DRM_CONNECTOR_DP_IRQ_HPD :
+						DRM_CONNECTOR_NO_EXTRA_STATUS);
+		alt_port->hpd_connected = false;
+	} else if (!ret && dp) {
+		drm_aux_hpd_bridge_notify_extra(&alt_port->bridge->dev,
+						connector_status_connected,
+						event->hpd_irq ?
+						DRM_CONNECTOR_DP_IRQ_HPD :
+						DRM_CONNECTOR_NO_EXTRA_STATUS);
+		alt_port->hpd_connected = true;
+	}
+}
+
+static void pmic_glink_altmode_worker(struct work_struct *work)
+{
+	struct pmic_glink_altmode_port *port = work_to_altmode_port(work);
+	struct pmic_glink_altmode *altmode = port->altmode;
+	struct pmic_glink_altmode_event event;
+	unsigned long flags;
+
+	scoped_guard(mutex, &altmode->lifecycle_lock) {
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		if (altmode->stopping || !altmode->service_up || !altmode->reconciled ||
+		    !kfifo_get(&port->events, &event)) {
+			spin_unlock_irqrestore(&altmode->event_lock, flags);
+			return;
+		}
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+
+		pmic_glink_altmode_apply(port, &event);
+	}
+
+	/* Other ports/reconciliation may proceed while this request waits. */
+	pmic_glink_altmode_request(altmode, ALTMODE_PAN_ACK, port->index, event.generation);
+
+	/* Allow the freezer between events, including when an ACK times out. */
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	if (!altmode->stopping && altmode->service_up && altmode->reconciled &&
+	    !kfifo_is_empty(&port->events))
+		queue_work(system_freezable_wq, &port->work);
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+}
+
+static void pmic_glink_altmode_queue_event(struct pmic_glink_altmode_port *port,
+					  const struct pmic_glink_altmode_event *event)
+{
+	struct pmic_glink_altmode *altmode = port->altmode;
+	struct pmic_glink_altmode_event pending = *event;
+	unsigned long flags;
+	bool queued;
+
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	if (altmode->stopping || !altmode->service_up) {
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+		return;
+	}
+	pending.generation = altmode->generation;
+	queued = kfifo_put(&port->events, pending);
+	if (queued)
+		queue_work(system_freezable_wq, &port->work);
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+
+	/* Never overwrite older events or invent ACK/replay semantics on rejection. */
+	if (!queued)
+		dev_err_ratelimited(altmode->dev, "altmode event queue full on port %u\n",
+				    port->index);
 }
 
 static enum typec_orientation pmic_glink_altmode_orientation(unsigned int orientation)
@@ -417,6 +507,7 @@ static void pmic_glink_altmode_sc8180xp_notify(struct pmic_glink_altmode *altmod
 					       const void *data, size_t len)
 {
 	struct pmic_glink_altmode_port *alt_port;
+	struct pmic_glink_altmode_event event = {};
 	const struct usbc_sc8180x_notify *msg;
 	u32 notification;
 	u8 orientation;
@@ -449,12 +540,13 @@ static void pmic_glink_altmode_sc8180xp_notify(struct pmic_glink_altmode *altmod
 	}
 
 	alt_port = &altmode->ports[port];
-	alt_port->orientation = pmic_glink_altmode_orientation(orientation);
-	alt_port->svid = svid;
-	alt_port->mode = mode;
-	alt_port->hpd_state = hpd_state;
-	alt_port->hpd_irq = hpd_irq;
-	queue_work(system_freezable_wq, &alt_port->work);
+	event.orientation = pmic_glink_altmode_orientation(orientation);
+	event.svid = svid;
+	event.mode = mode;
+	event.hpd_state = hpd_state;
+	event.hpd_irq = hpd_irq;
+	/* Do not infer SC8280 mux states from this legacy notification format. */
+	pmic_glink_altmode_queue_event(alt_port, &event);
 }
 
 #define SC8280XP_DPAM_MASK	0x3f
@@ -465,6 +557,7 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 					       u16 svid, const void *data, size_t len)
 {
 	struct pmic_glink_altmode_port *alt_port;
+	struct pmic_glink_altmode_event event = {};
 	const struct usbc_sc8280x_tbt_data *tbt;
 	const struct usbc_sc8280x_dp_data *dp;
 	const struct usbc_notify *notify;
@@ -488,30 +581,32 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 	}
 
 	alt_port = &altmode->ports[port];
-	alt_port->orientation = pmic_glink_altmode_orientation(orientation);
-	alt_port->svid = svid;
-	alt_port->mux_ctrl = notify->mux_ctrl;
+	event.orientation = pmic_glink_altmode_orientation(orientation);
+	event.svid = svid;
+	event.mux_ctrl = notify->mux_ctrl;
+	event.has_mux_ctrl = true;
 
 	if (svid == USB_TYPEC_DP_SID) {
 		dp = &notify->extended_data.dp;
 
-		alt_port->mode = dp->pin_assignment - DPAM_HPD_A;
-		alt_port->hpd_state = dp->hpd_state;
-		alt_port->hpd_irq = dp->hpd_irq;
-	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
+		event.mode = dp->pin_assignment - DPAM_HPD_A;
+		event.hpd_state = dp->hpd_state;
+		event.hpd_irq = dp->hpd_irq;
+	} else if (event.mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
 		/* Valid for both USB4 and TBT3 */
 		tbt = &notify->extended_data.tbt;
 
-		alt_port->tbt_data = *tbt;
+		event.tbt_data = *tbt;
 	}
 
-	queue_work(system_freezable_wq, &alt_port->work);
+	pmic_glink_altmode_queue_event(alt_port, &event);
 }
 
 static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv)
 {
 	struct pmic_glink_altmode *altmode = priv;
 	const struct pmic_glink_hdr *hdr = data;
+	unsigned long flags;
 	u16 opcode;
 	u16 svid;
 
@@ -520,7 +615,9 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:
+		spin_lock_irqsave(&altmode->event_lock, flags);
 		complete(&altmode->pan_ack);
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		break;
 	case USBC_NOTIFY_IND:
 		pmic_glink_altmode_sc8280xp_notify(altmode, svid, data, len);
@@ -549,19 +646,108 @@ static void pmic_glink_altmode_put_switch(void *data)
 static void pmic_glink_altmode_enable_worker(struct work_struct *work)
 {
 	struct pmic_glink_altmode *altmode = work_to_altmode(work);
+	struct pmic_glink_altmode_port *port;
+	unsigned long flags;
+	unsigned int i;
+	u64 generation;
+	bool up;
 	int ret;
 
-	ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0);
+	scoped_guard(mutex, &altmode->lifecycle_lock) {
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		/* A coalesced run may already have reconciled the latest generation. */
+		if (altmode->stopping || altmode->reconciled) {
+			spin_unlock_irqrestore(&altmode->event_lock, flags);
+			return;
+		}
+		generation = altmode->generation;
+		up = altmode->service_up;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+
+		/* An old in-flight publication finishes before this reconciliation. */
+		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+			port = &altmode->ports[i];
+			if (!port->altmode)
+				continue;
+			if (port->hpd_connected)
+				drm_aux_hpd_bridge_notify(&port->bridge->dev,
+							  connector_status_disconnected);
+			port->hpd_connected = false;
+		}
+
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		if (!altmode->stopping && up && altmode->service_up &&
+		    generation == altmode->generation) {
+			/* DOWN stays closed; a matching UP cleanup opens the barrier. */
+			altmode->reconciled = true;
+			for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+				port = &altmode->ports[i];
+				if (port->altmode && !kfifo_is_empty(&port->events))
+					queue_work(system_freezable_wq, &port->work);
+			}
+		}
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+	}
+
+	if (!up)
+		return;
+
+	/* Reconciled is software state, not a dependency on a PAN_EN reply. */
+	ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
 	if (ret)
-		dev_err(altmode->dev, "failed to request altmode notifications: %d\n", ret);
+		dev_err(altmode->dev, "failed to request altmode notifications, generation %llu: %d\n",
+			(unsigned long long)generation, ret);
 }
 
 static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 {
 	struct pmic_glink_altmode *altmode = priv;
+	u64 generation = pmic_glink_get_generation(altmode->client);
+	bool up = state == SERVREG_SERVICE_STATE_UP;
+	unsigned long flags;
+	unsigned int i;
 
-	if (state == SERVREG_SERVICE_STATE_UP)
-		schedule_work(&altmode->enable_work);
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	if (!altmode->stopping &&
+	    (generation != altmode->generation || up != altmode->service_up)) {
+		altmode->generation = generation;
+		altmode->service_up = up;
+		altmode->reconciled = false;
+		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+			if (altmode->ports[i].altmode)
+				kfifo_reset(&altmode->ports[i].events);
+		}
+		/* Wake a waiter to reject this generation change, not to ACK it. */
+		complete(&altmode->pan_ack);
+		queue_work(system_freezable_wq, &altmode->enable_work);
+	}
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+}
+
+static void pmic_glink_altmode_stop(void *data)
+{
+	struct pmic_glink_altmode *altmode = data;
+	struct pmic_glink_altmode_port *port;
+	unsigned long flags;
+	unsigned int i;
+
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	altmode->stopping = true;
+	/* The post-send/wait state checks turn this local wake into cancellation. */
+	complete(&altmode->pan_ack);
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+
+	/* Keep the registered client alive so an in-flight ACK can complete. */
+	cancel_work_sync(&altmode->enable_work);
+	for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+		port = &altmode->ports[i];
+		if (!port->altmode)
+			continue;
+		cancel_work_sync(&port->work);
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		kfifo_reset(&port->events);
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+	}
 }
 
 static const struct of_device_id pmic_glink_altmode_of_quirks[] = {
@@ -595,6 +781,8 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 	INIT_WORK(&altmode->enable_work, pmic_glink_altmode_enable_worker);
 	init_completion(&altmode->pan_ack);
 	mutex_init(&altmode->lock);
+	mutex_init(&altmode->lifecycle_lock);
+	spin_lock_init(&altmode->event_lock);
 
 	device_for_each_child_node(dev, fwnode) {
 		ret = fwnode_property_read_u32(fwnode, "reg", &port);
@@ -619,6 +807,7 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 		alt_port->altmode = altmode;
 		alt_port->index = port;
 		INIT_WORK(&alt_port->work, pmic_glink_altmode_worker);
+		INIT_KFIFO(alt_port->events);
 
 		alt_port->bridge = devm_drm_dp_hpd_bridge_alloc(dev, to_of_node(fwnode));
 		if (IS_ERR(alt_port->bridge)) {
@@ -697,6 +886,11 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 						       altmode);
 	if (IS_ERR(altmode->client))
 		return PTR_ERR(altmode->client);
+
+	/* Runs before client release and before Type-C/DRM providers are released. */
+	ret = devm_add_action_or_reset(dev, pmic_glink_altmode_stop, altmode);
+	if (ret)
+		return ret;
 
 	pmic_glink_client_register(altmode->client);
 

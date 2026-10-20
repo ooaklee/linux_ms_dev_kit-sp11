@@ -11,6 +11,9 @@
 #include <sound/hdmi-codec.h>
 
 struct drm_bridge;
+struct msm_dp;
+struct msm_dp_ctrl;
+struct mutex;
 
 /**
  * struct msm_dp_audio
@@ -29,12 +32,26 @@ struct msm_dp_audio {
  *
  * @pdev: caller's platform device instance.
  * @link_base: pointer to the msm_dp_link resource.
+ * @ctrl: display controller sharing the audio transition lock.
+ * @state_lock: display-owned lock, acquired only after a parent-PM lease.
  *
  * Returns the error code in case of failure, otherwize
  * an instance of newly created msm_dp_module.
  */
 struct msm_dp_audio *msm_dp_audio_get(struct platform_device *pdev,
-			      void __iomem *link_base);
+			      void __iomem *link_base,
+			      struct msm_dp_ctrl *ctrl,
+			      struct mutex *state_lock);
+
+/*
+ * Caller holds state_lock and an active parent-PM lease. Stop audio before
+ * controller/clock teardown; late ALSA shutdown is then a logical no-op.
+ * A nonzero result retains audio_enabled: hardware stop was not confirmed.
+ */
+int msm_dp_audio_stop(struct msm_dp *msm_dp_display);
+
+/* Same lock/lease contract; restore only current, accepted ALSA prepare intent. */
+int msm_dp_audio_restart(struct msm_dp *msm_dp_display);
 
 /**
  * msm_dp_audio_put()
