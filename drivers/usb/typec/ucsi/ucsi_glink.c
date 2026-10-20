@@ -243,6 +243,9 @@ static void pmic_glink_ucsi_read_ack(struct pmic_glink_ucsi *ucsi, const void *d
 	u32 ret_code, resp_len, buf_len = 0;
 	u8 *buf;
 
+	if (len < sizeof(struct pmic_glink_hdr) + sizeof(u32))
+		return;
+
 	if (ucsi->ucsi->version) {
 		if (ucsi->ucsi->version >= UCSI_VERSION_2_0) {
 			buf = ((struct ucsi_read_buf_resp_msg *)data)->buf.v2_buf;
@@ -288,6 +291,9 @@ static void pmic_glink_ucsi_read_ack(struct pmic_glink_ucsi *ucsi, const void *d
 static void pmic_glink_ucsi_write_ack(struct pmic_glink_ucsi *ucsi, const void *data, int len)
 {
 	const struct ucsi_write_buf_resp_msg *resp = data;
+
+	if (len < sizeof(*resp))
+		return;
 
 	if (resp->ret_code)
 		return;
@@ -361,6 +367,10 @@ static void pmic_glink_ucsi_pdr_notify(void *priv, int state)
 static void pmic_glink_ucsi_destroy(void *data)
 {
 	struct pmic_glink_ucsi *ucsi = data;
+
+	/* Drain the work items before ucsi_destroy() frees the ucsi instance */
+	cancel_work_sync(&ucsi->notify_work);
+	cancel_work_sync(&ucsi->register_work);
 
 	/* Protect to make sure we're not in a middle of a transaction from a glink callback */
 	mutex_lock(&ucsi->lock);
@@ -467,8 +477,15 @@ static void pmic_glink_ucsi_remove(struct auxiliary_device *adev)
 {
 	struct pmic_glink_ucsi *ucsi = dev_get_drvdata(&adev->dev);
 
-	/* Unregister first to stop having read & writes */
-	ucsi_unregister(ucsi->ucsi);
+	/* Callbacks can queue work until devres releases the client */
+	disable_work_sync(&ucsi->notify_work);
+	disable_work_sync(&ucsi->register_work);
+
+	/* register_work may have unregistered the instance already */
+	if (ucsi->ucsi_registered) {
+		ucsi->ucsi_registered = false;
+		ucsi_unregister(ucsi->ucsi);
+	}
 }
 
 static const struct auxiliary_device_id pmic_glink_ucsi_id_table[] = {
