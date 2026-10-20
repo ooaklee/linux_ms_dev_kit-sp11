@@ -13,6 +13,7 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <media/media-entity.h>
@@ -579,7 +580,7 @@ csiphy_match_clock_name(const char *clock_name, const char *format, ...)
  *
  * Return 0 on success or a negative error code otherwise
  */
-int msm_csiphy_subdev_init(struct camss *camss,
+static int msm_csiphy_subdev_init_legacy(struct camss *camss,
 			   struct csiphy_device *csiphy,
 			   const struct camss_subdev_resources *res, u8 id)
 {
@@ -710,6 +711,104 @@ int msm_csiphy_subdev_init(struct camss *camss,
 }
 
 /*
+ * Denali's named PHY providers own their registers, clocks and regulators.
+ * This adapter deliberately does not invoke the inline legacy initializer.
+ * PHY API design source: Bryan O'Donoghue's CAMSS PHY API support:
+ * https://patch.msgid.link/20250711-b4-linux-next-25-03-13-dtsi-x1e80100-camss-v7-4-0bc5da82f526@linaro.org
+ */
+static void csiphy_external_exit(void *data)
+{
+	struct csiphy_device *csiphy = data;
+	int ret;
+
+	if (!csiphy->external_phy_initialized)
+		return;
+
+	/*
+	 * The managed action runs before devm_phy_get() releases its reference.
+	 * This prerequisite cannot start a stream; the C-PHY follow-on must stop
+	 * its powered PHY before this action is reached.
+	 */
+	ret = phy_exit(csiphy->external_phy);
+	if (ret)
+		dev_warn(csiphy->camss->dev, "csiphy%u exit failed: %d\n",
+			 csiphy->id, ret);
+
+	csiphy->external_phy_initialized = false;
+}
+
+static int csiphy_external_init(struct camss *camss,
+			       struct csiphy_device *csiphy,
+			       const struct camss_subdev_resources *res, u8 id)
+{
+	struct device_node *np = camss->dev->of_node;
+	struct of_phandle_args args;
+	struct device *dev = camss->dev;
+	char name[16];
+	bool available;
+	int index, ret;
+
+	csiphy->camss = camss;
+	csiphy->id = id;
+	csiphy->res = &res->csiphy;
+
+	snprintf(name, sizeof(name), "csiphy%u", id);
+	index = of_property_match_string(np, "phy-names", name);
+	if (index == -ENODATA)
+		/* A resource-table slot need not have a declared external PHY. */
+		return 0;
+	if (index < 0)
+		return index;
+
+	ret = of_parse_phandle_with_args(np, "phys", "#phy-cells",
+					 index, &args);
+	if (ret)
+		return ret;
+
+	available = of_device_is_available(args.np);
+	of_node_put(args.np);
+	if (!available)
+		/* Disabled providers are not initialized or registered. */
+		return 0;
+
+	csiphy->external_phy = devm_phy_get(dev, name);
+	if (IS_ERR(csiphy->external_phy)) {
+		ret = PTR_ERR(csiphy->external_phy);
+		csiphy->external_phy = NULL;
+		return dev_err_probe(dev, ret, "failed to get %s\n", name);
+	}
+
+	ret = phy_init(csiphy->external_phy);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to initialize %s\n", name);
+
+	csiphy->external_phy_initialized = true;
+	return devm_add_action_or_reset(dev, csiphy_external_exit, csiphy);
+}
+
+bool msm_csiphy_is_available(const struct csiphy_device *csiphy)
+{
+	return !csiphy->camss->denali_external_phys ||
+	       csiphy->external_phy_initialized;
+}
+
+void msm_csiphy_subdev_cleanup(struct csiphy_device *csiphy)
+{
+	if (csiphy->external_phy_initialized)
+		devm_release_action(csiphy->camss->dev, csiphy_external_exit, csiphy);
+}
+
+int msm_csiphy_subdev_init(struct camss *camss,
+			   struct csiphy_device *csiphy,
+			   const struct camss_subdev_resources *res, u8 id)
+{
+	if (camss->denali_external_phys)
+		return csiphy_external_init(camss, csiphy, res, id);
+
+	return msm_csiphy_subdev_init_legacy(camss, csiphy, res, id);
+}
+
+/*
  * csiphy_link_setup - Setup CSIPHY connections
  * @entity: Pointer to media entity structure
  * @local: Pointer to local pad
@@ -773,6 +872,151 @@ static const struct media_entity_operations csiphy_media_ops = {
 	.link_validate = v4l2_subdev_link_validate,
 };
 
+static int csiphy_external_validate_pad(struct v4l2_subdev *sd,
+					struct v4l2_subdev_state *state,
+					unsigned int pad,
+					enum v4l2_subdev_format_whence which)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+
+	if (!csiphy->external_phy_initialized ||
+	    !csiphy->external_phy_registered)
+		return -ENODEV;
+	if (pad >= MSM_CSIPHY_PADS_NUM ||
+	    (which != V4L2_SUBDEV_FORMAT_ACTIVE &&
+	     which != V4L2_SUBDEV_FORMAT_TRY) ||
+	    (which == V4L2_SUBDEV_FORMAT_TRY && !state))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int csiphy_external_enum_mbus_code(struct v4l2_subdev *sd,
+					  struct v4l2_subdev_state *state,
+					  struct v4l2_subdev_mbus_code_enum *code)
+{
+	int ret = csiphy_external_validate_pad(sd, state, code->pad, code->which);
+
+	return ret ?: csiphy_enum_mbus_code(sd, state, code);
+}
+
+static int csiphy_external_enum_frame_size(struct v4l2_subdev *sd,
+					   struct v4l2_subdev_state *state,
+					   struct v4l2_subdev_frame_size_enum *fse)
+{
+	int ret = csiphy_external_validate_pad(sd, state, fse->pad, fse->which);
+
+	return ret ?: csiphy_enum_frame_size(sd, state, fse);
+}
+
+static int csiphy_external_get_format(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_format *fmt)
+{
+	int ret = csiphy_external_validate_pad(sd, state, fmt->pad, fmt->which);
+
+	return ret ?: csiphy_get_format(sd, state, fmt);
+}
+
+static int csiphy_external_set_format(struct v4l2_subdev *sd,
+				       struct v4l2_subdev_state *state,
+				       struct v4l2_subdev_format *fmt)
+{
+	int ret = csiphy_external_validate_pad(sd, state, fmt->pad, fmt->which);
+
+	return ret ?: csiphy_set_format(sd, state, fmt);
+}
+
+static int csiphy_external_open(struct v4l2_subdev *sd,
+				 struct v4l2_subdev_fh *fh)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+
+	if (!csiphy->external_phy_initialized ||
+	    !csiphy->external_phy_registered)
+		return -ENODEV;
+
+	return csiphy_init_formats(sd, fh);
+}
+
+/*
+ * Prerequisite only: a separate corrected C-PHY route must implement its
+ * constrained configure/power-on/off sequence before any sensor is enabled.
+ * Do not send this provider through the legacy register implementation.
+ */
+static int csiphy_external_set_stream(struct v4l2_subdev *sd, int enable)
+{
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+
+	if (!csiphy->external_phy_initialized ||
+	    !csiphy->external_phy_registered)
+		return -ENODEV;
+
+	return enable ? -EOPNOTSUPP : 0;
+}
+
+static int csiphy_external_link_setup(struct media_entity *entity,
+				       const struct media_pad *local,
+				       const struct media_pad *remote, u32 flags)
+{
+	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
+	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
+	struct camss *camss = csiphy->camss;
+	unsigned int i;
+
+	if (!csiphy->external_phy_initialized ||
+	    !csiphy->external_phy_registered)
+		return -ENODEV;
+	if (local->entity != entity || local->index >= MSM_CSIPHY_PADS_NUM ||
+	    local != &csiphy->pads[local->index] ||
+	    remote->index >= remote->entity->num_pads ||
+	    remote != &remote->entity->pads[remote->index] ||
+	    !is_media_entity_v4l2_subdev(remote->entity))
+		return -EINVAL;
+
+	if (local->index == MSM_CSIPHY_PAD_SRC) {
+		if (remote->index != MSM_CSID_PAD_SINK)
+			return -EINVAL;
+		for (i = 0; i < camss->res->csid_num; i++)
+			if (remote->entity == &camss->csid[i].subdev.entity)
+				break;
+		if (i == camss->res->csid_num)
+			return -EINVAL;
+	} else {
+		sd = media_entity_to_v4l2_subdev(remote->entity);
+		if (!(remote->flags & MEDIA_PAD_FL_SOURCE) ||
+		    sd->host_priv != csiphy)
+			return -EINVAL;
+	}
+
+	return csiphy_link_setup(entity, local, remote, flags);
+}
+
+static const struct v4l2_subdev_video_ops csiphy_external_video_ops = {
+	.s_stream = csiphy_external_set_stream,
+};
+
+static const struct v4l2_subdev_pad_ops csiphy_external_pad_ops = {
+	.enum_mbus_code = csiphy_external_enum_mbus_code,
+	.enum_frame_size = csiphy_external_enum_frame_size,
+	.get_fmt = csiphy_external_get_format,
+	.set_fmt = csiphy_external_set_format,
+};
+
+static const struct v4l2_subdev_ops csiphy_external_v4l2_ops = {
+	.video = &csiphy_external_video_ops,
+	.pad = &csiphy_external_pad_ops,
+};
+
+static const struct v4l2_subdev_internal_ops csiphy_external_internal_ops = {
+	.open = csiphy_external_open,
+};
+
+static const struct media_entity_operations csiphy_external_media_ops = {
+	.link_setup = csiphy_external_link_setup,
+	.link_validate = v4l2_subdev_link_validate,
+};
+
 /*
  * msm_csiphy_register_entity - Register subdev node for CSIPHY module
  * @csiphy: CSIPHY device
@@ -788,8 +1032,16 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	struct device *dev = csiphy->camss->dev;
 	int ret;
 
-	v4l2_subdev_init(sd, &csiphy_v4l2_ops);
-	sd->internal_ops = &csiphy_v4l2_internal_ops;
+	if (!msm_csiphy_is_available(csiphy))
+		return 0;
+
+	if (csiphy->camss->denali_external_phys) {
+		v4l2_subdev_init(sd, &csiphy_external_v4l2_ops);
+		sd->internal_ops = &csiphy_external_internal_ops;
+	} else {
+		v4l2_subdev_init(sd, &csiphy_v4l2_ops);
+		sd->internal_ops = &csiphy_v4l2_internal_ops;
+	}
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d",
 		 MSM_CSIPHY_NAME, csiphy->id);
@@ -806,7 +1058,10 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	pads[MSM_CSIPHY_PAD_SRC].flags = MEDIA_PAD_FL_SOURCE;
 
 	sd->entity.function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
-	sd->entity.ops = &csiphy_media_ops;
+	if (csiphy->camss->denali_external_phys)
+		sd->entity.ops = &csiphy_external_media_ops;
+	else
+		sd->entity.ops = &csiphy_media_ops;
 	ret = media_entity_pads_init(&sd->entity, MSM_CSIPHY_PADS_NUM, pads);
 	if (ret < 0) {
 		dev_err(dev, "Failed to init media entity: %d\n", ret);
@@ -817,6 +1072,8 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 	if (ret < 0) {
 		dev_err(dev, "Failed to register subdev: %d\n", ret);
 		media_entity_cleanup(&sd->entity);
+	} else if (csiphy->camss->denali_external_phys) {
+		csiphy->external_phy_registered = true;
 	}
 
 	return ret;
@@ -828,6 +1085,12 @@ int msm_csiphy_register_entity(struct csiphy_device *csiphy,
  */
 void msm_csiphy_unregister_entity(struct csiphy_device *csiphy)
 {
+	if (csiphy->camss->denali_external_phys) {
+		if (!csiphy->external_phy_registered)
+			return;
+		csiphy->external_phy_registered = false;
+	}
+
 	v4l2_device_unregister_subdev(&csiphy->subdev);
 	media_entity_cleanup(&csiphy->subdev.entity);
 }

@@ -7,6 +7,7 @@
  * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/interconnect.h>
 #include <linux/media-bus-format.h>
@@ -4745,6 +4746,7 @@ static int camss_parse_endpoint_node(struct device *dev,
 				     struct camss_async_subdev *csd)
 {
 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
+	struct camss *camss = dev_get_drvdata(dev);
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
 	unsigned int i;
@@ -4762,6 +4764,13 @@ static int camss_parse_endpoint_node(struct device *dev,
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
+
+	if (camss->denali_external_phys &&
+	    (vep.base.port >= camss->res->csiphy_num ||
+	     camss->csiphy[vep.base.port].id != vep.base.port ||
+	     !msm_csiphy_is_available(&camss->csiphy[vep.base.port])))
+		return dev_err_probe(dev, -ENODEV,
+				     "endpoint has no initialized Denali PHY\n");
 
 	csd->interface.csiphy_id = vep.base.port;
 
@@ -4929,6 +4938,12 @@ static int camss_link_entities(struct camss *camss)
 	int ret;
 
 	for (i = 0; i < camss->res->csiphy_num; i++) {
+		if (!msm_csiphy_is_available(&camss->csiphy[i]))
+			continue;
+		if (camss->denali_external_phys &&
+		    !camss->csiphy[i].external_phy_registered)
+			return -ENODEV;
+
 		for (j = 0; j < camss->res->csid_num; j++) {
 			ret = media_create_pad_link(&camss->csiphy[i].subdev.entity,
 						    MSM_CSIPHY_PAD_SRC,
@@ -5172,7 +5187,15 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 	struct camss_async_subdev *csd =
 		container_of(asd, struct camss_async_subdev, asd);
 	u8 id = csd->interface.csiphy_id;
-	struct csiphy_device *csiphy = &camss->csiphy[id];
+	struct csiphy_device *csiphy;
+
+	if (camss->denali_external_phys && id >= camss->res->csiphy_num)
+		return -EINVAL;
+	csiphy = &camss->csiphy[id];
+	if (camss->denali_external_phys &&
+	    (!msm_csiphy_is_available(csiphy) ||
+	     !csiphy->external_phy_registered))
+		return -ENODEV;
 
 	csiphy->cfg.csi2 = &csd->interface.csi2;
 	subdev->host_priv = csiphy;
@@ -5194,6 +5217,16 @@ static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 
 		if (!csiphy)
 			continue;
+
+		if (camss->denali_external_phys) {
+			for (i = 0; i < camss->res->csiphy_num; i++)
+				if (csiphy == &camss->csiphy[i])
+					break;
+			if (i == camss->res->csiphy_num ||
+			    !msm_csiphy_is_available(csiphy) ||
+			    !csiphy->external_phy_registered)
+				return -ENODEV;
+		}
 
 		input = &csiphy->subdev.entity;
 		sensor = &sd->entity;
@@ -5347,6 +5380,101 @@ static void camss_genpd_cleanup(struct camss *camss)
 }
 
 /*
+ * Do not switch other boards, or a different CAMSS instance, away from the
+ * current inline implementation. On this exact Denali instance an absent or
+ * malformed declared PHY set is an error, never a legacy fallback.
+ */
+static void camss_cleanup_external_phys(struct camss *camss)
+{
+	unsigned int i;
+
+	if (!camss->denali_external_phys)
+		return;
+
+	for (i = 0; i < camss->res->csiphy_num; i++)
+		msm_csiphy_subdev_cleanup(&camss->csiphy[i]);
+}
+
+static int camss_configure_denali_external_phys(struct camss *camss)
+{
+	struct device_node *np = camss->dev->of_node;
+	const struct camss_resources *res = camss->res;
+	unsigned long seen = 0;
+	int count, names, i, ret;
+
+	if (!of_machine_is_compatible("microsoft,denali") ||
+	    res->version != CAMSS_X1E80100 ||
+	    !of_device_is_compatible(np, "qcom,x1e80100-camss"))
+		return 0;
+
+	count = of_count_phandle_with_args(np, "phys", "#phy-cells");
+	names = of_property_count_strings(np, "phy-names");
+	if (count <= 0 || names != count || count > res->csiphy_num)
+		return dev_err_probe(camss->dev, -EINVAL,
+				     "Denali requires matching named PHYs\n");
+
+	/* Current X1E resource IDs fit in this local duplicate-name bitmap. */
+	if (res->csiphy_num > BITS_PER_LONG)
+		return -EINVAL;
+
+	for (i = 0; i < count; i++) {
+		struct of_phandle_args args;
+		const char *name;
+		unsigned int j;
+		char expected[16];
+		bool valid;
+
+		ret = of_property_read_string_index(np, "phy-names", i, &name);
+		if (ret)
+			return ret;
+
+		for (j = 0; j < res->csiphy_num; j++) {
+			snprintf(expected, sizeof(expected), "csiphy%u",
+				 res->csiphy_res[j].csiphy.id);
+			if (!strcmp(name, expected))
+				break;
+		}
+		if (j == res->csiphy_num || test_and_set_bit(j, &seen))
+			return dev_err_probe(camss->dev, -EINVAL,
+					     "invalid Denali PHY name %s\n", name);
+
+		ret = of_parse_phandle_with_args(np, "phys", "#phy-cells",
+						 i, &args);
+		if (ret)
+			return ret;
+
+		valid = !args.args_count &&
+			of_device_is_compatible(args.np,
+				"qcom,x1e80100-mipi-csi2-combo-phy");
+		ret = valid ? 0 : -EINVAL;
+		/*
+		 * Retain this node reference while comparing earlier entries.
+		 * Names may differ, but two consumers must not alias one PHY.
+		 * The outer count is bounded by the current resource table.
+		 */
+		for (j = 0; !ret && j < i; j++) {
+			struct of_phandle_args previous;
+
+			ret = of_parse_phandle_with_args(np, "phys", "#phy-cells",
+							 j, &previous);
+			if (ret)
+				break;
+			if (previous.np == args.np)
+				ret = -EINVAL;
+			of_node_put(previous.np);
+		}
+		of_node_put(args.np);
+		if (ret)
+			return dev_err_probe(camss->dev, ret,
+					     "invalid or aliased Denali PHY %s\n",
+					     name);
+	}
+
+	camss->denali_external_phys = true;
+	return 0;
+}
+
+/*
  * camss_probe - Probe CAMSS platform device
  * @pdev: Pointer to CAMSS platform device
  *
@@ -5367,6 +5495,10 @@ static int camss_probe(struct platform_device *pdev)
 	atomic_set(&camss->ref_count, 0);
 	camss->dev = dev;
 	platform_set_drvdata(pdev, camss);
+
+	ret = camss_configure_denali_external_phys(camss);
+	if (ret)
+		return ret;
 
 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
 				     sizeof(*camss->csiphy), GFP_KERNEL);
@@ -5473,6 +5605,7 @@ err_v4l2_device_unregister:
 err_media_device_cleanup:
 	media_device_cleanup(&camss->media_dev);
 err_genpd_cleanup:
+	camss_cleanup_external_phys(camss);
 	camss_genpd_cleanup(camss);
 
 	return ret;
@@ -5500,6 +5633,8 @@ static void camss_remove(struct platform_device *pdev)
 	v4l2_async_nf_unregister(&camss->notifier);
 	v4l2_async_nf_cleanup(&camss->notifier);
 	camss_unregister_entities(camss);
+
+	camss_cleanup_external_phys(camss);
 
 	if (atomic_read(&camss->ref_count) == 0)
 		camss_delete(camss);

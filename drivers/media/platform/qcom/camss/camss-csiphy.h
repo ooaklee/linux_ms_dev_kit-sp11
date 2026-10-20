@@ -61,6 +61,7 @@ struct csiphy_formats {
 };
 
 struct csiphy_device;
+struct phy;
 
 struct csiphy_hw_ops {
 	/*
@@ -97,6 +98,10 @@ struct csiphy_device_regs {
 
 struct csiphy_device {
 	struct camss *camss;
+	/* Only used by the guarded Denali external-PHY adapter. */
+	struct phy *external_phy;
+	bool external_phy_initialized;
+	bool external_phy_registered;
 	u8 id;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MSM_CSIPHY_PADS_NUM];
@@ -121,6 +126,10 @@ struct camss_subdev_resources;
 int msm_csiphy_subdev_init(struct camss *camss,
 			   struct csiphy_device *csiphy,
 			   const struct camss_subdev_resources *res, u8 id);
+
+bool msm_csiphy_is_available(const struct csiphy_device *csiphy);
+
+void msm_csiphy_subdev_cleanup(struct csiphy_device *csiphy);
 
 int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 			       struct v4l2_device *v4l2_dev);

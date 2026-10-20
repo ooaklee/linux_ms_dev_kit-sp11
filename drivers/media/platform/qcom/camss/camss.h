@@ -138,6 +138,8 @@ struct camss {
 	struct device_link *genpd_link;
 	struct icc_path *icc_path[ICC_SM8250_COUNT];
 	const struct camss_resources *res;
+	/* Board- and node-qualified; never inferred from SoC version alone. */
+	bool denali_external_phys;
 };
 
 struct camss_camera_interface {
