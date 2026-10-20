@@ -1,3 +1,30 @@
+linux-qcom-x1e (7.2.5-jg-0sp11v25) resolute; urgency=medium
+
+  * Qualification-only native Surface Aggregator posture and input candidate.
+  * Retain the v9 MSHW0485 SPI autoload repair and the v8 feature carrier.
+  * Import Dale Whinham's reviewed SP11 registry corrections with attribution.
+  * Omit the unsupported SAM sensor client and select POS tablet-mode reports.
+  * Preserve the existing keyboard, pen-stash, touchpad, fan and profile clients.
+  * Keep source DTB delivery, annotations and audio/camera implementations intact.
+  * Allocate a new ABI above the retained v24 build; do not reuse earlier ABIs.
+  * Fresh-boot, posture and resume qualification remain open; retain recovery.
+  * Do not infer SSC sensor support or a general standby-power fix from this port.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 15 Oct 2026 19:07:05 +0100
+
+linux-qcom-x1e (7.2.5-jg-0sp11v9) resolute; urgency=medium
+
+  * Prepare a qualification-only replacement for the v8 fresh-boot
+    MSHW0485 touchscreen autoload regression.
+  * Restore the established mshw0485 SPI device ID, module alias export and
+    driver id_table while preserving the existing OF and HID match paths.
+  * Retain the exact v8 feature carrier and allocate a fresh ABI; do not use a
+    global forced-module-load policy or alter the installed fallback stack.
+  * Require package, alias, signing, boot-entry and physical fresh-boot
+    qualification before publishing or selecting this replacement by default.
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 11 Oct 2026 01:20:36 +0100
+
 linux-qcom-x1e (7.2.5-jg-0sp11v8) resolute; urgency=medium
 
   * Qualification-only combined SP11 camera and power-profile dependency build.
