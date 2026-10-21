@@ -1,3 +1,10 @@
+linux-qcom-x1e (7.2.9-jg-0sp11v1) stonking; urgency=medium
+
+  * Local qualification of the accepted SP11 reconstruction on Linux 7.2.9.
+  * Retain Stubble boot images and packaged device trees for validation.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 21 Oct 2026 03:34:45 +0100
+
 linux-qcom-x1e (7.2.9-jg-0) stonking; urgency=medium
 
   * transplanted the debian build env form 7.3.0-15 onto this tree
