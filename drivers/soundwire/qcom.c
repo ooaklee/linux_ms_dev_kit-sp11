@@ -1313,15 +1313,20 @@ static int qcom_swrm_stream_alloc_ports(struct qcom_swrm_ctrl *ctrl,
 			slave = s_rt->slave;
 			list_for_each_entry(p_rt, &s_rt->port_list, port_node) {
 				m_port = slave->m_port_map[p_rt->num];
-				/* Port numbers start from 1 - 14*/
-				if (m_port)
+				/* Mapped ports are one-based and include the final port. */
+				if (m_port) {
+					if (m_port > (unsigned int)maxport) {
+						dev_err(ctrl->dev, "All ports busy\n");
+						return -EBUSY;
+					}
 					pn = m_port;
-				else
+				} else {
 					pn = find_first_zero_bit(port_mask, maxport);
 
-				if (pn >= maxport) {
-					dev_err(ctrl->dev, "All ports busy\n");
-					return -EBUSY;
+					if (pn >= maxport) {
+						dev_err(ctrl->dev, "All ports busy\n");
+						return -EBUSY;
+					}
 				}
 
 				/* Both Denali amplifiers use one master CPS port. */
