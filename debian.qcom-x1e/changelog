@@ -1,3 +1,11 @@
+linux-qcom-x1e (7.2.9-jg-0sp11v2) stonking; urgency=medium
+
+  * Qualification candidate for the mapped SoundWire master-port boundary fix.
+  * Preserve automatic port-exhaustion checks and protected speaker sidechains.
+  * Retain Stubble boot images and packaged device trees for validation.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 22 Oct 2026 00:29:00 +0100
+
 linux-qcom-x1e (7.2.9-jg-0sp11v1) stonking; urgency=medium
 
   * Local qualification of the accepted SP11 reconstruction on Linux 7.2.9.
