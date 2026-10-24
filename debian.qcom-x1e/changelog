@@ -1,3 +1,14 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v1) stonking; urgency=medium
+
+  * Start source-only SP11 qualification on upstream 7.3.0-jg-1, retaining
+    original authorship. Accepted source reconstruction:
+    a95adbde4c3cbd8019be8815cab2b1f483e6bfb4
+  * Align ARM64 linker and native build-dependency policy with this source.
+  * This candidate is not hardware-qualified. Configuration, complete kernel
+    packaging and physical regression tests remain pending.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 24 Oct 2026 22:49:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1) stonking; urgency=medium
 
   * add Iris IOMMU fault series: https://lore.kernel.org/all/20260926-vpu_iommu_iova_handling-v5-0-0322ca5dc10c@oss.qualcomm.com/ [Vikash Garodia <vikash.garodia@oss.qualcomm.com>]
