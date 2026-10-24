@@ -557,15 +557,19 @@ bool csid_is_denali_cphy(struct csid_device *csid)
 
 /*
  * csid_set_clock_rates - Calculate and set clock rates on CSID module
- * @csiphy: CSID device
+ * @csid: CSID device
+ * @refresh_private: Refresh only the admitted private receiver clocks
  */
-static int csid_set_clock_rates(struct csid_device *csid)
+static int csid_set_clock_rates(struct csid_device *csid, bool refresh_private)
 {
 	struct device *dev = csid->camss->dev;
 	const struct csid_format_info *fmt;
 	s64 link_freq;
 	int i, j;
 	int ret;
+
+	if (refresh_private && !csid_is_denali_cphy(csid))
+		return -EOPNOTSUPP;
 
 	fmt = csid_get_fmt_entry(csid->res->formats->formats, csid->res->formats->nformats,
 				 csid->fmt[MSM_CSIPHY_PAD_SINK].code);
@@ -586,6 +590,11 @@ static int csid_set_clock_rates(struct csid_device *csid)
 
 	for (i = 0; i < csid->nclocks; i++) {
 		struct camss_clock *clock = &csid->clock[i];
+
+		/* Only receiver clocks need refreshing after private link setup. */
+		if (refresh_private && strcmp(clock->name, "csid") &&
+		    strcmp(clock->name, "csid_csiphy_rx"))
+			continue;
 
 		if (!strcmp(clock->name, "csi0") ||
 		    !strcmp(clock->name, "csi1") ||
@@ -741,7 +750,7 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
 			return ret;
 		}
 
-		ret = csid_set_clock_rates(csid);
+		ret = csid_set_clock_rates(csid, false);
 		if (ret < 0) {
 			regulator_bulk_disable(csid->num_supplies,
 					       csid->supplies);
@@ -815,6 +824,13 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 		if (!csid->testgen.enabled &&
 		    !media_pad_remote_pad_first(&csid->pads[MSM_CSID_PAD_SINK]))
 			return -ENOLINK;
+
+		/* Link PRE notifications may have powered CSID before admission. */
+		if (csid_is_denali_cphy(csid)) {
+			ret = csid_set_clock_rates(csid, true);
+			if (ret)
+				return ret;
+		}
 	}
 
 	if (csid->phy.need_vc_update) {
