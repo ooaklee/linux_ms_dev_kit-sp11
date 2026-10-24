@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
 
+#include <linux/bitfield.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/clk.h>
@@ -288,7 +289,8 @@ struct tx_macro {
 	int dec_mode[NUM_DECIMATORS];
 	struct lpass_macro *pds;
 	bool bcs_clk_en;
-	bool denali_va_dmic_active;
+	unsigned long denali_va_dmic_owners;
+	int denali_va_dmic_error;
 };
 #define to_tx_macro(_hw) container_of(_hw, struct tx_macro, hw)
 
@@ -912,29 +914,46 @@ static int tx_macro_tx_mixer_put(struct snd_kcontrol *kcontrol,
 }
 
 static int tx_macro_denali_va_dmic_request(struct snd_soc_component *component,
-					   bool enable)
+					   unsigned int decimator, bool enable)
 {
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
 	unsigned long expected = BIT(TX_MACRO_DEC0) | BIT(TX_MACRO_DEC1);
+	unsigned long owner;
 	unsigned int dec0_src, dec1_src, dec0_dmic, dec1_dmic;
 	int ret, ret2;
 
 	if (!of_machine_is_compatible("microsoft,denali"))
 		return 0;
 
-	if (enable == tx->denali_va_dmic_active)
-		return 0;
+	if (decimator > TX_MACRO_DEC1)
+		return enable ? -EINVAL : 0;
+
+	owner = BIT(decimator);
+	/* Do not replay partially completed provider operations after a fault. */
+	if (tx->denali_va_dmic_error)
+		return tx->denali_va_dmic_error;
 
 	if (!enable) {
+		if (!(tx->denali_va_dmic_owners & owner))
+			return 0;
+		if (tx->denali_va_dmic_owners != owner) {
+			tx->denali_va_dmic_owners &= ~owner;
+			return 0;
+		}
+
 		ret = lpass_macro_dmic_clk_request(1, false);
 		ret2 = lpass_macro_dmic_clk_request(0, false);
 		if (!ret && ret2)
 			ret = ret2;
-		if (!ret)
-			tx->denali_va_dmic_active = false;
+		if (ret)
+			goto fault;
+		tx->denali_va_dmic_owners &= ~owner;
 
-		return ret;
+		return 0;
 	}
+
+	if (tx->denali_va_dmic_owners & owner)
+		return 0;
 
 	if (tx->active_ch_mask[TX_MACRO_AIF1_CAP] != expected ||
 	    tx->active_ch_mask[TX_MACRO_AIF2_CAP] ||
@@ -959,19 +978,30 @@ static int tx_macro_denali_va_dmic_request(struct snd_soc_component *component,
 	    dec0_dmic != 2 || dec1_dmic != 1)
 		return -EINVAL;
 
+	if (tx->denali_va_dmic_owners) {
+		tx->denali_va_dmic_owners |= owner;
+		return 0;
+	}
+
 	ret = lpass_macro_dmic_clk_request(1, true);
 	if (ret)
-		return ret;
+		goto fault;
 
 	ret = lpass_macro_dmic_clk_request(0, true);
 	if (ret) {
-		lpass_macro_dmic_clk_request(1, false);
-		return ret;
+		ret2 = lpass_macro_dmic_clk_request(1, false);
+		if (ret2)
+			dev_err(tx->dev, "Denali DMIC1 rollback failed: %d\n", ret2);
+		goto fault;
 	}
 
-	tx->denali_va_dmic_active = true;
+	tx->denali_va_dmic_owners |= owner;
 
 	return 0;
+
+fault:
+	tx->denali_va_dmic_error = ret;
+	return ret;
 }
 
 static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
@@ -983,7 +1013,7 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 	u8 hpf_cut_off_freq;
 	int hpf_delay = TX_MACRO_DMIC_HPF_DELAY_MS;
 	int unmute_delay = TX_MACRO_DMIC_UNMUTE_DELAY_MS;
-	int ret;
+	int ret = 0;
 	u16 adc_mux_reg, adc_reg, adc_n, dmic;
 	u16 dmic_clk_reg;
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
@@ -1018,7 +1048,7 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 					      CDC_TXn_PGA_MUTE_MASK, 0x1);
 		break;
 	case SND_SOC_DAPM_POST_PMU:
-		ret = tx_macro_denali_va_dmic_request(component, true);
+		ret = tx_macro_denali_va_dmic_request(component, decimator, true);
 		if (ret)
 			return ret;
 
@@ -1120,9 +1150,7 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 		cancel_delayed_work_sync(&tx->tx_mute_dwork[decimator].dwork);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		ret = tx_macro_denali_va_dmic_request(component, false);
-		if (ret)
-			return ret;
+		ret = tx_macro_denali_va_dmic_request(component, decimator, false);
 
 		snd_soc_component_write_field(component, tx_vol_ctl_reg,
 					      CDC_TXn_CLK_EN_MASK, 0x0);
@@ -1141,7 +1169,7 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	}
-	return 0;
+	return ret;
 }
 
 static int tx_macro_dec_mode_get(struct snd_kcontrol *kcontrol,
