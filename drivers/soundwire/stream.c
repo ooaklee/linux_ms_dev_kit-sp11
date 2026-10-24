@@ -2217,11 +2217,11 @@ int sdw_stream_remove_master(struct sdw_bus *bus,
 EXPORT_SYMBOL(sdw_stream_remove_master);
 
 static int sdw_slave_transport_is_valid(struct sdw_slave *slave,
-			 const struct sdw_stream_config *stream_config,
-			 const struct sdw_port_config *port_config,
-			 const struct sdw_slave_port_transport *transport,
-			 unsigned int num_ports,
-			 const struct sdw_stream_runtime *stream)
+					const struct sdw_stream_config *stream_config,
+					const struct sdw_port_config *port_config,
+					const struct sdw_slave_port_transport *transport,
+					unsigned int num_ports,
+					const struct sdw_stream_runtime *stream)
 {
 	unsigned long ports = 0;
 	unsigned int i, num;
@@ -2251,11 +2251,11 @@ static int sdw_slave_transport_is_valid(struct sdw_slave *slave,
 }
 
 static int __sdw_stream_add_slave(struct sdw_slave *slave,
-			 struct sdw_stream_config *stream_config,
-			 const struct sdw_port_config *port_config,
-			 const struct sdw_slave_port_transport *transport,
-			 unsigned int num_ports,
-			 struct sdw_stream_runtime *stream)
+				  struct sdw_stream_config *stream_config,
+				  const struct sdw_port_config *port_config,
+				  const struct sdw_slave_port_transport *transport,
+				  unsigned int num_ports,
+				  struct sdw_stream_runtime *stream)
 {
 	struct sdw_slave_runtime *s_rt;
 	struct sdw_master_runtime *m_rt;
@@ -2275,7 +2275,7 @@ static int __sdw_stream_add_slave(struct sdw_slave *slave,
 	}
 	if (transport) {
 		ret = sdw_slave_transport_is_valid(slave, stream_config, port_config,
-						 transport, num_ports, stream);
+						   transport, num_ports, stream);
 		if (ret)
 			goto unlock;
 	}
@@ -2403,11 +2403,11 @@ EXPORT_SYMBOL(sdw_stream_add_slave);
  * The Slave is expected to be added before the Master.
  */
 int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
-			 struct sdw_stream_config *stream_config,
-			 const struct sdw_port_config *port_config,
-			 const struct sdw_slave_port_transport *transport,
-			 unsigned int num_ports,
-			 struct sdw_stream_runtime *stream)
+					struct sdw_stream_config *stream_config,
+					const struct sdw_port_config *port_config,
+					const struct sdw_slave_port_transport *transport,
+					unsigned int num_ports,
+					struct sdw_stream_runtime *stream)
 {
 	if (!slave || !slave->bus || !stream_config || !port_config || !transport ||
 	    !stream)

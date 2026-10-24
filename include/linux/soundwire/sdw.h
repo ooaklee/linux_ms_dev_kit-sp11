@@ -1124,11 +1124,11 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 			 unsigned int num_ports,
 			 struct sdw_stream_runtime *stream);
 int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
-			 struct sdw_stream_config *stream_config,
-			 const struct sdw_port_config *port_config,
-			 const struct sdw_slave_port_transport *transport,
-			 unsigned int num_ports,
-			 struct sdw_stream_runtime *stream);
+					struct sdw_stream_config *stream_config,
+					const struct sdw_port_config *port_config,
+					const struct sdw_slave_port_transport *transport,
+					unsigned int num_ports,
+					struct sdw_stream_runtime *stream);
 int sdw_stream_remove_slave(struct sdw_slave *slave,
 			    struct sdw_stream_runtime *stream);
 
@@ -1163,11 +1163,11 @@ static inline int sdw_stream_add_slave(struct sdw_slave *slave,
 }
 
 static inline int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
-			 struct sdw_stream_config *stream_config,
-			 const struct sdw_port_config *port_config,
-			 const struct sdw_slave_port_transport *transport,
-			 unsigned int num_ports,
-			 struct sdw_stream_runtime *stream)
+						      struct sdw_stream_config *stream_config,
+						      const struct sdw_port_config *port_config,
+						      const struct sdw_slave_port_transport *transport,
+						      unsigned int num_ports,
+						      struct sdw_stream_runtime *stream)
 {
 	WARN_ONCE(1, "SoundWire API is disabled");
 	return -EINVAL;
