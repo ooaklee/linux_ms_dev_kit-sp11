@@ -898,6 +898,11 @@ static void csid_try_format(struct csid_device *csid,
 {
 	unsigned int i;
 
+	/* All private source pads share the same cropped sink format. */
+	if (pad > MSM_CSID_PAD_FIRST_SRC && pad < MSM_CSID_PADS_NUM &&
+	    csid_is_denali_cphy(csid))
+		pad = MSM_CSID_PAD_FIRST_SRC;
+
 	switch (pad) {
 	case MSM_CSID_PAD_SINK:
 		/* Set format on sink pad */
