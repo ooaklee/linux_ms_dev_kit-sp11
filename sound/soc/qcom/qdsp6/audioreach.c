@@ -1331,8 +1331,18 @@ int audioreach_configure_protection(struct q6apm_graph *graph)
 	if (ret)
 		goto bypass;
 	ret = audioreach_configure_protection_volume(graph, gain, mute);
-	if (ret)
-		goto bypass;
+	if (ret) {
+		/* Disabling protection cannot repair a partially applied tail. */
+		ar_graph->protection_faulted = true;
+		ar_graph->protection_configured = false;
+		ar_graph->protection_bypass_confirmed = false;
+		bypass_ret = audioreach_protection_enable(graph, false);
+		if (bypass_ret)
+			dev_err(graph->dev,
+				"protected volume setup failed (%d), disable failed (%d)\n",
+				ret, bypass_ret);
+		goto unlock;
+	}
 
 	ar_graph->protection_configured = true;
 	ar_graph->protection_bypass_confirmed = false;
