@@ -341,30 +341,30 @@ static void csid_log_status(struct csid_device *csid)
 		return;
 
 	dev_dbg(csid->camss->dev,
-		 "CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
-		 csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
-		 readl(csid->base + CSID_CSI2_RX_CFG1),
-		 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
-		 readl(csid->base + CSID_CSI2_RX_STATS_ECC),
-		 readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
+		"CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
+		csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
+		readl(csid->base + CSID_CSI2_RX_CFG1),
+		readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
+		readl(csid->base + CSID_CSI2_RX_STATS_ECC),
+		readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
 	dev_dbg(csid->camss->dev,
-		 "CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
-		 csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
-		 readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
-		 readl(csid->base + CSID_CSI2_RX_IRQ_STATUS));
+		"CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
+		csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
+		readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
+		readl(csid->base + CSID_CSI2_RX_IRQ_STATUS));
 
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
 		if (!(csid->phy.en_vc & BIT(i)))
 			continue;
 
 		dev_dbg(csid->camss->dev,
-			 "CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
-			 csid->id, i,
-			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
-			 readl(csid->base + CSID_RDI_CFG0(i)),
-			 readl(csid->base + CSID_RDI_CTRL(i)),
-			 readl(csid->base + CSID_RDI_CFG1(i)),
-			 readl(csid->base + CSID_RDI_RPP_HCROP(i)));
+			"CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
+			csid->id, i,
+			readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
+			readl(csid->base + CSID_RDI_CFG0(i)),
+			readl(csid->base + CSID_RDI_CTRL(i)),
+			readl(csid->base + CSID_RDI_CFG1(i)),
+			readl(csid->base + CSID_RDI_RPP_HCROP(i)));
 	}
 }
 
