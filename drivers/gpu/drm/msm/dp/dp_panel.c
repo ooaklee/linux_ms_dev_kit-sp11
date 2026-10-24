@@ -101,6 +101,10 @@ static int msm_dp_panel_read_dpcd(struct msm_dp_panel *msm_dp_panel)
 
 	msm_dp_panel->vsc_sdp_supported = drm_dp_vsc_sdp_supported(panel->aux, dpcd);
 	link_info = &msm_dp_panel->link_info;
+
+	/* Drop the capabilities of the previous sink, they are recomputed below */
+	memset(link_info, 0, sizeof(*link_info));
+
 	link_info->revision = dpcd[DP_DPCD_REV];
 	major = (link_info->revision >> 4) & 0x0f;
 	minor = link_info->revision & 0x0f;
@@ -271,6 +275,29 @@ int msm_dp_panel_read_link_caps(struct msm_dp_panel *msm_dp_panel,
 
 	rc = drm_dp_read_downstream_info(panel->aux, msm_dp_panel->dpcd,
 					 msm_dp_panel->downstream_ports);
+	if (rc)
+		return rc;
+
+	drm_edid_free(msm_dp_panel->drm_edid);
+
+	msm_dp_panel->drm_edid = drm_edid_read_ddc(connector, &panel->aux->ddc);
+
+	drm_edid_connector_update(connector, msm_dp_panel->drm_edid);
+
+	if (msm_dp_panel->drm_edid) {
+		drm_dp_cec_attach(panel->aux,
+					connector->display_info.source_physical_address);
+	} else {
+		DRM_ERROR("panel edid read failed\n");
+		drm_dp_cec_unset_edid(panel->aux);
+		/* check edid read fail is due to unplug */
+		if (!msm_dp_aux_is_link_connected(panel->aux)) {
+			rc = -ETIMEDOUT;
+			goto end;
+		}
+	}
+
+end:
 	return rc;
 }
 
