@@ -2229,11 +2229,12 @@ static int sdw_slave_transport_is_valid(struct sdw_slave *slave,
 	if (!num_ports || num_ports >= SDW_MAX_PORTS ||
 	    (stream_config->type != SDW_STREAM_PCM &&
 	     stream_config->type != SDW_STREAM_PDM) ||
-	    stream->type != stream_config->type ||
+	    (stream->type != SDW_STREAM_PCM && stream->type != SDW_STREAM_PDM) ||
 	    (stream_config->direction != SDW_DATA_DIR_RX &&
 	     stream_config->direction != SDW_DATA_DIR_TX))
 		return -EINVAL;
 
+	/* Qualcomm audio startup allocates PCM before a codec requests PDM. */
 	for (i = 0; i < num_ports; i++) {
 		num = port_config[i].num;
 		if (transport[i].override_mask & ~SDW_SLAVE_PORT_OVERRIDE_OFFSET1)
@@ -2394,12 +2395,14 @@ EXPORT_SYMBOL(sdw_stream_add_slave);
  * @port_config: Array of @num_ports base port configurations
  * @transport: Explicit array of @num_ports slave transport entries
  * @num_ports: Number of entries in both arrays, from 1 to 14
- * @stream: SoundWire audio stream with matching type
+ * @stream: SoundWire PCM or PDM stream
  *
  * All entries are validated before runtime allocation or configuration. A
  * nonempty existing port list must have the same number of entries. Only
  * selected scalar values are copied; neither caller-owned array is retained.
  * Legacy callers and master configurations do not consume transport entries.
+ * PCM/PDM reconfiguration follows the legacy audio path; BPT is excluded
+ * for both the allocated stream and the requested configuration.
  * The Slave is expected to be added before the Master.
  */
 int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
