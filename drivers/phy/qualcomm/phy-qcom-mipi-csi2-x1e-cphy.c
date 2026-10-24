@@ -304,7 +304,7 @@ int phy_qcom_mipi_csi2_x1e_cphy_probe(struct platform_device *pdev)
 	if (cphy->irq <= 0)
 		return cphy->irq ?: -ENXIO;
 	ret = devm_request_irq(dev, cphy->irq, x1e80100_cphy_isr,
-			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
+			       IRQF_NO_AUTOEN,
 			       dev_name(dev), cphy);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request C-PHY IRQ\n");
