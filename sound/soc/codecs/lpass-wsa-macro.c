@@ -15,7 +15,6 @@
 #include <sound/soc-dapm.h>
 #include <linux/pm_clock.h>
 #include <linux/pm_runtime.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <sound/tlv.h>
 
