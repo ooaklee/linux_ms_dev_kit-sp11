@@ -274,6 +274,11 @@ struct sdw_dp0_prop {
 	u32 *lane_list;
 };
 
+#define SDW_DPN_SIMPLE_TRANSPORT_BLOCKCTRL3	BIT(0)
+#define SDW_DPN_SIMPLE_TRANSPORT_SAMPLECTRL2	BIT(1)
+#define SDW_DPN_SIMPLE_TRANSPORT_HCTRL		BIT(2)
+#define SDW_DPN_SIMPLE_TRANSPORT_OFFSETCTRL2	BIT(3)
+
 /**
  * struct sdw_dpn_prop - Data Port DPn properties
  * @num: port number
@@ -308,11 +313,6 @@ struct sdw_dp0_prop {
  * @simple_transport_registers: Optional banked transport registers implemented
  * by a SIMPLE port in addition to the mandatory SIMPLE register set.
  */
-#define SDW_DPN_SIMPLE_TRANSPORT_BLOCKCTRL3	BIT(0)
-#define SDW_DPN_SIMPLE_TRANSPORT_SAMPLECTRL2	BIT(1)
-#define SDW_DPN_SIMPLE_TRANSPORT_HCTRL		BIT(2)
-#define SDW_DPN_SIMPLE_TRANSPORT_OFFSETCTRL2	BIT(3)
-
 struct sdw_dpn_prop {
 	u32 num;
 	u32 max_word;
