@@ -248,7 +248,7 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 	u8 wm = RDI_WM(rdi);
 
 	if (vfe_is_imx681_raw(vfe, rdi)) {
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			 "VFE%u IMX681 RDI%u WM%u stop: CFG=%#010x ADDR=%#010x INCR=%#010x IMG=%#010x/%#010x/%#010x PACKER=%#010x\n",
 			 vfe->id, rdi, wm,
 			 readl(vfe->base + VFE_BUS_WRITE_CLIENT_CFG(vfe, wm)),
@@ -258,7 +258,7 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 rdi)
 			 readl(vfe->base + VFE_BUS_IMAGE_CFG1(vfe, wm)),
 			 readl(vfe->base + VFE_BUS_IMAGE_CFG2(vfe, wm)),
 			 readl(vfe->base + VFE_BUS_PACKER_CFG(vfe, wm)));
-		dev_info(vfe->camss->dev,
+		dev_dbg(vfe->camss->dev,
 			 "VFE%u IMX681 IRQ: TOP=%#010x/%#010x BUS=%#010x/%#010x VIOL=%#010x OVERFLOW=%#010x IMAGE_VIOL=%#010x\n",
 			 vfe->id,
 			 readl(vfe->base + VFE_TOP_IRQn_STATUS(vfe, 0)),

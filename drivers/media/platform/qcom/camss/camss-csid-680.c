@@ -340,14 +340,14 @@ static void csid_log_status(struct csid_device *csid)
 	    !csid_is_sp11_imx681_format(csid, sink_format))
 		return;
 
-	dev_info(csid->camss->dev,
+	dev_dbg(csid->camss->dev,
 		 "CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
 		 csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
 		 readl(csid->base + CSID_CSI2_RX_CFG1),
 		 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
 		 readl(csid->base + CSID_CSI2_RX_STATS_ECC),
 		 readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
-	dev_info(csid->camss->dev,
+	dev_dbg(csid->camss->dev,
 		 "CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
 		 csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
 		 readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
@@ -357,7 +357,7 @@ static void csid_log_status(struct csid_device *csid)
 		if (!(csid->phy.en_vc & BIT(i)))
 			continue;
 
-		dev_info(csid->camss->dev,
+		dev_dbg(csid->camss->dev,
 			 "CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
 			 csid->id, i,
 			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
