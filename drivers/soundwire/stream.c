@@ -14,6 +14,7 @@
 #include <linux/soundwire/sdw_registers.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_type.h>
+#include <linux/string.h>
 #include <linux/string_choices.h>
 #include <sound/soc.h>
 #include "bus.h"
@@ -113,6 +114,13 @@ static int sdw_program_simple_ext(struct sdw_bus *bus, struct sdw_slave *slave,
 	return 0;
 }
 
+static void sdw_apply_slave_transport_overrides(struct sdw_port_runtime *p_rt)
+{
+	if (p_rt->transport_params_override_mask & SDW_SLAVE_PORT_OVERRIDE_OFFSET1)
+		p_rt->transport_params.offset1 =
+			p_rt->transport_params_override.offset1;
+}
+
 static int _sdw_program_slave_port_params(struct sdw_bus *bus,
 					  struct sdw_slave *slave,
 					  struct sdw_transport_params *t_params,
@@ -195,6 +203,9 @@ static int sdw_program_slave_port_params(struct sdw_bus *bus,
 
 	if (s_rt->slave->is_mockup_device)
 		return 0;
+
+	/* Keep the master schedule unchanged; apply only this slave's deltas. */
+	sdw_apply_slave_transport_overrides(p_rt);
 
 	if (t_params->port_num) {
 		struct sdw_dpn_prop *dpn_prop;
@@ -1043,6 +1054,10 @@ static int sdw_port_config(struct sdw_port_runtime *p_rt,
 {
 	p_rt->ch_mask = port_config[port_index].ch_mask;
 	p_rt->num = port_config[port_index].num;
+	/* A reused runtime must not inherit an earlier explicit slave override. */
+	p_rt->transport_params_override_mask = 0;
+	memset(&p_rt->transport_params_override, 0,
+	       sizeof(p_rt->transport_params_override));
 
 	/*
 	 * TODO: Check port capabilities for requested configuration
@@ -1112,6 +1127,7 @@ static int sdw_slave_port_is_valid_range(struct device *dev, int num)
 static int sdw_slave_port_config(struct sdw_slave *slave,
 				 struct sdw_slave_runtime *s_rt,
 				 const struct sdw_port_config *port_config,
+				 const struct sdw_slave_port_transport *transport,
 				 bool is_bpt_stream)
 {
 	struct sdw_port_runtime *p_rt;
@@ -1140,10 +1156,20 @@ static int sdw_slave_port_config(struct sdw_slave *slave,
 		} else if (port_config[i].num) {
 			return -EINVAL;
 		}
+		i++;
+	}
 
+	/* Do not clear a previous override until every base port is valid. */
+	i = 0;
+	list_for_each_entry(p_rt, &s_rt->port_list, port_node) {
 		ret = sdw_port_config(p_rt, port_config, i);
 		if (ret < 0)
 			return ret;
+		if (transport &&
+		    (transport[i].override_mask & SDW_SLAVE_PORT_OVERRIDE_OFFSET1)) {
+			p_rt->transport_params_override_mask = transport[i].override_mask;
+			p_rt->transport_params_override.offset1 = transport[i].offset1;
+		}
 		i++;
 	}
 
@@ -2098,6 +2124,11 @@ int sdw_stream_add_master(struct sdw_bus *bus,
 	 * it first), if so skip allocation and go to configuration
 	 */
 	m_rt = sdw_master_rt_find(bus, stream);
+	if (m_rt && sdw_master_port_allocated(m_rt) &&
+	    list_count_nodes(&m_rt->port_list) != num_ports) {
+		ret = -EINVAL;
+		goto unlock;
+	}
 	if (!m_rt) {
 		m_rt = sdw_master_rt_alloc(bus, stream);
 		if (IS_ERR(m_rt)) {
@@ -2182,22 +2213,44 @@ int sdw_stream_remove_master(struct sdw_bus *bus,
 }
 EXPORT_SYMBOL(sdw_stream_remove_master);
 
-/**
- * sdw_stream_add_slave() - Allocate and add master/slave runtime to a stream
- *
- * @slave: SDW Slave instance
- * @stream_config: Stream configuration for audio stream
- * @stream: SoundWire stream
- * @port_config: Port configuration for audio stream
- * @num_ports: Number of ports
- *
- * It is expected that Slave is added before adding Master
- * to the Stream.
- *
- */
-int sdw_stream_add_slave(struct sdw_slave *slave,
+static int sdw_slave_transport_is_valid(struct sdw_slave *slave,
+			 const struct sdw_stream_config *stream_config,
+			 const struct sdw_port_config *port_config,
+			 const struct sdw_slave_port_transport *transport,
+			 unsigned int num_ports,
+			 const struct sdw_stream_runtime *stream)
+{
+	unsigned long ports = 0;
+	unsigned int i, num;
+
+	if (!num_ports || num_ports >= SDW_MAX_PORTS ||
+	    (stream_config->type != SDW_STREAM_PCM &&
+	     stream_config->type != SDW_STREAM_PDM) ||
+	    stream->type != stream_config->type ||
+	    (stream_config->direction != SDW_DATA_DIR_RX &&
+	     stream_config->direction != SDW_DATA_DIR_TX))
+		return -EINVAL;
+
+	for (i = 0; i < num_ports; i++) {
+		num = port_config[i].num;
+		if (transport[i].override_mask & ~SDW_SLAVE_PORT_OVERRIDE_OFFSET1)
+			return -EINVAL;
+		if (!SDW_VALID_PORT_RANGE(num))
+			return -EINVAL;
+		if (ports & BIT(num))
+			return -EINVAL;
+		ports |= BIT(num);
+		if (!sdw_get_slave_dpn_prop(slave, stream_config->direction, num))
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int __sdw_stream_add_slave(struct sdw_slave *slave,
 			 struct sdw_stream_config *stream_config,
 			 const struct sdw_port_config *port_config,
+			 const struct sdw_slave_port_transport *transport,
 			 unsigned int num_ports,
 			 struct sdw_stream_runtime *stream)
 {
@@ -2209,6 +2262,20 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 	int ret;
 
 	mutex_lock(&slave->bus->bus_lock);
+
+	/* Validate before allocating or changing a reused runtime or stream. */
+	s_rt = sdw_slave_rt_find(slave, stream);
+	if (s_rt && sdw_slave_port_allocated(s_rt) &&
+	    list_count_nodes(&s_rt->port_list) != num_ports) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (transport) {
+		ret = sdw_slave_transport_is_valid(slave, stream_config, port_config,
+						 transport, num_ports, stream);
+		if (ret)
+			goto unlock;
+	}
 
 	/*
 	 * check if Master is already allocated, if so skip allocation
@@ -2237,7 +2304,6 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 		alloc_master_rt = true;
 	}
 
-	s_rt = sdw_slave_rt_find(slave, stream);
 	if (!s_rt) {
 		s_rt = sdw_slave_rt_alloc(slave, m_rt);
 		if (!s_rt) {
@@ -2268,7 +2334,7 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 	if (ret)
 		goto unlock;
 
-	ret = sdw_slave_port_config(slave, s_rt, port_config,
+	ret = sdw_slave_port_config(slave, s_rt, port_config, transport,
 				    stream->type == SDW_STREAM_BPT);
 	if (ret)
 		goto unlock;
@@ -2296,7 +2362,58 @@ unlock:
 	mutex_unlock(&slave->bus->bus_lock);
 	return ret;
 }
+
+/**
+ * sdw_stream_add_slave() - Allocate and add master/slave runtime to a stream
+ * @slave: SDW Slave instance
+ * @stream_config: Stream configuration for audio stream
+ * @port_config: Port configuration for audio stream
+ * @num_ports: Number of ports
+ * @stream: SoundWire stream
+ *
+ * It is expected that Slave is added before adding Master to the Stream.
+ */
+int sdw_stream_add_slave(struct sdw_slave *slave,
+			 struct sdw_stream_config *stream_config,
+			 const struct sdw_port_config *port_config,
+			 unsigned int num_ports,
+			 struct sdw_stream_runtime *stream)
+{
+	return __sdw_stream_add_slave(slave, stream_config, port_config, NULL,
+				      num_ports, stream);
+}
 EXPORT_SYMBOL(sdw_stream_add_slave);
+
+/**
+ * sdw_stream_add_slave_with_transport() - Add audio ports with slave overrides
+ * @slave: SDW Slave instance
+ * @stream_config: Requested PCM or PDM stream configuration
+ * @port_config: Array of @num_ports base port configurations
+ * @transport: Explicit array of @num_ports slave transport entries
+ * @num_ports: Number of entries in both arrays, from 1 to 14
+ * @stream: SoundWire audio stream with matching type
+ *
+ * All entries are validated before runtime allocation or configuration. A
+ * nonempty existing port list must have the same number of entries. Only
+ * selected scalar values are copied; neither caller-owned array is retained.
+ * Legacy callers and master configurations do not consume transport entries.
+ * The Slave is expected to be added before the Master.
+ */
+int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
+			 struct sdw_stream_config *stream_config,
+			 const struct sdw_port_config *port_config,
+			 const struct sdw_slave_port_transport *transport,
+			 unsigned int num_ports,
+			 struct sdw_stream_runtime *stream)
+{
+	if (!slave || !slave->bus || !stream_config || !port_config || !transport ||
+	    !stream)
+		return -EINVAL;
+
+	return __sdw_stream_add_slave(slave, stream_config, port_config, transport,
+				      num_ports, stream);
+}
+EXPORT_SYMBOL(sdw_stream_add_slave_with_transport);
 
 /**
  * sdw_stream_remove_slave() - Remove slave from sdw_stream
