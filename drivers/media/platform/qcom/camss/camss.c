@@ -52,7 +52,7 @@ struct camss_denali_phy_row {
 };
 
 static int camss_scan_denali_phys(struct camss *camss,
-				struct camss_denali_phy_plan *out);
+				  struct camss_denali_phy_plan *out);
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
@@ -4730,7 +4730,7 @@ static bool camss_has_denali_cphy(const struct camss *camss)
 }
 
 static bool camss_denali_slot_ready(struct camss *camss, unsigned int slot,
-				   bool registered)
+				    bool registered)
 {
 	struct csiphy_device *csiphy;
 
@@ -4888,13 +4888,13 @@ static int camss_init_subdevices(struct camss *camss,
 				continue;
 			if (i == plan->private_slot)
 				ret = msm_csiphy_subdev_init_denali(camss,
-						&camss->csiphy[i],
-						&res->csiphy_res[i], i);
+								    &camss->csiphy[i],
+								    &res->csiphy_res[i], i);
 			else
 				ret = msm_csiphy_subdev_init(camss,
-						&camss->csiphy[i],
-						&res->csiphy_res[i],
-						res->csiphy_res[i].csiphy.id);
+							     &camss->csiphy[i],
+							     &res->csiphy_res[i],
+							     res->csiphy_res[i].csiphy.id);
 			if (ret)
 				return ret;
 		}
@@ -5870,7 +5870,7 @@ static const struct camss_resources x1e80100_resources = {
 };
 
 static int camss_denali_slot_for_name(const struct camss *camss,
-				     const char *name)
+				      const char *name)
 {
 	unsigned int slot;
 	char expected[16];
@@ -5936,7 +5936,7 @@ static int camss_denali_validate_generic(const struct camss_denali_phy_row *row)
 }
 
 static int camss_scan_denali_phys(struct camss *camss,
-				struct camss_denali_phy_plan *out)
+				  struct camss_denali_phy_plan *out)
 {
 	struct camss_denali_phy_row rows[CAMSS_RES_MAX] = {};
 	struct camss_denali_phy_plan staged = {};
@@ -5993,7 +5993,7 @@ static int camss_scan_denali_phys(struct camss *camss,
 			rows[i].args.args[j] = be32_to_cpup(iterator.cur + j);
 		rows[i].args.args_count = iterator.cur_count;
 		rows[i].name_ret = of_property_read_string_index(np, "phy-names",
-							       i, &rows[i].name);
+								 i, &rows[i].name);
 		rows[i].private_claim =
 			camss_denali_private_claim(&rows[i].args, exact_x1e);
 		any_private |= rows[i].private_claim;

@@ -102,6 +102,7 @@ struct csiphy_device {
 	struct phy *phy;
 	/* Only the selected Denali private C-PHY slot uses this state. */
 	bool denali_cphy;
+	/* Serializes private PHY lifecycle and subdev callback state. */
 	struct mutex denali_phy_lock;
 	bool denali_phy_initialized;
 	bool denali_phy_action_pending;
@@ -138,9 +139,9 @@ int msm_csiphy_subdev_init(struct camss *camss,
 			   const struct camss_subdev_resources *res, u8 id);
 
 int msm_csiphy_subdev_init_denali(struct camss *camss,
-				 struct csiphy_device *csiphy,
-				 const struct camss_subdev_resources *res,
-				 unsigned int slot);
+				  struct csiphy_device *csiphy,
+				  const struct camss_subdev_resources *res,
+				  unsigned int slot);
 void msm_csiphy_subdev_cleanup_denali(struct csiphy_device *csiphy);
 bool msm_csiphy_denali_is_initialized(struct csiphy_device *csiphy);
 bool msm_csiphy_denali_is_registered(struct csiphy_device *csiphy);

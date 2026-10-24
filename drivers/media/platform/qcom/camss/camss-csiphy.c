@@ -959,9 +959,9 @@ unlock:
 }
 
 int msm_csiphy_subdev_init_denali(struct camss *camss,
-				 struct csiphy_device *csiphy,
-				 const struct camss_subdev_resources *res,
-				 unsigned int slot)
+				  struct csiphy_device *csiphy,
+				  const struct camss_subdev_resources *res,
+				  unsigned int slot)
 {
 	struct device *dev = camss->dev;
 	struct phy *phy;
@@ -1070,8 +1070,8 @@ static int csiphy_denali_validate_pad(struct csiphy_device *csiphy,
 }
 
 static int csiphy_denali_enum_mbus_code(struct v4l2_subdev *sd,
-				       struct v4l2_subdev_state *state,
-				       struct v4l2_subdev_mbus_code_enum *code)
+					struct v4l2_subdev_state *state,
+					struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	int ret;
@@ -1085,8 +1085,8 @@ static int csiphy_denali_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int csiphy_denali_enum_frame_size(struct v4l2_subdev *sd,
-					struct v4l2_subdev_state *state,
-					struct v4l2_subdev_frame_size_enum *fse)
+					 struct v4l2_subdev_state *state,
+					 struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	int ret;
@@ -1130,7 +1130,7 @@ static int csiphy_denali_set_format(struct v4l2_subdev *sd,
 }
 
 static int csiphy_denali_open(struct v4l2_subdev *sd,
-			    struct v4l2_subdev_fh *fh)
+			      struct v4l2_subdev_fh *fh)
 {
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
 	int ret;
@@ -1157,8 +1157,8 @@ static int csiphy_denali_set_stream(struct v4l2_subdev *sd, int enable)
 }
 
 static int csiphy_denali_link_setup(struct media_entity *entity,
-				  const struct media_pad *local,
-				  const struct media_pad *remote, u32 flags)
+				    const struct media_pad *local,
+				    const struct media_pad *remote, u32 flags)
 {
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct csiphy_device *csiphy = v4l2_get_subdevdata(sd);
