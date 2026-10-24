@@ -560,7 +560,7 @@ static void audioreach_populate_graph(struct q6apm *apm,
 void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 				 const struct audioreach_graph_info *info)
 {
-	size_t payload_size = 0, sg_sz, cont_sz, ml_sz = 0;
+	size_t payload_size = 0, sg_sz, cont_sz, ml_sz;
 	size_t mp_sz, mc_sz, cl_sz = 0, object_size;
 	struct apm_module_param_data  *param_data;
 	struct audioreach_container *container;
@@ -586,6 +586,7 @@ void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 
 	sg_list = &info->sg_list;
 	cont_sz = sizeof(struct apm_container_params);
+	ml_sz = sizeof(struct apm_module_list_params);
 
 	/* add FE-BE connections */
 	if (!info->internal_vmixer_connection &&
@@ -609,10 +610,7 @@ void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 						   container->num_modules,
 						   sizeof(mlobj->mod_cfg[0]),
 						   &object_size);
-			if (ret ||
-			    audioreach_size_add(&ml_sz,
-						sizeof(struct apm_module_list_params)) ||
-			    audioreach_size_add(&ml_sz, object_size))
+			if (ret || audioreach_size_add(&ml_sz, object_size))
 				return ERR_PTR(-EOVERFLOW);
 
 			list_for_each_entry(module, &container->modules_list, node) {
