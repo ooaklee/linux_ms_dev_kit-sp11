@@ -299,6 +299,10 @@ static int q6apm_lpass_dai_startup(struct snd_pcm_substream *substream, struct s
 	struct q6apm_graph *graph;
 	int graph_id = dai->id;
 
+	/* A failed shutdown still owns this DAI's graph and clock state. */
+	if (dai_data->graph[dai->id] || dai_data->is_port_started[dai->id])
+		return -EBUSY;
+
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		graph = q6apm_graph_open(dai->dev, NULL, dai->dev, graph_id, substream->stream);
 		if (IS_ERR(graph)) {
@@ -321,6 +325,9 @@ static void q6i2s_lpass_dai_shutdown(struct snd_pcm_substream *substream, struct
 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
 
 	q6apm_lpass_dai_shutdown(substream, dai);
+	if (dai_data->graph[dai->id] || dai_data->is_port_started[dai->id])
+		return;
+
 	q6apm_lpass_dai_disable_clocks(dai_data, dai->id);
 }
 
