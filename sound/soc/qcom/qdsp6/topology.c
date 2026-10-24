@@ -753,8 +753,15 @@ static struct audioreach_module *audioreach_parse_common_tokens(struct q6apm *ap
 		mod->max_ip_port = max_ip_port;
 		mod->max_op_port = max_op_port;
 		mod->src_mod_inst_id = src_mod_inst_id;
-		mod->speaker_protection_bypass = speaker_protection_bypass;
-		mod->integrated_backend_id = integrated_backend_id;
+		/* Interpret shared token numbers using the final module ID. */
+		if (mod->module_id == MODULE_ID_AUDIO_IF_SINK ||
+		    mod->module_id == MODULE_ID_AUDIO_IF_SOURCE) {
+			mod->speaker_protection_bypass = false;
+			mod->integrated_backend_id = 0;
+		} else {
+			mod->speaker_protection_bypass = speaker_protection_bypass;
+			mod->integrated_backend_id = integrated_backend_id;
+		}
 		for (pn = 0; pn < mod->max_op_port; pn++) {
 			if (src_mod_op_port_id[pn] && dst_mod_inst_id[pn] &&
 			    dst_mod_ip_port_id[pn]) {
