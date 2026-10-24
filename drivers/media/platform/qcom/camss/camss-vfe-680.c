@@ -211,7 +211,8 @@ static bool vfe_is_imx681_raw(struct vfe_device *vfe, u8 rdi)
 	unsigned int i;
 
 	if (camss->res->version != CAMSS_X1E80100 ||
-	    vfe_is_lite(vfe) || rdi >= vfe->res->line_num ||
+	    vfe_is_lite(vfe) || rdi >= VFE_LINE_PIX ||
+	    rdi >= vfe->res->line_num ||
 	    rdi >= MSM_CSID_MAX_SRC_STREAMS)
 		return false;
 
