@@ -13,6 +13,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-cci.h>
@@ -193,6 +194,7 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct imx681 *sensor =
 		container_of(ctrl->handler, struct imx681, ctrl_handler);
+	int release_ret;
 	int ret = 0;
 
 	if (ctrl->id == V4L2_CID_VBLANK) {
@@ -208,8 +210,12 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 			return ret;
 	}
 
-	if (!pm_runtime_get_if_in_use(sensor->dev))
-		return 0;
+	if (IS_ENABLED(CONFIG_PM)) {
+		ret = pm_runtime_get_if_in_use(sensor->dev);
+		if (ret <= 0)
+			return ret;
+	}
+	ret = 0;
 
 	cci_write(sensor->regmap, IMX681_REG_GROUP_HOLD, 1, &ret);
 	switch (ctrl->id) {
@@ -232,9 +238,18 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 	default:
 		break;
 	}
-	cci_write(sensor->regmap, IMX681_REG_GROUP_HOLD, 0, &ret);
+	release_ret = cci_write(sensor->regmap, IMX681_REG_GROUP_HOLD,
+				0, NULL);
+	if (release_ret) {
+		dev_err_ratelimited(sensor->dev,
+				    "group-hold release failed: %d (control error %d)\n",
+				    release_ret, ret);
+		if (!ret)
+			ret = release_ret;
+	}
 
-	pm_runtime_put_autosuspend(sensor->dev);
+	if (IS_ENABLED(CONFIG_PM))
+		pm_runtime_put_autosuspend(sensor->dev);
 
 	return ret;
 }
@@ -443,9 +458,14 @@ static int imx681_stop_streaming(struct imx681 *sensor)
 static int imx681_s_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct imx681 *sensor = to_imx681(sd);
+	int ret;
 
-	return enable ? imx681_start_streaming(sensor) :
-			imx681_stop_streaming(sensor);
+	mutex_lock(sensor->ctrl_handler.lock);
+	ret = enable ? imx681_start_streaming(sensor) :
+		       imx681_stop_streaming(sensor);
+	mutex_unlock(sensor->ctrl_handler.lock);
+
+	return ret;
 }
 
 static const struct v4l2_subdev_video_ops imx681_video_ops = {
