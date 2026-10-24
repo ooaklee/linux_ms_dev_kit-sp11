@@ -1072,6 +1072,29 @@ static void sdw_port_free(struct sdw_port_runtime *p_rt)
 	kfree(p_rt);
 }
 
+static int sdw_port_list_alloc(struct list_head *port_list,
+			       unsigned int num_ports)
+{
+	struct sdw_port_runtime *p_rt, *next;
+	LIST_HEAD(ports);
+	unsigned int i;
+
+	/* Publish only a complete list; do not disturb existing runtime ports. */
+	for (i = 0; i < num_ports; i++) {
+		p_rt = sdw_port_alloc(&ports);
+		if (!p_rt)
+			goto alloc_error;
+	}
+
+	list_splice_tail_init(&ports, port_list);
+	return 0;
+
+alloc_error:
+	list_for_each_entry_safe(p_rt, next, &ports, port_node)
+		sdw_port_free(p_rt);
+	return -ENOMEM;
+}
+
 static bool sdw_slave_port_allocated(struct sdw_slave_runtime *s_rt)
 {
 	return !list_empty(&s_rt->port_list);
@@ -1101,17 +1124,7 @@ static int sdw_slave_port_alloc(struct sdw_slave *slave,
 				struct sdw_slave_runtime *s_rt,
 				unsigned int num_config)
 {
-	struct sdw_port_runtime *p_rt;
-	int i;
-
-	/* Iterate for number of ports to perform initialization */
-	for (i = 0; i < num_config; i++) {
-		p_rt = sdw_port_alloc(&s_rt->port_list);
-		if (!p_rt)
-			return -ENOMEM;
-	}
-
-	return 0;
+	return sdw_port_list_alloc(&s_rt->port_list, num_config);
 }
 
 static int sdw_slave_port_is_valid_range(struct device *dev, int num)
@@ -1193,17 +1206,7 @@ static void sdw_master_port_free(struct sdw_master_runtime *m_rt)
 static int sdw_master_port_alloc(struct sdw_master_runtime *m_rt,
 				 unsigned int num_ports)
 {
-	struct sdw_port_runtime *p_rt;
-	int i;
-
-	/* Iterate for number of ports to perform initialization */
-	for (i = 0; i < num_ports; i++) {
-		p_rt = sdw_port_alloc(&m_rt->port_list);
-		if (!p_rt)
-			return -ENOMEM;
-	}
-
-	return 0;
+	return sdw_port_list_alloc(&m_rt->port_list, num_ports);
 }
 
 static int sdw_master_port_config(struct sdw_master_runtime *m_rt,
