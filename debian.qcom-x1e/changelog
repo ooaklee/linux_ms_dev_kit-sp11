@@ -1,3 +1,16 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v2) stonking; urgency=medium
+
+  * Add a default-off IMX681 fixed-gain/direct-exposure experiment inspired
+    by Richard Burt, retaining the accepted mode, C-PHY/CAMSS route and DTB.
+  * Require the matching exact-control-contract Simple IPA; preserve normal
+    controls when the experimental_stream_safe parameter is disabled.
+  * Balance experimental stream lifecycle references and reject further
+    operations after a failed standby write until reprobe.
+  * Host-function fixtures passed; native packages, actual exposure/gain,
+    image quality, capture longevity and privacy remain unqualified.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 29 Oct 2026 09:58:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v1) stonking; urgency=medium
 
   * Start source-only SP11 qualification on upstream 7.3.0-jg-1, retaining

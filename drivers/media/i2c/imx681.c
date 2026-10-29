@@ -44,6 +44,7 @@
 #define IMX681_EXPOSURE_DEF	1600
 #define IMX681_AGAIN_MAX	960	/* gain = 1024 / (1024 - code) */
 #define IMX681_DGAIN_DEF	0x0100
+#define IMX681_STREAM_SAFE_DGAIN	0x0fff
 #define IMX681_PIXEL_RATE	548571428
 /* V4L2 C-PHY link frequency is half the 2406-Msym/s symbol rate. */
 #define IMX681_LINK_FREQ	1203000000
@@ -52,6 +53,22 @@
 
 #define IMX681_XCLR_MIN_DELAY_US	6200
 #define IMX681_XCLR_DELAY_RANGE_US	1000
+
+/*
+ * Optional, unqualified experiment inspired by Richard Burt's freeze work:
+ * https://github.com/richard-burt/SP11-Ubuntu-front-camera-driver
+ * commit 8d8f736, building on Jeroen's camera bring-up at
+ * https://github.com/karsies-wq/sp11-imx681-linux (b08f76f).
+ *
+ * Keep the accepted mode and receiver unchanged. The companion IPA must
+ * account for fixed analogue gain 1x and digital gain 4095/256, and pace
+ * exposure changes to at most 5 Hz. This switch is not a general camera
+ * parity or stream-stability claim, and is copied once per device at probe.
+ */
+static bool experimental_stream_safe;
+module_param(experimental_stream_safe, bool, 0444);
+MODULE_PARM_DESC(experimental_stream_safe,
+		 "Unqualified fixed-gain/direct-exposure profile; requires paced companion IPA");
 
 static const char * const imx681_supply_name[] = {
 	"dovdd",	/* I/O 1.8 V */
@@ -76,6 +93,9 @@ struct imx681 {
 	struct v4l2_ctrl *expo_ctrl;
 	struct v4l2_ctrl *again_ctrl;
 	struct v4l2_ctrl *dgain_ctrl;
+	bool experimental_stream_safe;
+	bool streaming;
+	int stream_error;
 };
 
 static inline struct imx681 *to_imx681(struct v4l2_subdev *sd)
@@ -197,6 +217,9 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 	int release_ret;
 	int ret = 0;
 
+	if (sensor->experimental_stream_safe && sensor->stream_error)
+		return sensor->stream_error;
+
 	if (ctrl->id == V4L2_CID_VBLANK) {
 		unsigned int expo_max = IMX681_HEIGHT + ctrl->val -
 					IMX681_EXPOSURE_MARGIN;
@@ -216,6 +239,18 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 			return ret;
 	}
 	ret = 0;
+
+	if (sensor->experimental_stream_safe && sensor->streaming &&
+	    ctrl->id == V4L2_CID_EXPOSURE) {
+		/*
+		 * Experiment: avoid group-hold toggles during streaming. Never
+		 * drop an accepted control or cache an unapplied value here;
+		 * pacing belongs to the matching IPA, not a lossy kernel gate.
+		 */
+		ret = cci_write(sensor->regmap, IMX681_REG_EXPOSURE,
+				ctrl->val, NULL);
+		goto out_rpm_put;
+	}
 
 	cci_write(sensor->regmap, IMX681_REG_GROUP_HOLD, 1, &ret);
 	switch (ctrl->id) {
@@ -248,6 +283,7 @@ static int imx681_s_ctrl(struct v4l2_ctrl *ctrl)
 			ret = release_ret;
 	}
 
+out_rpm_put:
 	if (IS_ENABLED(CONFIG_PM))
 		pm_runtime_put_autosuspend(sensor->dev);
 
@@ -306,10 +342,21 @@ static int imx681_init_controls(struct imx681 *sensor)
 				  IMX681_EXPOSURE_DEF);
 	sensor->again_ctrl =
 		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_ANALOGUE_GAIN, 0,
+				  sensor->experimental_stream_safe ? 0 :
 				  IMX681_AGAIN_MAX, 1, 0);
 	sensor->dgain_ctrl =
-		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_DIGITAL_GAIN, 0x0100,
-				  0x0fff, 1, IMX681_DGAIN_DEF);
+		v4l2_ctrl_new_std(hdl, ops, V4L2_CID_DIGITAL_GAIN,
+				  sensor->experimental_stream_safe ?
+				  IMX681_STREAM_SAFE_DGAIN : IMX681_DGAIN_DEF,
+				  0x0fff, 1,
+				  sensor->experimental_stream_safe ?
+				  IMX681_STREAM_SAFE_DGAIN : IMX681_DGAIN_DEF);
+	if (sensor->experimental_stream_safe) {
+		if (sensor->again_ctrl)
+			sensor->again_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+		if (sensor->dgain_ctrl)
+			sensor->dgain_ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	}
 
 	v4l2_ctrl_new_fwnode_properties(hdl, ops, &props);
 
@@ -431,11 +478,22 @@ static int imx681_start_streaming(struct imx681 *sensor)
 	if (ret)
 		goto err_rpm_put;
 
+	if (sensor->experimental_stream_safe) {
+		/* Handler setup deliberately skips these read-only controls. */
+		cci_write(sensor->regmap, IMX681_REG_ANALOG_GAIN, 0, &ret);
+		cci_write(sensor->regmap, IMX681_REG_DIGITAL_GAIN,
+			  IMX681_STREAM_SAFE_DGAIN, &ret);
+		if (ret)
+			goto err_rpm_put;
+	}
+
 	ret = cci_write(sensor->regmap, IMX681_REG_MODE_SELECT,
 			IMX681_MODE_STREAMING, NULL);
 	if (ret)
 		goto err_rpm_put;
 
+	if (sensor->experimental_stream_safe)
+		sensor->streaming = true;
 	dev_dbg(sensor->dev, "streaming started\n");
 	return 0;
 
@@ -452,6 +510,20 @@ static int imx681_stop_streaming(struct imx681 *sensor)
 	ret = cci_write(sensor->regmap, IMX681_REG_MODE_SELECT,
 			IMX681_MODE_STANDBY, NULL);
 	pm_runtime_put_autosuspend(sensor->dev);
+	if (sensor->experimental_stream_safe) {
+		/*
+		 * Release the existing stream PM reference exactly once, but a
+		 * failed standby write does not establish physical quiescence.
+		 * Keep the last confirmed streaming state and fail closed until
+		 * a new device instance is probed; do not invent a reset proof.
+		 */
+		if (ret) {
+			if (!sensor->stream_error)
+				sensor->stream_error = ret;
+		} else {
+			sensor->streaming = false;
+		}
+	}
 	return ret;
 }
 
@@ -461,8 +533,18 @@ static int imx681_s_stream(struct v4l2_subdev *sd, int enable)
 	int ret;
 
 	mutex_lock(sensor->ctrl_handler.lock);
+	if (sensor->experimental_stream_safe && sensor->stream_error) {
+		ret = sensor->stream_error;
+		goto out_unlock;
+	}
+	if (sensor->experimental_stream_safe &&
+	    sensor->streaming == !!enable) {
+		ret = 0;
+		goto out_unlock;
+	}
 	ret = enable ? imx681_start_streaming(sensor) :
 		       imx681_stop_streaming(sensor);
+out_unlock:
 	mutex_unlock(sensor->ctrl_handler.lock);
 
 	return ret;
@@ -500,6 +582,7 @@ static int imx681_probe(struct i2c_client *client)
 	if (!sensor)
 		return -ENOMEM;
 	sensor->dev = dev;
+	sensor->experimental_stream_safe = experimental_stream_safe;
 
 	v4l2_i2c_subdev_init(&sensor->sd, client, &imx681_subdev_ops);
 	sensor->sd.internal_ops = &imx681_internal_ops;
