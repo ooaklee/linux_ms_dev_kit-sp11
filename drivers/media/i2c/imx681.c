@@ -498,6 +498,13 @@ static int imx681_start_streaming(struct imx681 *sensor)
 	return 0;
 
 err_rpm_put:
+	/*
+	 * A programming error can leave a partially configured sensor. The PM
+	 * put below is not proof of reset or standby, so keep this experimental
+	 * instance quarantined rather than retrying an uncertain start.
+	 */
+	if (sensor->experimental_stream_safe && !sensor->stream_error)
+		sensor->stream_error = ret;
 	dev_err(sensor->dev, "failed to start streaming: %d\n", ret);
 	pm_runtime_put(sensor->dev);
 	return ret;
