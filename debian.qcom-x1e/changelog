@@ -1,3 +1,14 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v3) stonking; urgency=medium
+
+  * Quarantine further stream and control operations after the first
+    experimental post-resume start-programming failure.
+  * Preserve the original errno and single owned stream-PM reference release.
+  * Retain the default-off experimental_stream_safe setting and matching
+    exact-control-contract Simple IPA requirement; leave pre-programming
+    PM-resume failures and the default-off path unchanged.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 31 Oct 2026 18:28:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v2) stonking; urgency=medium
 
   * Add a default-off IMX681 fixed-gain/direct-exposure experiment inspired
