@@ -1272,6 +1272,13 @@
 
 		current-speed = <4000000>;
 
+		/*
+		 * The EC of the Surface Pro 11 mishandles the D0-exit and
+		 * D0-entry notifications, causing suspend/resume to fail.
+		 * Opt out of them.
+		 */
+		microsoft,sam-no-d3-close-handle;
+
 		pinctrl-0 = <&ssam_state>;
 		pinctrl-names = "default";
 	};

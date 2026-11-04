@@ -1154,12 +1154,25 @@ static int ssam_controller_caps_load_from_of(struct device *dev, struct ssam_con
 	/*
 	 * Every device starting with Surface Pro X through Laptop 7 uses these
 	 * identical values, which makes them good defaults.
+	 *
+	 * Note that, unlike the ACPI/DSM path, where this capability defaults
+	 * to false and has to be explicitly enabled via the DSM function, the
+	 * OF defaults here represent known-good values for the
+	 * SPX-through-SL7-generation of devices.
+	 *
+	 * The EC of some newer devices (currently Surface Pro 11) mishandles
+	 * the D0-exit/D0-entry notifications causing suspend/resume to fail.
+	 * Such devices can opt out of these notifications via the
+	 * "microsoft,sam-no-d3-close-handle" property.
 	 */
-	caps->d3_closes_handle = false;
+	caps->d3_closes_handle = true;
 	caps->screen_on_sleep_idle_timeout = 5000;
 	caps->screen_off_sleep_idle_timeout = 30;
 	caps->ssh_buffer_size = 48;
 	/* TODO: figure out power profile */
+
+	if (device_property_read_bool(dev, "microsoft,sam-no-d3-close-handle"))
+		caps->d3_closes_handle = false;
 
 	return 0;
 }

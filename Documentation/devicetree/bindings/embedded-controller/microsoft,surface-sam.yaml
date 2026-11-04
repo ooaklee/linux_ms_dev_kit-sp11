@@ -24,6 +24,14 @@ properties:
 
   current-speed: true
 
+  microsoft,sam-no-d3-close-handle:
+    type: boolean
+    description:
+      Disables the D0-exit and D0-entry notifications sent to the EC on
+      suspend/resume. Required on devices whose EC mishandles these
+      notifications, e.g. the Surface Pro 11. Defaults to false, i.e.
+      the notifications are sent.
+
 required:
   - compatible
   - interrupts
