@@ -1413,6 +1413,7 @@ struct vd55g1 {
 	u32 mipi_rate;
 	u32 pixel_clock;
 	u64 link_freq;
+	s64 link_freq_menu;
 	struct v4l2_ctrl_handler ctrl_handler;
 	struct v4l2_ctrl *pixel_rate_ctrl;
 	struct v4l2_ctrl *vblank_ctrl;
@@ -1776,6 +1777,9 @@ static int vd55g1_prepare_clock_tree(struct vd55g1 *sensor)
 		pixel_div = 8;
 
 	sensor->pixel_clock = sys_clk / pixel_div;
+
+	/* Keep the signed integer-menu storage alive for the control lifetime. */
+	sensor->link_freq_menu = sensor->link_freq;
 
 	return 0;
 }
@@ -2630,7 +2634,7 @@ static int vd55g1_init_ctrls(struct vd55g1 *sensor)
 					     ARRAY_SIZE(vd55g1_tp_menu) - 1, 0,
 					     0, vd55g1_tp_menu);
 	ctrl = v4l2_ctrl_new_int_menu(hdl, ops, V4L2_CID_LINK_FREQ,
-				      0, 0, &sensor->link_freq);
+				      0, 0, &sensor->link_freq_menu);
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	sensor->pixel_rate_ctrl = v4l2_ctrl_new_std(hdl, ops,
