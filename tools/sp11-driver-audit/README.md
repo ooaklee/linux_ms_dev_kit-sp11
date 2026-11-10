@@ -1,5 +1,11 @@
 # Surface Pro 11 driver research
 
+This 7.3 integration imports research tools and historical validation notes.
+The notes retain their original 7.2 source identities and evidence limits; they
+do not describe a new build or installation of the current kernel. Native
+OV13858 and VD55 camera code is tracked separately in
+[PR #73](https://github.com/ooaklee/linux_ms_dev_kit-sp11/pull/73).
+
 These independently written Linux development tools inventory an extracted
 Surface driver package and decode selected camera resource metadata. They are
 the first source deliverable in the SP11 parity work. They do not install

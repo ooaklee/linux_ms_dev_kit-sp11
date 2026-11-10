@@ -1,0 +1,24 @@
+name: SP11 driver audit tools
+
+on:
+  pull_request:
+    paths:
+      - tools/sp11-driver-audit/**
+      - .github/workflows/sp11-driver-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Test bounded parsers and command-line behavior
+        run: node --test tools/sp11-driver-audit/*.test.mjs
