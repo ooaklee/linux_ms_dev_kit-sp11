@@ -139,9 +139,8 @@ static int nhi_pci_init_msi(struct tb_nhi *nhi)
 
 		res = devm_request_irq(&pdev->dev, irq, nhi_msi,
 				       IRQF_NO_SUSPEND, "thunderbolt", nhi);
-		if (res) {
+		if (res)
 			goto err_destroy_ida;
-		}
 	}
 
 	return 0;
