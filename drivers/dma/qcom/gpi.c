@@ -1402,6 +1402,9 @@ static void gpi_mark_stale_events(struct gchan *gchan)
 
 	ev_rp = ev_ring->rp;
 	local_rp = to_physical(ev_ring, ev_rp);
+	/* Match the pointer width published by the generic event context. */
+	if (!gpii_has_denali_qspi(gpii))
+		local_rp = lower_32_bits(local_rp);
 	while (local_rp != cntxt_rp) {
 		union gpi_event *gpi_event = ev_rp;
 		u32 chid = gpi_event->xfer_compl_event.chid;
@@ -1413,6 +1416,8 @@ static void gpi_mark_stale_events(struct gchan *gchan)
 			ev_rp = ev_ring->base;
 		cntxt_rp = gpi_read_ev_rp(gpii);
 		local_rp = to_physical(ev_ring, ev_rp);
+		if (!gpii_has_denali_qspi(gpii))
+			local_rp = lower_32_bits(local_rp);
 	}
 }
 
