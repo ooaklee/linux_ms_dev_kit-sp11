@@ -2775,6 +2775,7 @@ struct qmp_combo {
 	bool regulators_enabled;
 	bool com_initialized;
 	bool runtime_suspended;
+	bool reconfiguration_failed;
 	enum qmpphy_mode qmpphy_mode;
 
 	struct phy *usb_phy;
@@ -4200,6 +4201,15 @@ static int qmp_combo_dp_configure(struct phy *phy, union phy_configure_opts *opt
 
 	mutex_lock(&qmp->phy_mutex);
 
+	if (qmp->reconfiguration_failed) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EIO;
+	}
+	if (qmp->usb4_init_count || qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EBUSY;
+	}
+
 	memcpy(&qmp->dp_opts, dp_opts, sizeof(*dp_opts));
 	if (qmp->dp_opts.set_voltages) {
 		cfg->configure_dp_tx(qmp);
@@ -4218,6 +4228,15 @@ static int qmp_combo_dp_calibrate(struct phy *phy)
 	int ret = 0;
 
 	mutex_lock(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EIO;
+	}
+	if (qmp->usb4_init_count || qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EBUSY;
+	}
 
 	if (cfg->calibrate_dp_phy)
 		ret = cfg->calibrate_dp_phy(qmp);
@@ -4256,6 +4275,9 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	void __iomem *pcs = qmp->pcs;
 	int ret;
 	u32 val;
+
+	if (qmp->reconfiguration_failed)
+		return -EIO;
 
 	if (WARN_ON(qmp->runtime_suspended))
 		return -EBUSY;
@@ -4446,6 +4468,15 @@ static int qmp_combo_dp_init(struct phy *phy)
 
 	mutex_lock(&qmp->phy_mutex);
 
+	if (qmp->reconfiguration_failed) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+	if (qmp->usb4_init_count || qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
 	ret = qmp_combo_com_init(qmp, false);
 	if (ret)
 		goto out_unlock;
@@ -4483,6 +4514,15 @@ static int qmp_combo_dp_power_on(struct phy *phy)
 	void __iomem *tx2 = qmp->dp_tx2;
 
 	mutex_lock(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EIO;
+	}
+	if (qmp->usb4_init_count || qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EBUSY;
+	}
 	if (WARN_ON(!qmp->com_initialized || qmp->runtime_suspended)) {
 		mutex_unlock(&qmp->phy_mutex);
 		return -EIO;
@@ -4565,6 +4605,9 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 	int pcs_tbl_num, rx_tbl_num, serdes_tbl_num, tx_tbl_num;
 	unsigned int val;
 	int ret;
+
+	if (qmp->reconfiguration_failed)
+		return -EIO;
 
 	if (WARN_ON(!qmp->com_initialized || qmp->runtime_suspended))
 		return -EIO;
@@ -4669,6 +4712,13 @@ static int qmp_combo_usb_init(struct phy *phy)
 
 	guard(mutex)(&qmp->phy_mutex);
 
+	if (qmp->reconfiguration_failed)
+		return -EIO;
+
+	/* A mux event must publish fallback after the USB4 owner exits. */
+	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4 && !qmp->usb4_init_count)
+		return -EBUSY;
+
 	/* USB4 mode takes precedence, do not reprogram the PHY in that case */
 	if (qmp->usb4_init_count) {
 		qmp->init_count++;
@@ -4744,6 +4794,12 @@ static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp,
 	int rollback_ret;
 	int ret;
 
+	if (qmp->reconfiguration_failed)
+		return -EIO;
+
+	if (WARN_ON(!qmp->com_initialized || qmp->runtime_suspended))
+		return -EIO;
+
 	if (qmp->dp_powered_on)
 		return -EBUSY;
 
@@ -4754,9 +4810,6 @@ static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp,
 			return qmp_combo_usb_power_off(qmp->usb_phy);
 		return 0;
 	}
-
-	if (WARN_ON(!qmp->com_initialized || qmp->runtime_suspended))
-		return -EIO;
 
 	dev_dbg(qmp->dev,
 		"reconfiguring QMP PHY mode %d -> %d, orientation %d -> %d\n",
@@ -4795,15 +4848,19 @@ static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp,
 
 stop_new_common:
 	rollback_ret = qmp_combo_usb_power_off(qmp->usb_phy);
-	if (rollback_ret)
+	if (rollback_ret) {
 		dev_err(qmp->dev, "failed to stop new USB PHY state: %d\n",
 			rollback_ret);
+		qmp->reconfiguration_failed = true;
+		return ret;
+	}
 
 	rollback_ret = qmp_combo_com_exit(qmp, true);
 	if (rollback_ret) {
 		dev_err(qmp->dev,
 			"failed to stop new common PHY state during rollback: %d\n",
 			rollback_ret);
+		qmp->reconfiguration_failed = true;
 		return ret;
 	}
 
@@ -4815,15 +4872,19 @@ restore_old_common:
 	if (rollback_ret) {
 		dev_err(qmp->dev, "failed to restore common PHY state: %d\n",
 			rollback_ret);
+		qmp->reconfiguration_failed = true;
 		return ret;
 	}
 
 restore_active_phys:
 	if (usb_was_powered) {
 		rollback_ret = qmp_combo_usb_power_on(qmp->usb_phy);
-		if (rollback_ret)
+		if (rollback_ret) {
 			dev_err(qmp->dev, "failed to restore USB PHY state: %d\n",
 				rollback_ret);
+			qmp->reconfiguration_failed = true;
+			return ret;
+		}
 	}
 
 	if ((old_mode == QMPPHY_MODE_USB3DP ||
@@ -4840,6 +4901,9 @@ static int qmp_combo_usb4_init(struct phy *phy)
 	int ret;
 
 	guard(mutex)(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed)
+		return -EIO;
 	if (WARN_ON(qmp->usb4_init_count))
 		return -EBUSY;
 
@@ -4921,6 +4985,9 @@ static int qmp_combo_usb4_set_mode(struct phy *phy, enum phy_mode mode, int subm
 		return -EINVAL;
 
 	guard(mutex)(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed)
+		return -EIO;
 
 	/* The active electrical configuration changes only at the next init. */
 	if (qmp->usb4_init_count && qmp->usb4_phy_submode != submode)
@@ -5023,6 +5090,9 @@ static int __maybe_unused qmp_combo_runtime_suspend(struct device *dev)
 
 	guard(mutex)(&qmp->phy_mutex);
 
+	if (qmp->reconfiguration_failed)
+		return -EIO;
+
 	dev_vdbg(dev, "Suspending QMP phy, mode:%d\n", qmp->phy_mode);
 
 	if (!qmp->init_count) {
@@ -5052,6 +5122,9 @@ static int __maybe_unused qmp_combo_runtime_resume(struct device *dev)
 	int ret = 0;
 
 	guard(mutex)(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed)
+		return -EIO;
 
 	dev_vdbg(dev, "Resuming QMP phy, mode:%d\n", qmp->phy_mode);
 
@@ -5402,6 +5475,10 @@ static int qmp_combo_typec_switch_set_locked(struct typec_switch_dev *sw,
 
 	guard(mutex)(&qmp->phy_mutex);
 
+	if (qmp->reconfiguration_failed ||
+	    (qmp->init_count && (!qmp->com_initialized || qmp->runtime_suspended)))
+		return -EIO;
+
 	dev_dbg(qmp->dev, "Type-C orientation %d -> %d, DP powered: %d\n",
 		qmp->orientation, orientation, qmp->dp_powered_on);
 
@@ -5449,6 +5526,10 @@ static int qmp_combo_typec_mux_set_locked(struct typec_mux_dev *mux,
 	int ret;
 
 	guard(mutex)(&qmp->phy_mutex);
+
+	if (qmp->reconfiguration_failed ||
+	    (qmp->init_count && (!qmp->com_initialized || qmp->runtime_suspended)))
+		return -EIO;
 
 	dev_dbg(qmp->dev, "Type-C mux state %lu, DP powered: %d\n",
 		state->mode, qmp->dp_powered_on);
