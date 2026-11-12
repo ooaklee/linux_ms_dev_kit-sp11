@@ -2776,6 +2776,7 @@ struct qmp_combo {
 	bool com_initialized;
 	bool runtime_suspended;
 	bool reconfiguration_failed;
+	bool usb4_tunnel_clk_active;
 	enum qmpphy_mode qmpphy_mode;
 
 	struct phy *usb_phy;
@@ -4337,8 +4338,17 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
 		qphy_setbits(pcs_aon, cfg->regs[QPHY_PCS_USB4_CLAMP_ENABLE], CLAMP_EN);
 
-		/* Do not disturb the DP PLL in case there's an active DP tunnel. */
-		if (readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL) & DP_TUNNELING_CLOCK_GEN_EN)
+		/*
+		 * Do not disturb the DP PLL while a DP tunnel is using it as
+		 * its clock source. The tunneling-clock-enable bit reflects
+		 * router ownership of the DP PLL, so sampling it here and
+		 * keeping the sample for the matching com_exit() keeps the
+		 * protection symmetrical across teardown and rollback.
+		 */
+		qmp->usb4_tunnel_clk_active =
+			readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL) &
+			DP_TUNNELING_CLOCK_GEN_EN;
+		if (qmp->usb4_tunnel_clk_active)
 			dp_reset_val &= ~SW_DPPHY_RESET_MUX;
 	}
 
@@ -4446,6 +4456,23 @@ static int qmp_combo_com_exit(struct qmp_combo *qmp, bool force)
 
 	if (!qmp->com_initialized)
 		return 0;
+
+	/*
+	 * While the router is using the DP PLL as a tunnel clock source
+	 * (sampled at USB4 com_init), asserting the bulk resets together
+	 * with the following regulator power-down kills the tunnel clock;
+	 * there is no way to preserve it through a common exit. Windows
+	 * avoids this by parking the lanes in standby rather than powering
+	 * the PHY down (lnk_phy_standby, see evidence/qcusb4filter-report.md),
+	 * but Linux has no standby-only exit path. Log the loss explicitly
+	 * so it is distinguishable from an accidental reset, and drop the
+	 * sample so later exits are not misreported.
+	 */
+	if (qmp->usb4_tunnel_clk_active) {
+		dev_warn(qmp->dev,
+			 "DP tunnel clock active during common exit: tunnel clock will be lost\n");
+		qmp->usb4_tunnel_clk_active = false;
+	}
 
 	ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
 	if (ret)
