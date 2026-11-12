@@ -1,0 +1,33 @@
+name: Type-C bounded recovery regression
+
+on:
+  pull_request:
+    paths:
+      - drivers/clk/qcom/reset.c
+      - drivers/usb/typec/mux/ps883x.c
+      - .github/scripts/typec-bounded/**
+      - .github/workflows/typec-bounded.yml
+  push:
+    branches: [sp11/ubuntu-qcom-x1e-7.3.y]
+    paths:
+      - drivers/clk/qcom/reset.c
+      - drivers/usb/typec/mux/ps883x.c
+      - .github/scripts/typec-bounded/**
+      - .github/workflows/typec-bounded.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typec-bounded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch pinned regression baseline
+        run: git fetch --no-tags --depth=1 origin c8cdaac6675ba41fe76e54760caae5c020752319
+      - name: Run source-derived cases and negative controls with sanitizers
+        run: python3 .github/scripts/typec-bounded/test_typec_bounded.py --source-root . --sanitizers
