@@ -3059,6 +3059,8 @@ static int vd55g1_probe(struct i2c_client *client)
 	sensor->model = device_get_match_data(dev);
 
 	v4l2_i2c_subdev_init(&sensor->sd, client, &vd55g1_subdev_ops);
+	/* Failed stops retain the stream PM reference and grabbed controls. */
+	sensor->sd.flags |= V4L2_SUBDEV_FL_STOP_RETRY;
 
 	ret = vd55g1_parse_dt(sensor);
 	if (ret)
