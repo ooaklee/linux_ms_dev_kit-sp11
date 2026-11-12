@@ -4273,15 +4273,8 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	else
 		aon_toggle = qmp->pcs_aon;
 
-	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4)
 		pcs = qmp->usb4_pcs;
-
-		qphy_setbits(pcs_aon, cfg->regs[QPHY_PCS_USB4_CLAMP_ENABLE], CLAMP_EN);
-
-		/* Do not disturb the DP PLL in case there's an active DP tunnel */
-		if (readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL) & DP_TUNNELING_CLOCK_GEN_EN)
-			dp_reset_val &= ~SW_DPPHY_RESET_MUX;
-	}
 
 	if (!qmp->regulators_enabled) {
 		ret = regulator_bulk_enable(cfg->num_vregs, qmp->vregs);
@@ -4318,6 +4311,14 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	}
 
 	qphy_setbits(com, QPHY_V3_DP_COM_POWER_DOWN_CTRL, SW_PWRDN);
+
+	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4) {
+		qphy_setbits(pcs_aon, cfg->regs[QPHY_PCS_USB4_CLAMP_ENABLE], CLAMP_EN);
+
+		/* Do not disturb the DP PLL in case there's an active DP tunnel. */
+		if (readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL) & DP_TUNNELING_CLOCK_GEN_EN)
+			dp_reset_val &= ~SW_DPPHY_RESET_MUX;
+	}
 
 	/* override hardware control for reset of qmp phy */
 	qphy_setbits(com, QPHY_V3_DP_COM_RESET_OVRD_CTRL,
@@ -4918,6 +4919,12 @@ static int qmp_combo_usb4_set_mode(struct phy *phy, enum phy_mode mode, int subm
 
 	if (submode != PHY_SUBMODE_USB4 && submode != PHY_SUBMODE_TBT3)
 		return -EINVAL;
+
+	guard(mutex)(&qmp->phy_mutex);
+
+	/* The active electrical configuration changes only at the next init. */
+	if (qmp->usb4_init_count && qmp->usb4_phy_submode != submode)
+		return -EBUSY;
 
 	qmp->usb4_phy_submode = submode;
 
@@ -6016,7 +6023,7 @@ static int qmp_combo_probe(struct platform_device *pdev)
 		if (IS_ERR(qmp->usb4_phy)) {
 			ret = PTR_ERR(qmp->usb4_phy);
 			dev_err(dev, "failed to create USB4 PHY: %d\n", ret);
-			goto err_node_put;
+			goto err_pm_put;
 		}
 
 		phy_set_drvdata(qmp->usb4_phy, qmp);
