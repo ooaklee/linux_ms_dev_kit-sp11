@@ -15,7 +15,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v4) stonking; urgency=medium
     qualification, and stream ownership retained until stop succeeds
     (PR #73).
 
- -- Leon Silcott <lnsilcott@gmail.com>  Thu, 12 Nov 2026 20:30:00 +0000
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 20:30:00 +0000
 
 linux-qcom-x1e (7.3.0-jg-1sp11v3) stonking; urgency=medium
 
