@@ -21,6 +21,7 @@
 
 #include "nhi.h"
 #include "nhi_regs.h"
+#include "qcom_usb4_hr.h"
 #include "tb.h"
 
 /**
@@ -644,13 +645,24 @@ static int __init nhi_init(void)
 
 	ret = pci_register_driver(&nhi_driver);
 	if (ret)
-		tb_domain_exit();
+		goto err_domain;
 
+	ret = qcom_usb4_hr_register();
+	if (ret)
+		goto err_pci;
+
+	return 0;
+
+err_pci:
+	pci_unregister_driver(&nhi_driver);
+err_domain:
+	tb_domain_exit();
 	return ret;
 }
 
 static void __exit nhi_unload(void)
 {
+	qcom_usb4_hr_unregister();
 	pci_unregister_driver(&nhi_driver);
 	tb_domain_exit();
 }
