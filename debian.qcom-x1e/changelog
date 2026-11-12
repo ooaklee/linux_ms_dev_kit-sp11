@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v5) stonking; urgency=medium
+
+  * Port the Qualcomm USB4 host-router research frontend behind the
+    default-off CONFIG_USB4_QCOM_EXPERIMENTAL scaffold: conditional
+    composite linkage, domain -> PCI -> Qualcomm registration with
+    reverse unwind, the REA-evidenced whole-container firmware
+    validator, full pre-map MMIO bounds validation, and serialised
+    stop/restart ownership (PR #76).
+  * Map the UCS0 mailbox through a named optional platform resource
+    before falling back to the fixed ACPI-declared window, with the
+    mapping failure unwound through the prepare devres group.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 22:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v4) stonking; urgency=medium
 
   * Port the X1E QMP-combo USB4/TBT3 PHY support to the 7.3 lifetime:
