@@ -117,14 +117,14 @@ def main():
         enabled_flags = [*flags, "-DCONFIG_VIDEO_V4L2_SUBDEV_API=1"]
         candidate = template.replace("@SOURCE@", "\n".join(functions.values()))
         result = compile_and_run(args.cc, enabled_flags, candidate, build, "candidate")
-        if result.returncode:
+        if result.returncode or result.stderr:
             raise RuntimeError(f"candidate failed\n{result.stdout}{result.stderr}")
         print(result.stdout, end="")
         for name, mutant, group, assertion in variants:
             selected = {**functions, "call_s_stream": mutant}
             source = template.replace("@SOURCE@", "\n".join(selected.values()))
             result = compile_and_run(args.cc, enabled_flags, source, build, name, group)
-            if result.returncode != 1 or assertion not in result.stderr:
+            if result.returncode != 1 or result.stderr != assertion + "\n":
                 raise RuntimeError(f"{name}: intended assertion did not reject control\n"
                                    f"exit={result.returncode}\n{result.stdout}{result.stderr}")
             print(f"PASS negative control {name}: {assertion}")
@@ -153,7 +153,7 @@ int main(void) {
 '''
         result = compile_and_run(args.cc, flags, noapi.replace("@WRAPPER@", wrapper),
                                  build, "no-subdev-api")
-        if result.returncode:
+        if result.returncode or result.stderr:
             raise RuntimeError(f"API-disabled test failed\n{result.stdout}{result.stderr}")
         print(result.stdout, end="")
     print(f"PASS core SHA256 {hashlib.sha256(core_text.encode()).hexdigest()}")
