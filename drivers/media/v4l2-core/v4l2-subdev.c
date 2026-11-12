@@ -487,6 +487,12 @@ static int call_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = sd->ops->video->s_stream(sd, enable);
 
 	if (!enable && ret < 0) {
+#if defined(CONFIG_VIDEO_V4L2_SUBDEV_API)
+		/* Only opted-in drivers retain resources for a failed-stop retry. */
+		if ((sd->flags & V4L2_SUBDEV_FL_STOP_RETRY) &&
+		    sd->ops->video->s_stream == v4l2_subdev_s_stream_helper)
+			return ret;
+#endif
 		dev_warn(sd->dev, "disabling streaming failed (%d)\n", ret);
 		ret = 0;
 	}

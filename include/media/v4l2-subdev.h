@@ -447,6 +447,8 @@ enum v4l2_subdev_pre_streamon_flags {
  * @s_stream: start (enabled == 1) or stop (enabled == 0) streaming on the
  *	sub-device. Failure on stop will remove any resources acquired in
  *	streaming start, while the error code is still returned by the driver.
+ *	Drivers using v4l2_subdev_s_stream_helper() may explicitly opt into
+ *	retaining resources on failure with %V4L2_SUBDEV_FL_STOP_RETRY.
  *	The caller shall track the subdev state, and shall not start or stop an
  *	already started or stopped subdev. Also see call_s_stream wrapper in
  *	v4l2-subdev.c.
@@ -973,6 +975,14 @@ struct v4l2_subdev_internal_ops {
  */
 #define V4L2_SUBDEV_FL_STREAMS			(1U << 4)
 
+/*
+ * Set only with v4l2_subdev_s_stream_helper() when a failed disable_streams()
+ * retains all streaming resources, including runtime PM and control ownership,
+ * so the operation can be retried. Legacy callers then receive stop errors and
+ * retain the enabled state. Do not set this if failure releases those resources.
+ */
+#define V4L2_SUBDEV_FL_STOP_RETRY			(1U << 5)
+
 struct regulator_bulk_data;
 
 /**
@@ -1003,7 +1013,9 @@ struct v4l2_subdev_platform_data {
  *   %V4L2_SUBDEV_FL_HAS_DEVNODE - Set this flag if this subdev needs a
  *   device node;
  *   %V4L2_SUBDEV_FL_HAS_EVENTS -  Set this flag if this subdev generates
- *   events.
+ *   events;
+ *   %V4L2_SUBDEV_FL_STOP_RETRY - Retain resources and enabled state after a
+ *   failed stop through v4l2_subdev_s_stream_helper(), allowing a retry.
  *
  * @v4l2_dev: pointer to struct &v4l2_device
  * @ops: pointer to struct &v4l2_subdev_ops
@@ -1717,6 +1729,11 @@ int v4l2_subdev_disable_streams(struct v4l2_subdev *sd, u32 pad,
  * &v4l2_subdev_video_ops.s_stream operation.
  *
  * This helper can only be used by subdevs that have a single source pad.
+ * Legacy calls retain their historical stop-error handling unless the driver
+ * sets %V4L2_SUBDEV_FL_STOP_RETRY. With that flag, failed stops retain enabled
+ * state and streaming resources and the caller must retry before treating the
+ * subdevice as stopped. The flag requires the driver's disable_streams()
+ * operation to retain every acquired streaming resource on failure.
  *
  * Return: 0 on success, or a negative error code otherwise.
  */
