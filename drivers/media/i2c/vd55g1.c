@@ -3162,6 +3162,7 @@ static void vd55g1_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct vd55g1 *sensor = to_vd55g1(sd);
+	struct v4l2_subdev_state *state;
 
 	/*
 	 * Unregistering the subdev does not stop a live stream: quiesce a
@@ -3169,7 +3170,14 @@ static void vd55g1_remove(struct i2c_client *client)
 	 * mirroring vd55g1_disable_streams() without the PM put, so the
 	 * exposure cluster is saved and the sensor is not powered down
 	 * mid-stream.
+	 *
+	 * v4l2_subdev_is_streaming() requires the active-state lock to be
+	 * held; keep it across the quiesce so the check cannot race with a
+	 * concurrent stream or control operation. The active state is still
+	 * allocated here: it is freed by vd55g1_subdev_cleanup() below.
 	 */
+	state = v4l2_subdev_lock_and_get_active_state(sd);
+
 	if (v4l2_subdev_is_streaming(sd)) {
 		int stop_ret = 0;
 		int ret;
@@ -3188,6 +3196,8 @@ static void vd55g1_remove(struct i2c_client *client)
 				 "Failed to stop stream on remove: %d\n",
 				 stop_ret);
 	}
+
+	v4l2_subdev_unlock_state(state);
 
 	vd55g1_subdev_cleanup(sensor);
 
