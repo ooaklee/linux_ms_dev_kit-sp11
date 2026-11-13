@@ -1355,9 +1355,8 @@ static int ov13858_get_pad_format(struct v4l2_subdev *sd,
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 	ret = ov13858_do_get_pad_format(ov13858, sd_state, fmt);
-	mutex_unlock(&ov13858->mutex);
 
 	return ret;
 }
@@ -1376,7 +1375,7 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 	s64 pixel_rate;
 	s64 link_freq;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
 	/* Only one raw bayer(GRBG) order is supported */
 	if (fmt->format.code != MEDIA_BUS_FMT_SGRBG10_1X10)
@@ -1412,8 +1411,6 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 		__v4l2_ctrl_modify_range(ov13858->hblank, h_blank,
 					 h_blank, 1, h_blank);
 	}
-
-	mutex_unlock(&ov13858->mutex);
 
 	return 0;
 }
@@ -1481,7 +1478,7 @@ static int ov13858_enable_streams(struct v4l2_subdev *sd,
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
 	if (READ_ONCE(ov13858->power_fault)) {
 		ret = -EIO;
@@ -1500,15 +1497,11 @@ static int ov13858_enable_streams(struct v4l2_subdev *sd,
 	if (ret)
 		goto err_rpm_put;
 
-	mutex_unlock(&ov13858->mutex);
-
 	return 0;
 
 err_rpm_put:
 	pm_runtime_put(ov13858->dev);
 err_unlock:
-	mutex_unlock(&ov13858->mutex);
-
 	return ret;
 }
 
@@ -1519,7 +1512,7 @@ static int ov13858_disable_streams(struct v4l2_subdev *sd,
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
 	ret = ov13858_stop_streaming(ov13858);
 	if (ret) {
@@ -1530,13 +1523,10 @@ static int ov13858_disable_streams(struct v4l2_subdev *sd,
 		 * so the framework retains the enabled state and can
 		 * retry the stop (V4L2_SUBDEV_FL_STOP_RETRY).
 		 */
-		mutex_unlock(&ov13858->mutex);
 		return ret;
 	}
 
 	pm_runtime_put(ov13858->dev);
-
-	mutex_unlock(&ov13858->mutex);
 
 	return 0;
 }
@@ -1967,7 +1957,7 @@ static int ov13858_probe(struct i2c_client *client)
 	 */
 	ret = pm_runtime_set_active(ov13858->dev);
 	if (ret)
-		goto error_media_entity;
+		goto error_subdev_cleanup;
 	pm_runtime_get_noresume(ov13858->dev);
 	pm_runtime_enable(ov13858->dev);
 
