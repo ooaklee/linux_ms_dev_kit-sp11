@@ -2192,7 +2192,7 @@ static int vd55g1_enable_streams(struct v4l2_subdev *sd,
 
 err_rpm_put:
 	pm_runtime_put(sensor->dev);
-	return -EINVAL;
+	return ret;
 }
 
 static int vd55g1_disable_streams(struct v4l2_subdev *sd,
@@ -3162,6 +3162,32 @@ static void vd55g1_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct vd55g1 *sensor = to_vd55g1(sd);
+
+	/*
+	 * Unregistering the subdev does not stop a live stream: quiesce a
+	 * still-streaming sensor to software standby before cutting power,
+	 * mirroring vd55g1_disable_streams() without the PM put, so the
+	 * exposure cluster is saved and the sensor is not powered down
+	 * mid-stream.
+	 */
+	if (v4l2_subdev_is_streaming(sd)) {
+		int stop_ret = 0;
+		int ret;
+
+		ret = vd55g1_read_expo_cluster(sensor);
+		if (ret)
+			dev_warn(sensor->dev,
+				 "Failed to save exposure: %d\n", ret);
+
+		vd55g1_write(sensor, REG_STREAMING,
+			     VD55G1_STREAMING_STOP_STREAM, &stop_ret);
+		vd55g1_poll_reg(sensor, REG_STREAMING, 0, &stop_ret);
+		vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &stop_ret);
+		if (stop_ret)
+			dev_warn(sensor->dev,
+				 "Failed to stop stream on remove: %d\n",
+				 stop_ret);
+	}
 
 	vd55g1_subdev_cleanup(sensor);
 

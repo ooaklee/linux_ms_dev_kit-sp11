@@ -1504,7 +1504,18 @@ static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
 		if (ret)
 			goto err_rpm_put;
 	} else {
-		ov13858_stop_streaming(ov13858);
+		ret = ov13858_stop_streaming(ov13858);
+		if (ret) {
+			/*
+			 * The standby write failed: the sensor may still be
+			 * streaming. Keep the PM reference so the sensor is
+			 * not powered down mid-stream, and report the failure
+			 * so the framework retains the enabled state and can
+			 * retry the stop (V4L2_SUBDEV_FL_STOP_RETRY).
+			 */
+			mutex_unlock(&ov13858->mutex);
+			return ret;
+		}
 		pm_runtime_put(ov13858->dev);
 	}
 
@@ -1916,7 +1927,8 @@ static int ov13858_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
 	ov13858->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
-			     V4L2_SUBDEV_FL_HAS_EVENTS;
+			     V4L2_SUBDEV_FL_HAS_EVENTS |
+			     V4L2_SUBDEV_FL_STOP_RETRY;
 	ov13858->sd.entity.ops = &ov13858_subdev_entity_ops;
 	ov13858->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
 
