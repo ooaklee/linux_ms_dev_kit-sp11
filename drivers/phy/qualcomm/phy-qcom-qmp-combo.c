@@ -4345,9 +4345,9 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		 * keeping the sample for the matching com_exit() keeps the
 		 * protection symmetrical across teardown and rollback.
 		 */
+		val = readl(com + QPHY_V3_DP_COM_PHY_MODE_CTRL);
 		qmp->usb4_tunnel_clk_active =
-			readl(com + QPHY_V3_DP_COM_RESET_OVRD_CTRL) &
-			DP_TUNNELING_CLOCK_GEN_EN;
+			!!(val & DP_TUNNELING_CLOCK_GEN_EN);
 		if (qmp->usb4_tunnel_clk_active)
 			dp_reset_val &= ~SW_DPPHY_RESET_MUX;
 	}
@@ -4378,6 +4378,13 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	 */
 	writel(val, com + QPHY_V3_DP_COM_TYPEC_CTRL);
 
+	/*
+	 * Re-read the mode register here: val was reused for the TYPEC_CTRL
+	 * programming above and no longer holds the tunnel-clock sample.
+	 */
+	if (qmp->qmpphy_mode == QMPPHY_MODE_USB4)
+		val = readl(com + QPHY_V3_DP_COM_PHY_MODE_CTRL);
+
 	switch (qmp->qmpphy_mode) {
 	case QMPPHY_MODE_USB3DP:
 		writel(USB3_MODE | DP_MODE, com + QPHY_V3_DP_COM_PHY_MODE_CTRL);
@@ -4404,7 +4411,15 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 				SW_USB3PHY_RESET_MUX | SW_USB3PHY_RESET);
 		break;
 	case QMPPHY_MODE_USB4:
-		writel(USB4_MODE, com + QPHY_V3_DP_COM_PHY_MODE_CTRL);
+		/*
+		 * USB4_MODE is mutually exclusive with USB3/DP mode bits, but
+		 * the tunneling-clock-enable bit in the same register must
+		 * survive the mode write: it reflects router ownership of the
+		 * DP PLL as a tunnel clock source, and clearing it would kill
+		 * an active DP tunnel.
+		 */
+		writel(USB4_MODE | (val & DP_TUNNELING_CLOCK_GEN_EN),
+		       com + QPHY_V3_DP_COM_PHY_MODE_CTRL);
 
 		/* bring both QMP USB and QMP DP PHYs PCS block out of reset */
 		/* TODO: disable DP PLL if there are no active tunnels after router setup */
