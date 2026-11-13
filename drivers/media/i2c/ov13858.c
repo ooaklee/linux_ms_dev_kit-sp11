@@ -1168,23 +1168,18 @@ static int ov13858_write_reg_list(struct ov13858 *ov13858,
 	return ov13858_write_regs(ov13858, r_list->regs, r_list->num_of_regs);
 }
 
-/* Open sub-device */
-static int ov13858_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+/* Initialize pad format */
+static int ov13858_init_state(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *sd_state)
 {
 	struct ov13858 *ov13858 = to_ov13858(sd);
-	struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_state_get_format(fh->state,
-									  0);
+	struct v4l2_mbus_framefmt *format =
+		v4l2_subdev_state_get_format(sd_state, 0);
 
-	mutex_lock(&ov13858->mutex);
-
-	/* Initialize try_fmt */
-	try_fmt->width = ov13858->cur_mode->width;
-	try_fmt->height = ov13858->cur_mode->height;
-	try_fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
-	try_fmt->field = V4L2_FIELD_NONE;
-
-	/* No crop or compose */
-	mutex_unlock(&ov13858->mutex);
+	format->width = ov13858->cur_mode->width;
+	format->height = ov13858->cur_mode->height;
+	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	format->field = V4L2_FIELD_NONE;
 
 	return 0;
 }
@@ -1360,9 +1355,8 @@ static int ov13858_get_pad_format(struct v4l2_subdev *sd,
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 	ret = ov13858_do_get_pad_format(ov13858, sd_state, fmt);
-	mutex_unlock(&ov13858->mutex);
 
 	return ret;
 }
@@ -1381,7 +1375,7 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 	s64 pixel_rate;
 	s64 link_freq;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
 	/* Only one raw bayer(GRBG) order is supported */
 	if (fmt->format.code != MEDIA_BUS_FMT_SGRBG10_1X10)
@@ -1417,8 +1411,6 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 		__v4l2_ctrl_modify_range(ov13858->hblank, h_blank,
 					 h_blank, 1, h_blank);
 	}
-
-	mutex_unlock(&ov13858->mutex);
 
 	return 0;
 }
@@ -1479,45 +1471,64 @@ static int ov13858_stop_streaming(struct ov13858 *ov13858)
 				 OV13858_REG_VALUE_08BIT, OV13858_MODE_STANDBY);
 }
 
-static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
+static int ov13858_enable_streams(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state, u32 pad,
+				  u64 streams_mask)
 {
 	struct ov13858 *ov13858 = to_ov13858(sd);
-	int ret = 0;
+	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
-	if (enable && READ_ONCE(ov13858->power_fault)) {
+	if (READ_ONCE(ov13858->power_fault)) {
 		ret = -EIO;
 		goto err_unlock;
 	}
 
-	if (enable) {
-		ret = pm_runtime_resume_and_get(ov13858->dev);
-		if (ret < 0)
-			goto err_unlock;
+	ret = pm_runtime_resume_and_get(ov13858->dev);
+	if (ret < 0)
+		goto err_unlock;
 
-		/*
-		 * Apply default & customized values
-		 * and then start streaming.
-		 */
-		ret = ov13858_start_streaming(ov13858);
-		if (ret)
-			goto err_rpm_put;
-	} else {
-		ov13858_stop_streaming(ov13858);
-		pm_runtime_put(ov13858->dev);
-	}
+	/*
+	 * Apply default & customized values
+	 * and then start streaming.
+	 */
+	ret = ov13858_start_streaming(ov13858);
+	if (ret)
+		goto err_rpm_put;
 
-	mutex_unlock(&ov13858->mutex);
-
-	return ret;
+	return 0;
 
 err_rpm_put:
 	pm_runtime_put(ov13858->dev);
 err_unlock:
-	mutex_unlock(&ov13858->mutex);
-
 	return ret;
+}
+
+static int ov13858_disable_streams(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *state, u32 pad,
+				   u64 streams_mask)
+{
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret;
+
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
+
+	ret = ov13858_stop_streaming(ov13858);
+	if (ret) {
+		/*
+		 * The standby write failed: the sensor may still be
+		 * streaming. Keep the PM reference so the sensor is
+		 * not powered down mid-stream, and report the failure
+		 * so the framework retains the enabled state and can
+		 * retry the stop (V4L2_SUBDEV_FL_STOP_RETRY).
+		 */
+		return ret;
+	}
+
+	pm_runtime_put(ov13858->dev);
+
+	return 0;
 }
 
 /* Verify chip ID */
@@ -1547,7 +1558,7 @@ static const struct v4l2_subdev_core_ops ov13858_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops ov13858_video_ops = {
-	.s_stream = ov13858_set_stream,
+	.s_stream = v4l2_subdev_s_stream_helper,
 };
 
 static const struct v4l2_subdev_pad_ops ov13858_pad_ops = {
@@ -1555,6 +1566,8 @@ static const struct v4l2_subdev_pad_ops ov13858_pad_ops = {
 	.get_fmt = ov13858_get_pad_format,
 	.set_fmt = ov13858_set_pad_format,
 	.enum_frame_size = ov13858_enum_frame_size,
+	.enable_streams = ov13858_enable_streams,
+	.disable_streams = ov13858_disable_streams,
 };
 
 static const struct v4l2_subdev_sensor_ops ov13858_sensor_ops = {
@@ -1573,7 +1586,7 @@ static const struct media_entity_operations ov13858_subdev_entity_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops ov13858_internal_ops = {
-	.open = ov13858_open,
+	.init_state = ov13858_init_state,
 };
 
 /* Initialize control handlers */
@@ -1916,9 +1929,11 @@ static int ov13858_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
 	ov13858->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
-			     V4L2_SUBDEV_FL_HAS_EVENTS;
+			     V4L2_SUBDEV_FL_HAS_EVENTS |
+			     V4L2_SUBDEV_FL_STOP_RETRY;
 	ov13858->sd.entity.ops = &ov13858_subdev_entity_ops;
 	ov13858->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ov13858->sd.state_lock = &ov13858->mutex;
 
 	/* Initialize source pad */
 	ov13858->pad.flags = MEDIA_PAD_FL_SOURCE;
@@ -1928,6 +1943,13 @@ static int ov13858_probe(struct i2c_client *client)
 		goto error_handler_free;
 	}
 
+	ret = v4l2_subdev_init_finalize(&ov13858->sd);
+	if (ret < 0) {
+		dev_err(ov13858->dev, "subdev initialization failed: %d\n",
+			ret);
+		goto error_media_entity;
+	}
+
 	/*
 	 * The driver powers DT devices; i2c-core powers ACPI devices. Hold the
 	 * initial reference until async registration has finished, since binding
@@ -1935,7 +1957,7 @@ static int ov13858_probe(struct i2c_client *client)
 	 */
 	ret = pm_runtime_set_active(ov13858->dev);
 	if (ret)
-		goto error_media_entity;
+		goto error_subdev_cleanup;
 	pm_runtime_get_noresume(ov13858->dev);
 	pm_runtime_enable(ov13858->dev);
 
@@ -1950,6 +1972,9 @@ static int ov13858_probe(struct i2c_client *client)
 error_runtime_pm:
 	pm_runtime_disable(ov13858->dev);
 	pm_runtime_put_noidle(ov13858->dev);
+
+error_subdev_cleanup:
+	v4l2_subdev_cleanup(&ov13858->sd);
 
 error_media_entity:
 	media_entity_cleanup(&ov13858->sd.entity);
@@ -1974,6 +1999,7 @@ static void ov13858_remove(struct i2c_client *client)
 	int ret = 0;
 
 	v4l2_async_unregister_subdev(sd);
+	v4l2_subdev_cleanup(sd);
 	media_entity_cleanup(&sd->entity);
 	ov13858_free_controls(ov13858);
 
