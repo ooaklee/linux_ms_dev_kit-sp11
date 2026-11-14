@@ -5,6 +5,30 @@
  * By default this only validates that the DT describes the complete
  * host-router resource set.  The activation path is explicitly opt-in while
  * the firmware and Qualcomm-specific initialization sequence are incomplete.
+ *
+ * Controller ownership contract between this driver and the QMP PHY driver
+ * (qualification area c):
+ *
+ * - The PHY driver (phy-qcom-qmp-combo, #24 series) owns the QMP block,
+ *   its "phy_nocsr" reset (we take it only as an optional SHARED reset),
+ *   and the USB4 pipe-clock/ownership state machine it acquired in #24/#87.
+ *   We consume the PHY exclusively through phy_get/phy_set_mode_ext/
+ *   phy_init/phy_exit and never write its registers -- the one historical
+ *   exception, the AON clamp release at PHY base +0x104, is default-off
+ *   behind uc_skip_clamp=0.
+ * - This driver owns the host-router NHI block: its named MMIO regions,
+ *   the remaining resets, the clocks, the UC firmware stream and the NHI
+ *   rings/interrupts once activated.
+ * - Stop/restart: activation is serialised under hr->lock and one-shot.
+ *   After qcom_usb4_hr_stop() (remove/shutdown), state is STOPPED and
+ *   cannot be re-entered; qcom_usb4_hr_release_activation() unwinds in
+ *   strict reverse activation order: nhi_remove() -> domain devres group
+ *   -> phy_exit() -> reset assertion -> clocks disabled. If any physical
+ *   unwind step fails, cleanup_error is recorded, state becomes FAILED
+ *   and restart is refused; a software unwind never claims the UC is
+ *   safely restartable. The PHY itself may still be held by its own
+ *   driver for the USB/DP alternate paths, which is why we do not touch
+ *   its resources in remove() beyond phy_exit().
  */
 
 #include <linux/clk.h>
@@ -108,11 +132,24 @@ struct qcom_usb4_hr {
 static int qcom_usb4_hr_map_resources(struct qcom_usb4_hr *hr,
 				      struct platform_device *pdev)
 {
-	struct resource *resources[ARRAY_SIZE(qcom_usb4_hr_regs)];
 	struct device *dev = &pdev->dev;
 	int i;
 
-	/* Validate every range before mapping any part of the controller. */
+	/*
+	 * MMIO contract (qualification area a):
+	 *
+	 * Every named region is validated for presence, size and alignment
+	 * BEFORE any part of the controller is mapped, then mapped through
+	 * devm_platform_ioremap_resource_byname() so the mapping is devres
+	 * owned and released with the platform device. All accesses in this
+	 * driver are 32-bit readl/writel, so each region must start on a
+	 * 4-byte boundary and cover a whole number of words; min_size comes
+	 * from the highest offset+access-width actually used per region.
+	 *
+	 * There is no in-tree DT node for the host router (the binding is
+	 * research-only), so a mismatch here fails probe of this scaffold
+	 * only and cannot affect a normal boot.
+	 */
 	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
 		const struct qcom_usb4_hr_reg *reg = &qcom_usb4_hr_regs[i];
 		struct resource *res;
@@ -129,11 +166,16 @@ static int qcom_usb4_hr_map_resources(struct qcom_usb4_hr *hr,
 			return dev_err_probe(dev, -EINVAL,
 					     "MMIO resource %s is too small\n",
 					     reg->name);
-		resources[i] = res;
+		if (!IS_ALIGNED(res->start, sizeof(u32)) ||
+		    size % sizeof(u32))
+			return dev_err_probe(dev, -EINVAL,
+					     "MMIO resource %s is not 32-bit aligned\n",
+					     reg->name);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(qcom_usb4_hr_regs); i++) {
-		hr->regs[i] = devm_ioremap_resource(dev, resources[i]);
+		hr->regs[i] = devm_platform_ioremap_resource_byname(
+			pdev, qcom_usb4_hr_regs[i].name);
 		if (IS_ERR(hr->regs[i]))
 			return dev_err_probe(dev, PTR_ERR(hr->regs[i]),
 					     "cannot map MMIO resource %s\n",
@@ -500,6 +542,22 @@ static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 		dev_info(hr->nhi.dev,
 			 "USB4 UC already running (warm start); not halting\n");
 	} else if (fw_load_allow) {
+		/*
+		 * Firmware error-path contract (qualification area b):
+		 *
+		 * - request_firmware()/validate failing returns with NOTHING
+		 *   acquired: the UC has not been halted yet (the halt write
+		 *   only happens below), no firmware is held, and the caller's
+		 *   err_release path powers the whole block down through
+		 *   qcom_usb4_hr_release_activation() (nhi_remove, domain
+		 *   release, phy_exit, reset assertion, clocks off).
+		 * - The only resource held between acquire and release_firmware
+		 *   is the firmware blob itself, and every exit between them
+		 *   releases it.
+		 * - If the post-load ready poll times out, the UC is left in
+		 *   its failed boot state but power is removed by the caller's
+		 *   unwind, so the device is never left powered-and-hung.
+		 */
 		ret = request_firmware(&fw, fw_name, hr->nhi.dev);
 		if (ret)
 			return dev_err_probe(hr->nhi.dev, ret,
@@ -1200,7 +1258,15 @@ static void qcom_usb4_hr_remove(struct platform_device *pdev)
 {
 	struct qcom_usb4_hr *hr = qcom_usb4_hr_get(&pdev->dev);
 
-	/* Driver core has removed and drained dev_groups before this callback. */
+	/*
+	 * Full unwind (qualification area c): driver core has removed and
+	 * drained the sysfs dev_groups and any tb domain children before this
+	 * callback, so nothing can re-enter activation afterwards. stop()
+	 * sets STOPPED (one-shot; no restart), releases the activation in
+	 * reverse order (nhi_remove -> domain group -> phy_exit -> resets ->
+	 * clocks), releases the preflight devres group, and leaves the PHY
+	 * driver's own resources untouched.
+	 */
 	qcom_usb4_hr_stop(hr);
 }
 
