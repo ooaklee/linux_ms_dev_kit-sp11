@@ -1,3 +1,23 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
+
+  * Harden qmp-combo common-resource ownership for USB4/TBT3: per-
+    resource exit_hold tracking so partial releases never
+    double-release or forget held resources, failed releases
+    quarantine with the caller's reference restored so retries drive
+    the release ladder, every admission path (USB init USB4
+    shortcut, typec switch/mux, usb4 set_mode, DP configure/
+    calibrate) honors quarantine, runtime-PM clock ownership stays
+    in sync, the retained USB4 router pipe clock is released at
+    remove, and uncertain regulator-core rollback accounting takes
+    the documented conservative terminal position (#87, #88, #90).
+  * Consistent camera power ownership for ov13858/vd55g1: per-
+    consumer rail ownership bitmaps with exact masks, acquisition
+    errors preserved through cleanup unwind, remove gated on
+    recorded ownership, and failed bulk enables latch power_fault
+    (#89).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 08:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v5) stonking; urgency=medium
 
   * Port the Qualcomm USB4 host-router research frontend behind the
