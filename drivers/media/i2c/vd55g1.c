@@ -1434,6 +1434,8 @@ struct vd55g1 {
 	struct v4l2_ctrl *ae_bias_ctrl;
 	struct v4l2_ctrl *led_ctrl;
 	struct v4l2_ctrl *hdr_ctrl;
+	/* Latched regulator ownership failure: no further power transitions. */
+	bool power_fault;
 };
 
 static inline struct vd55g1 *to_vd55g1(struct v4l2_subdev *sd)
@@ -2184,11 +2186,32 @@ static int vd55g1_enable_streams(struct v4l2_subdev *sd,
 	vd55g1_poll_reg(sensor, REG_STBY, 0, &ret);
 	vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_STREAMING, &ret);
 	if (ret)
-		goto err_rpm_put;
+		goto err_rollback;
 
 	vd55g1_grab_ctrls(sensor, true);
 
 	return 0;
+
+err_rollback:
+	/*
+	 * The START may have reached the sensor before the poll failed:
+	 * establish software standby so the sensor is not left streaming
+	 * with the PM reference dropped. The rollback failure is logged
+	 * alongside the original error; the sensor stays powered until
+	 * runtime PM suspends it either way.
+	 */
+	{
+		int stop_ret = 0;
+
+		vd55g1_write(sensor, REG_STREAMING, VD55G1_STREAMING_STOP_STREAM,
+			     &stop_ret);
+		vd55g1_poll_reg(sensor, REG_STREAMING, 0, &stop_ret);
+		vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &stop_ret);
+		if (stop_ret)
+			dev_warn(sensor->dev,
+				 "failed start rollback to standby: %d (start err %d)\n",
+				 stop_ret, ret);
+	}
 
 err_rpm_put:
 	pm_runtime_put(sensor->dev);
@@ -2813,19 +2836,40 @@ disable_clock:
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
 	clk_disable_unprepare(sensor->xclk);
 disable_bulk:
-	regulator_bulk_disable(ARRAY_SIZE(vd55g1_supply_name),
-			       sensor->supplies);
+	/*
+	 * A failed bulk disable leaves regulator ownership uncertain:
+	 * preserve the acquisition error (the caller's result) but latch
+	 * power_fault so runtime PM never reports suspended against
+	 * possibly-enabled rails and no further enable is attempted.
+	 */
+	{
+		int cleanup = regulator_bulk_disable(ARRAY_SIZE(vd55g1_supply_name),
+						     sensor->supplies);
+
+		if (cleanup) {
+			dev_err(sensor->dev,
+				"regulator disable failed (%d); power state unknown\n",
+				cleanup);
+			WRITE_ONCE(sensor->power_fault, true);
+		}
+	}
 
 	return ret;
 }
 
 static int vd55g1_power_off(struct vd55g1 *sensor)
 {
+	int ret;
+
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
 	clk_disable_unprepare(sensor->xclk);
-	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+	ret = regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+	if (ret) {
+		dev_err(sensor->dev, "regulator disable failed: %d\n", ret);
+		WRITE_ONCE(sensor->power_fault, true);
+	}
 
-	return 0;
+	return ret;
 }
 
 static int vd55g1_pm_resume(struct device *dev)
@@ -2833,6 +2877,9 @@ static int vd55g1_pm_resume(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct vd55g1 *sensor = to_vd55g1(sd);
 	int ret;
+
+	if (READ_ONCE(sensor->power_fault))
+		return -EIO;
 
 	ret = vd55g1_power_on(sensor);
 	if (ret)
@@ -2846,6 +2893,11 @@ static int vd55g1_pm_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct vd55g1 *sensor = to_vd55g1(sd);
 	int ret;
+
+	if (READ_ONCE(sensor->power_fault)) {
+		dev_err(dev, "suspending with latched power fault; refusing uncertain transition\n");
+		return -EIO;
+	}
 
 	ret = vd55g1_power_off(sensor);
 	if (ret)
@@ -3041,7 +3093,6 @@ err_media:
 
 static void vd55g1_subdev_cleanup(struct vd55g1 *sensor)
 {
-	v4l2_async_unregister_subdev(&sensor->sd);
 	v4l2_subdev_cleanup(&sensor->sd);
 	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 	media_entity_cleanup(&sensor->sd.entity);
@@ -3171,11 +3222,15 @@ static void vd55g1_remove(struct i2c_client *client)
 	 * exposure cluster is saved and the sensor is not powered down
 	 * mid-stream.
 	 *
-	 * v4l2_subdev_is_streaming() requires the active-state lock to be
-	 * held; keep it across the quiesce so the check cannot race with a
-	 * concurrent stream or control operation. The active state is still
-	 * allocated here: it is freed by vd55g1_subdev_cleanup() below.
+	 * Unpublish the subdev FIRST: once unregistered, no new stream or
+	 * control operation can start, which closes the restart window
+	 * between quiescing and state destruction (a concurrent disable
+	 * could otherwise restart hardware after our stop). The remaining
+	 * in-flight operations are serialized by taking the active-state
+	 * lock for the quiesce; the active state is still allocated here,
+	 * freed by v4l2_subdev_cleanup() below.
 	 */
+	v4l2_async_unregister_subdev(sd);
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 
 	if (v4l2_subdev_is_streaming(sd)) {
@@ -3202,9 +3257,22 @@ static void vd55g1_remove(struct i2c_client *client)
 	vd55g1_subdev_cleanup(sensor);
 
 	pm_runtime_disable(&client->dev);
-	if (!pm_runtime_status_suspended(&client->dev))
-		vd55g1_power_off(sensor);
-	pm_runtime_set_suspended(&client->dev);
+	if (!pm_runtime_status_suspended(&client->dev)) {
+		/*
+		 * A live or failed-stop stream holds a runtime PM usage
+		 * reference (retained failed stops never issue their PM
+		 * put). The device is going away: drop one reference
+		 * for the stream this remove tears down so it is not
+		 * inherited across unbind/rebind, then power off.
+		 * Reflect suspended state only when the rails
+		 * actually went down.
+		 */
+		pm_runtime_put_noidle(&client->dev);
+		if (vd55g1_power_off(sensor))
+			dev_warn(&client->dev, "power off failed on remove; rails may be live\n");
+		else
+			pm_runtime_set_suspended(&client->dev);
+	}
 	pm_runtime_dont_use_autosuspend(&client->dev);
 }
 

@@ -2004,13 +2004,23 @@ static void ov13858_remove(struct i2c_client *client)
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
-	if (!pm_runtime_status_suspended(ov13858->dev))
+	if (!pm_runtime_status_suspended(ov13858->dev)) {
+		/*
+		 * A live or failed-stop stream holds a runtime PM usage
+		 * reference (retained failed stops never issue their PM
+		 * put). The device is going away: drop one reference
+		 * for the stream this remove tears down so it is not
+		 * inherited across unbind/rebind, then power off.
+		 * Reflect suspended state only when power off
+		 * actually succeeded.
+		 */
+		pm_runtime_put_noidle(ov13858->dev);
 		ret = ov13858_power_off(ov13858->dev);
-	if (ret)
-		dev_warn(ov13858->dev, "failed to power off sensor: %d\n", ret);
-	else
-		pm_runtime_set_suspended(ov13858->dev);
-}
+		if (ret)
+			dev_warn(ov13858->dev, "failed to power off sensor: %d\n", ret);
+		else
+			pm_runtime_set_suspended(ov13858->dev);
+	}
 
 static const struct i2c_device_id ov13858_id_table[] = {
 	{ .name = "ov13858" },
