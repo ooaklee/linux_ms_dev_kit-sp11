@@ -8,6 +8,7 @@
 #include <linux/cleanup.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
+#include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/mutex.h>
@@ -112,6 +113,9 @@ struct pmic_glink_altmode_event {
 	bool has_mux_ctrl;
 };
 
+/* One stale-ACK drain window retry for the enable-barrier PAN_EN request. */
+#define ALTMODE_PAN_EN_RETRY_DELAY_MS	100
+
 #define work_to_altmode_port(w) container_of((w), struct pmic_glink_altmode_port, work)
 
 struct pmic_glink_altmode_port {
@@ -146,8 +150,15 @@ struct pmic_glink_altmode {
 
 	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
-	/* A request whose ACK has not been observed yet (event_lock). */
-	bool ack_outstanding;
+	/*
+	 * ACK attribution by sequence (event_lock): every WRITE_REQ callback
+	 * bumps ack_seq once; a request only completes when ack_seq reaches
+	 * its own req_seq. A stale ACK for request N can never satisfy a
+	 * later request M > N, in any generation, so no cross-generation
+	 * reset is needed.
+	 */
+	u32 ack_seq;
+	u32 req_seq;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -180,6 +191,8 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	struct usbc_write_req req = {};
 	unsigned long flags;
 	unsigned long left;
+	u32 req_seq;
+	bool acked;
 	int ret;
 
 	/*
@@ -193,19 +206,7 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 
 	/* Clear stored credits, not late replies arriving after a new request. */
 	spin_lock_irqsave(&altmode->event_lock, flags);
-	/*
-	 * A previous request timed out and its ACK may still be in flight;
-	 * the ack carries no request identity, so admitting a new request
-	 * would let a stale ACK satisfy it. Wait for the outstanding ACK to
-	 * drain (or the generation to change) before sending again.
-	 */
-	if (altmode->ack_outstanding) {
-		spin_unlock_irqrestore(&altmode->event_lock, flags);
-		dev_err(altmode->dev, "altmode request %#x blocked: previous ACK not drained\n", cmd);
-		return -EAGAIN;
-	}
-	reinit_completion(&altmode->pan_ack);
-	altmode->ack_outstanding = true;
+	req_seq = ++altmode->req_seq;
 	spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 	req.hdr.owner = cpu_to_le32(altmode->owner_id);
@@ -217,38 +218,31 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	ret = pmic_glink_send_generation(altmode->client, &req, sizeof(req), generation);
 	if (ret) {
 		dev_err(altmode->dev, "failed to send altmode request: %#x (%d)\n", cmd, ret);
-		spin_lock_irqsave(&altmode->event_lock, flags);
-		altmode->ack_outstanding = false;
-		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		return ret;
 	}
 
 	if (!pmic_glink_altmode_current(altmode, generation))
 		return -ECONNRESET;
 
-	left = wait_for_completion_timeout(&altmode->pan_ack, 5 * HZ);
-	/* PDR/stop also wake the waiter; neither wake is a firmware response. */
-	if (!pmic_glink_altmode_current(altmode, generation)) {
+	left = 5 * HZ;
+	while (left) {
+		left = wait_for_completion_timeout(&altmode->pan_ack, left);
+		/* PDR/stop also wake the waiter; neither wake is a firmware response. */
+		if (!pmic_glink_altmode_current(altmode, generation))
+			return -ECONNRESET;
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		altmode->ack_outstanding = false;
+		acked = altmode->ack_seq >= req_seq;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
-		return -ECONNRESET;
-	}
-	spin_lock_irqsave(&altmode->event_lock, flags);
-	if (left)
-		altmode->ack_outstanding = false;
-	spin_unlock_irqrestore(&altmode->event_lock, flags);
-	if (!left) {
 		/*
-		 * Stale ACK may still land; keep ack_outstanding set so the
-		 * next request refuses to run until the ACK drains or a
-		 * generation change resets the state below.
+		 * A wake without attribution (spurious or a stale ACK for an
+		 * earlier request) keeps waiting with the remaining time.
 		 */
-		dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
-		return -ETIMEDOUT;
+		if (acked)
+			return 0;
 	}
 
-	return 0;
+	dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
+	return -ETIMEDOUT;
 }
 
 static int
@@ -662,7 +656,7 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		altmode->ack_outstanding = false;
+		altmode->ack_seq++;
 		complete(&altmode->pan_ack);
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		break;
@@ -739,11 +733,28 @@ static void pmic_glink_altmode_enable_worker(struct work_struct *work)
 	if (!up)
 		return;
 
-	/* Reconciled is software state, not a dependency on a PAN_EN reply. */
+	/*
+	 * Reconciled is software state, not a dependency on a PAN_EN reply,
+	 * but the barrier must not open for a state we could not (re)request:
+	 * if the request fails (e.g. a prior timed-out request's stale-ACK
+	 * window), retained events could republish stale HPD. Retry briefly;
+	 * if it still fails, close the barrier again so a later overflow or
+	 * PDR transition reschedules this worker.
+	 */
 	ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
-	if (ret)
+	if (ret == -EAGAIN) {
+		msleep(ALTMODE_PAN_EN_RETRY_DELAY_MS);
+		ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
+	}
+	if (ret) {
 		dev_err(altmode->dev, "failed to request altmode notifications, generation %llu: %d\n",
 			(unsigned long long)generation, ret);
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		if (!altmode->stopping && altmode->service_up &&
+		    generation == altmode->generation)
+			altmode->reconciled = false;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+	}
 }
 
 static void pmic_glink_altmode_pdr_notify(void *priv, int state)
@@ -760,8 +771,6 @@ static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 		altmode->generation = generation;
 		altmode->service_up = up;
 		altmode->reconciled = false;
-		/* New generation: old ACKs can no longer be attributed either way. */
-		altmode->ack_outstanding = false;
 		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
 			if (altmode->ports[i].altmode)
 				kfifo_reset(&altmode->ports[i].events);
