@@ -54,6 +54,6 @@ package SHA matches the repo, you are building exactly the reviewed source.
 sp11-selfcompile-drivers/
 ├── check-kernel.sh   # guards against stock headers
 ├── Makefile
-├── vd55g0/  ov13858/  ps883x/   # per-driver: Kbuild + source + .source-sha
+├── vd55g0/  ov13858/  ps883x/  imx681/  # per-driver: Kbuild + source + .source-sha
 └── README.md
 ```

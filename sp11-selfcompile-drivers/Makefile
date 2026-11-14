@@ -8,7 +8,7 @@
 
 KVER ?= $(shell uname -r)
 HDR   ?= /lib/modules/$(KVER)/build
-DIRS   := vd55g0 ov13858 ps883x
+DIRS   := vd55g0 ov13858 ps883x imx681
 
 .PHONY: all modules_install clean check $(DIRS)
 

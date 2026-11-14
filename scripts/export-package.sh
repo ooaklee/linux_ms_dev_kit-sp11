@@ -18,7 +18,24 @@ ENTRIES="
 vd55g0|drivers/media/i2c/vd55g1.c|vd55g1
 ov13858|drivers/media/i2c/ov13858.c|ov13858
 ps883x|drivers/usb/typec/mux/ps883x.c|ps883x
+imx681|drivers/media/i2c/imx681.c|imx681
 "
+
+# Extra per-driver companions that must ship with a module source.
+# dir|path-relative-to-package-dir|source-path-in-tree
+EXTRA="
+imx681|imx681-tables.h|drivers/media/i2c/imx681-tables.h
+"
+
+echo "$EXTRA" | while IFS='|' read -r dir rel src; do
+	[ -n "$dir" ] || continue
+	if ! sha=$(git -C "$ROOT" rev-parse "$TREEISH:$src" 2>/dev/null); then
+		echo "ERROR: $src not found in $TREEISH" >&2
+		exit 1
+	fi
+	mkdir -p "$PKG/$dir"
+	git -C "$ROOT" show "$TREEISH:$src" > "$PKG/$dir/$rel"
+done
 
 echo "$ENTRIES" | while IFS='|' read -r dir src mod; do
 	[ -n "$dir" ] || continue
