@@ -12742,6 +12742,7 @@ CONFIG_USB4_CONFIGFS                            policy<{'arm64': 'm'}>
 CONFIG_USB4_DEBUGFS_WRITE                       policy<{'arm64': 'n'}>
 CONFIG_USB4_DMA_TEST                            policy<{'arm64': 'n'}>
 CONFIG_USB4_NET                                 policy<{'arm64': 'm'}>
+CONFIG_USB4_QCOM_EXPERIMENTAL                    policy<{'arm64': 'n'}>
 CONFIG_USB4_STREAM                              policy<{'arm64': 'n'}>
 CONFIG_USBIP_CORE                               policy<{'arm64': 'm'}>
 CONFIG_USBIP_DEBUG                              policy<{'arm64': 'n'}>
