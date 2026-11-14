@@ -512,11 +512,8 @@ void msm_dp_ctrl_push_idle(struct msm_dp_ctrl *msm_dp_ctrl)
 
 static void msm_dp_ctrl_config_ctrl(struct msm_dp_ctrl_private *ctrl)
 {
-	u32 config = 0, tbd;
+	u32 config, tbd;
 	const u8 *dpcd = ctrl->panel->dpcd;
-
-	/* Default-> LSCLK DIV: 1/4 LCLK  */
-	config |= (2 << DP_CONFIGURATION_CTRL_LSCLK_DIV_SHIFT);
 
 	/*
 	 * RMW: serialized by the DRM atomic framework. Clear stream-specific
@@ -526,6 +523,9 @@ static void msm_dp_ctrl_config_ctrl(struct msm_dp_ctrl_private *ctrl)
 	config &= ~(DP_CONFIGURATION_CTRL_RGB_YUV_MASK |
 		    DP_CONFIGURATION_CTRL_BPC_MASK |
 		    DP_CONFIGURATION_CTRL_SEND_VSC);
+
+	/* Default-> LSCLK DIV: 1/4 LCLK  */
+	config |= (2 << DP_CONFIGURATION_CTRL_LSCLK_DIV_SHIFT);
 
 	if (ctrl->panel->msm_dp_mode.out_fmt_is_yuv_420)
 		config |= DP_CONFIGURATION_CTRL_RGB_YUV; /* YUV420 */
