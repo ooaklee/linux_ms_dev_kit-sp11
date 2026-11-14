@@ -2737,6 +2737,14 @@ struct qmp_phy_cfg {
 	bool invert_cc_polarity;
 };
 
+/* Resources physically held across a partial com_exit failure. */
+enum qmp_exit_hold {
+	QMP_HOLD_RESET,
+	QMP_HOLD_CLKS,
+	QMP_HOLD_PIPE_CLK,
+	QMP_HOLD_REGS,
+};
+
 struct qmp_combo {
 	struct device *dev;
 
@@ -2781,6 +2789,15 @@ struct qmp_combo {
 	 */
 	int quarantine_error;
 	bool quarantine_cleanup;
+	/*
+	 * Per-resource release state for com_exit: a bit stays set while
+	 * the resource is physically held (resets deasserted, clks enabled,
+	 * regulators enabled). A partial exit clears only what it released
+	 * so com_init/quarantine recovery knows exactly what is still held.
+	 */
+	unsigned long exit_hold; /* enum qmp_exit_hold bits */
+	/* USB4 router pipe clock enable reference is held. */
+	bool usb4_pipe_on;
 	bool com_initialized;
 	bool runtime_suspended;
 	bool reconfiguration_failed;
@@ -4210,7 +4227,7 @@ static int qmp_combo_dp_configure(struct phy *phy, union phy_configure_opts *opt
 
 	mutex_lock(&qmp->phy_mutex);
 
-	if (qmp->reconfiguration_failed) {
+	if (qmp->reconfiguration_failed || qmp->quarantine_error) {
 		mutex_unlock(&qmp->phy_mutex);
 		return -EIO;
 	}
@@ -4238,7 +4255,7 @@ static int qmp_combo_dp_calibrate(struct phy *phy)
 
 	mutex_lock(&qmp->phy_mutex);
 
-	if (qmp->reconfiguration_failed) {
+	if (qmp->reconfiguration_failed || qmp->quarantine_error) {
 		mutex_unlock(&qmp->phy_mutex);
 		return -EIO;
 	}
@@ -4260,18 +4277,38 @@ static int qmp_combo_disable_regulators(struct qmp_combo *qmp)
 	const struct qmp_phy_cfg *cfg = qmp->cfg;
 	int ret;
 
-	if (!qmp->regulators_enabled)
+	if (!qmp->regulators_enabled && !test_bit(QMP_HOLD_REGS, &qmp->exit_hold))
 		return 0;
 
-	ret = regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
-	if (ret) {
-		dev_warn(qmp->dev, "failed to disable regulators: %d\n", ret);
-		return ret;
+	if (qmp->regulators_enabled) {
+		/* Known clean enables: a plain bulk disable is balanced. */
+		ret = regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
+		if (ret) {
+			dev_warn(qmp->dev, "failed to disable regulators: %d\n",
+				 ret);
+			return ret;
+		}
+
+		qmp->regulators_enabled = false;
+		return 0;
 	}
 
-	qmp->regulators_enabled = false;
+	/*
+	 * Uncertain state: a bulk enable failed and its rollback result
+	 * is unknowable from the driver. The core ignores rollback-disable
+	 * errors and this tree exposes no consumer enable-count query, so
+	 * per-supply disable attempts cannot distinguish a supply the
+	 * rollback already released (unbalanced-disable WARN + -EIO) from
+	 * a genuinely failing one. Any blind disable is therefore unsafe.
+	 * Refuse instead: QMP_HOLD_REGS stays set (the caller clears it
+	 * only on success), the acquire-failure quarantine stays latched,
+	 * and the supplies are resolved only by device teardown / power
+	 * removal — the conservative terminal position.
+	 */
+	dev_warn(qmp->dev,
+		 "uncertain regulator ownership after failed bulk enable; supplies left to device teardown\n");
 
-	return 0;
+	return -EIO;
 }
 
 static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
@@ -4331,30 +4368,40 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 			 * whatever is still enabled held and quarantine.
 			 */
 			qmp->quarantine_error = ret;
+			set_bit(QMP_HOLD_REGS, &qmp->exit_hold);
 			goto err_decrement_count;
 		}
 
 		qmp->regulators_enabled = true;
 	}
+	set_bit(QMP_HOLD_REGS, &qmp->exit_hold);
 
 	ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
 	if (ret) {
 		dev_err(qmp->dev, "reset assert failed\n");
-		/* Reset line state uncertain: keep regulators held, quarantine. */
+		/*
+		 * Reset line state uncertain: keep regulators held, record
+		 * the reset line as possibly held, quarantine.
+		 */
 		qmp->quarantine_error = ret;
+		set_bit(QMP_HOLD_RESET, &qmp->exit_hold);
 		goto err_decrement_count;
 	}
 
 	ret = reset_control_bulk_deassert(cfg->num_resets, qmp->resets);
 	if (ret) {
 		dev_err(qmp->dev, "reset deassert failed\n");
+		/* Assert succeeded but deassert failed: reset held (asserted). */
 		qmp->quarantine_error = ret;
+		set_bit(QMP_HOLD_RESET, &qmp->exit_hold);
 		goto err_decrement_count;
 	}
+	set_bit(QMP_HOLD_RESET, &qmp->exit_hold);
 
 	ret = clk_bulk_prepare_enable(qmp->num_clks, qmp->clks);
 	if (ret)
 		goto err_assert_reset;
+	set_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 
 	/* In DP-only mode, the pipe clk is still required for USB2 */
 	ret = clk_prepare_enable(qmp->pipe_clk);
@@ -4362,6 +4409,7 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		dev_err(qmp->dev, "pipe_clk enable failed err=%d\n", ret);
 		goto err_disable_clocks;
 	}
+	set_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold);
 
 	qphy_setbits(com, QPHY_V3_DP_COM_POWER_DOWN_CTRL, SW_PWRDN);
 
@@ -4471,28 +4519,37 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	return 0;
 
 err_disable_clocks:
-	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+	if (test_and_clear_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold))
+		clk_disable_unprepare(qmp->pipe_clk);
+	if (test_and_clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold))
+		clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
 err_assert_reset:
 	/*
 	 * The acquisition error in ret is the caller's result and must be
 	 * preserved: cleanup failure latches quarantine but must never
 	 * turn a failed acquire into a success return (which would let a
 	 * DP initializer reach dp_aux_init against powered-down hardware).
+	 * Only resources actually recorded held are released, so a partial
+	 * ladder failure cannot double-release.
 	 */
-	{
+	if (test_bit(QMP_HOLD_RESET, &qmp->exit_hold)) {
 		int cleanup = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
 
 		if (cleanup) {
 			/* Unwind failed mid-ladder: reset state uncertain, quarantine. */
 			qmp->quarantine_error = cleanup;
 			qmp->quarantine_cleanup = true;
+		} else {
+			clear_bit(QMP_HOLD_RESET, &qmp->exit_hold);
 		}
 	}
-err_disable_regulators:
-	if (qmp_combo_disable_regulators(qmp)) {
-		/* Regulators possibly still enabled: quarantine. */
+	if (test_bit(QMP_HOLD_REGS, &qmp->exit_hold) &&
+	    qmp_combo_disable_regulators(qmp)) {
+		/* Regulators possibly still enabled: quarantine, keep the bit. */
 		qmp->quarantine_error = -EIO;
 		qmp->quarantine_cleanup = true;
+	} else {
+		clear_bit(QMP_HOLD_REGS, &qmp->exit_hold);
 	}
 err_decrement_count:
 	qmp->com_initialized = false;
@@ -4514,11 +4571,24 @@ static int qmp_combo_com_exit(struct qmp_combo *qmp, bool force)
 		if (WARN_ON(!qmp->init_count))
 			return -EINVAL;
 
+		/*
+		 * Only the last reference drives the release ladder: while
+		 * other consumers hold references the hardware stays powered
+		 * even under quarantine (their exits will decrement to zero
+		 * eventually and drive the release). A previous failed exit
+		 * restored its reference (see quarantine: below), so the
+		 * count faithfully tracks consumers until full release.
+		 */
 		if (--qmp->init_count)
 			return 0;
 	}
 
-	if (!qmp->com_initialized)
+	/*
+	 * Nothing held and not initialized: a prior release finished (or
+	 * never started). Held bits with com_initialized already false
+	 * (a failed release) must still reach the ladder below.
+	 */
+	if (!qmp->com_initialized && !qmp->exit_hold)
 		return 0;
 
 	/*
@@ -4538,39 +4608,68 @@ static int qmp_combo_com_exit(struct qmp_combo *qmp, bool force)
 		qmp->usb4_tunnel_clk_active = false;
 	}
 
-	ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
-	if (ret)
-		dev_warn(qmp->dev, "failed to assert resets: %d\n", ret);
+	/*
+	 * Release only what the exit_hold bitmap records as held and clear
+	 * each bit as it is released. A mid-ladder failure quarantines with
+	 * the unreleased bits still set: the caller's init_count decrement
+	 * is deferred to a successful full release (or a force exit that
+	 * the quarantine recovery path owns), so a retry cannot run a
+	 * second release against already-released resources. Reset
+	 * assertion failure keeps the resource held (state uncertain) and
+	 * quarantines; the resource is torn down with the device.
+	 */
+	if (test_bit(QMP_HOLD_RESET, &qmp->exit_hold)) {
+		ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
+		if (ret) {
+			dev_warn(qmp->dev, "failed to assert resets: %d\n", ret);
+			goto quarantine;
+		}
+		clear_bit(QMP_HOLD_RESET, &qmp->exit_hold);
+	}
 
-	clk_disable_unprepare(qmp->pipe_clk);
-	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+	if (test_and_clear_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold))
+		clk_disable_unprepare(qmp->pipe_clk);
+	if (test_and_clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold))
+		clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
 
-	if (qmp_combo_disable_regulators(qmp))
-		ret = -EIO;
+	if (test_bit(QMP_HOLD_REGS, &qmp->exit_hold)) {
+		ret = qmp_combo_disable_regulators(qmp);
+		if (ret)
+			goto quarantine;
+		clear_bit(QMP_HOLD_REGS, &qmp->exit_hold);
+	}
 
 	qmp->com_initialized = false;
 
-	if (ret) {
-		/*
-		 * Release failed partway: ownership of resets/regulators is
-		 * uncertain, so quarantine until an explicit recovery path
-		 * (unbind/rebind) clears it.
-		 */
-		qmp->quarantine_error = ret;
-		qmp->quarantine_cleanup = true;
-		return ret;
-	}
-
 	/*
-	 * Full release succeeded: everything is back to NONE/ASSERTED, so a
-	 * stale quarantine latch (which the frozen 7.2 overlay never
-	 * cleared — see evidence/qmp-quarantine-report.md section 1.4)
-	 * is cleared here.
+	 * Full release succeeded: everything is back to NONE/ASSERTED and
+	 * exit_hold is empty, so a stale quarantine latch (which the frozen
+	 * 7.2 overlay never cleared — see evidence/qmp-quarantine-report.md
+	 * section 1.4) is cleared here. The entry already consumed the
+	 * caller's reference; recovery consumed nothing extra.
 	 */
+	if (qmp->quarantine_cleanup)
+		dev_info(qmp->dev, "quarantine recovery release complete\n");
 	qmp->quarantine_error = 0;
 	qmp->quarantine_cleanup = false;
 
 	return 0;
+
+quarantine:
+	/*
+	 * Release failed partway: some resources are still physically held
+	 * (their exit_hold bits are set). Restore the reference the entry
+	 * consumed so init_count faithfully tracks consumers: the phy core
+	 * retains its reference on .exit failure, and a retried exit must
+	 * find the count nonzero to drive this ladder again. Quarantine
+	 * blocks new admissions until a successful full release clears it.
+	 */
+	if (!force)
+		qmp->init_count++;
+	qmp->com_initialized = false;
+	qmp->quarantine_error = ret;
+	qmp->quarantine_cleanup = true;
+	return ret;
 }
 
 static int qmp_combo_dp_init(struct phy *phy)
@@ -4834,6 +4933,13 @@ static int qmp_combo_usb_init(struct phy *phy)
 
 	/* USB4 mode takes precedence, do not reprogram the PHY in that case */
 	if (qmp->usb4_init_count) {
+		if (qmp->quarantine_error) {
+			dev_err(qmp->dev,
+				"PHY quarantined (%d%s), refusing USB init\n",
+				qmp->quarantine_error,
+				qmp->quarantine_cleanup ? ", cleanup failed" : "");
+			return qmp->quarantine_error;
+		}
 		qmp->init_count++;
 		qmp->usb_init_count++;
 		return 0;
@@ -4946,7 +5052,6 @@ static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp,
 	ret = qmp_combo_com_init(qmp, true);
 	if (ret)
 		goto restore_old_common;
-
 	if (usb_consumer && new_mode != QMPPHY_MODE_DP_ONLY) {
 		ret = qmp_combo_usb_power_on(qmp->usb_phy);
 		if (ret)
@@ -4990,6 +5095,25 @@ restore_old_common:
 	}
 
 restore_active_phys:
+	/*
+	 * A failed force com_exit may have left the common state partly
+	 * torn down (clocks off, com_initialized false). DP consumers
+	 * still hold init references: re-acquire the common state before
+	 * any dp_aux_init, otherwise the AUX hardware is programmed
+	 * against stopped clocks. Quarantine from a failed release
+	 * blocks com_init, so this degrades to reconfiguration_failed.
+	 */
+	if (!qmp->com_initialized) {
+		rollback_ret = qmp_combo_com_init(qmp, true);
+		if (rollback_ret) {
+			dev_err(qmp->dev,
+				"failed to re-acquire common PHY after exit failure: %d\n",
+				rollback_ret);
+			qmp->reconfiguration_failed = true;
+			return ret;
+		}
+	}
+
 	if (usb_was_powered) {
 		rollback_ret = qmp_combo_usb_power_on(qmp->usb_phy);
 		if (rollback_ret) {
@@ -5030,10 +5154,12 @@ static int qmp_combo_usb4_init(struct phy *phy)
 		dev_err(qmp->dev, "p2rr2p_pipe enable failed: %d\n", ret);
 		return ret;
 	}
+	qmp->usb4_pipe_on = true;
 
 	ret = qmp_combo_com_init(qmp, false);
 	if (ret) {
 		clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+		qmp->usb4_pipe_on = false;
 		return ret;
 	}
 
@@ -5050,6 +5176,7 @@ static int qmp_combo_usb4_init(struct phy *phy)
 				"failed to release common PHY after USB4 init error: %d\n",
 				cleanup_ret);
 		clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+		qmp->usb4_pipe_on = false;
 		return ret;
 	}
 
@@ -5083,6 +5210,7 @@ static int qmp_combo_usb4_exit(struct phy *phy)
 	qmp->usb4_init_count--;
 
 	clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+	qmp->usb4_pipe_on = false;
 
 	return 0;
 }
@@ -5099,7 +5227,7 @@ static int qmp_combo_usb4_set_mode(struct phy *phy, enum phy_mode mode, int subm
 
 	guard(mutex)(&qmp->phy_mutex);
 
-	if (qmp->reconfiguration_failed)
+	if (qmp->reconfiguration_failed || qmp->quarantine_error)
 		return -EIO;
 
 	/* The active electrical configuration changes only at the next init. */
@@ -5224,6 +5352,9 @@ static int __maybe_unused qmp_combo_runtime_suspend(struct device *dev)
 
 	clk_disable_unprepare(qmp->pipe_clk);
 	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+	/* Clocks physically released: keep ownership bits in sync. */
+	clear_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold);
+	clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 	qmp->runtime_suspended = true;
 
 	return 0;
@@ -5256,13 +5387,16 @@ static int __maybe_unused qmp_combo_runtime_resume(struct device *dev)
 	ret = clk_bulk_prepare_enable(qmp->num_clks, qmp->clks);
 	if (ret)
 		return ret;
+	set_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 
 	ret = clk_prepare_enable(qmp->pipe_clk);
 	if (ret) {
 		dev_err(dev, "pipe_clk enable failed, err=%d\n", ret);
 		clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+		clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 		return ret;
 	}
+	set_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold);
 
 	qmp_combo_disable_autonomous_mode(qmp);
 	qmp->runtime_suspended = false;
@@ -5588,7 +5722,7 @@ static int qmp_combo_typec_switch_set_locked(struct typec_switch_dev *sw,
 
 	guard(mutex)(&qmp->phy_mutex);
 
-	if (qmp->reconfiguration_failed ||
+	if (qmp->reconfiguration_failed || qmp->quarantine_error ||
 	    (qmp->init_count && (!qmp->com_initialized || qmp->runtime_suspended)))
 		return -EIO;
 
@@ -5640,7 +5774,7 @@ static int qmp_combo_typec_mux_set_locked(struct typec_mux_dev *mux,
 
 	guard(mutex)(&qmp->phy_mutex);
 
-	if (qmp->reconfiguration_failed ||
+	if (qmp->reconfiguration_failed || qmp->quarantine_error ||
 	    (qmp->init_count && (!qmp->com_initialized || qmp->runtime_suspended)))
 		return -EIO;
 
@@ -6325,8 +6459,60 @@ static const struct of_device_id qmp_combo_of_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, qmp_combo_of_match_table);
 
+static void qmp_combo_remove(struct platform_device *pdev)
+{
+	struct qmp_combo *qmp = platform_get_drvdata(pdev);
+	const struct qmp_phy_cfg *cfg = qmp->cfg;
+	int cleanup;
+
+	/*
+	 * A quarantined PHY may still hold physical resources (exit_hold
+	 * bits): devres frees handles, not enable references, so release
+	 * them explicitly here. Order mirrors com_exit. Any failure leaves
+	 * the resources to device teardown; nothing else can retry.
+	 */
+	pm_runtime_disable(&pdev->dev);
+
+	/*
+	 * A failed usb4_exit() can return with the router pipe clock
+	 * still enabled (devm clk_put does not balance an enable):
+	 * release it first, mirroring the exit order.
+	 */
+	if (qmp->usb4_pipe_on) {
+		clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+		qmp->usb4_pipe_on = false;
+	}
+
+	if (!pm_runtime_status_suspended(&pdev->dev) || qmp->exit_hold) {
+		if (test_bit(QMP_HOLD_RESET, &qmp->exit_hold)) {
+			cleanup = reset_control_bulk_assert(cfg->num_resets,
+							    qmp->resets);
+			if (cleanup)
+				dev_warn(&pdev->dev,
+					 "remove: failed to assert resets: %d\n",
+					 cleanup);
+			else
+				clear_bit(QMP_HOLD_RESET, &qmp->exit_hold);
+		}
+		if (test_and_clear_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold))
+			clk_disable_unprepare(qmp->pipe_clk);
+		if (test_and_clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold))
+			clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+		if (test_bit(QMP_HOLD_REGS, &qmp->exit_hold)) {
+			cleanup = qmp_combo_disable_regulators(qmp);
+			if (cleanup)
+				dev_warn(&pdev->dev,
+					 "remove: failed to disable regulators: %d\n",
+					 cleanup);
+			else
+				clear_bit(QMP_HOLD_REGS, &qmp->exit_hold);
+		}
+	}
+}
+
 static struct platform_driver qmp_combo_driver = {
 	.probe		= qmp_combo_probe,
+	.remove		= qmp_combo_remove,
 	.driver = {
 		.name	= "qcom-qmp-combo-phy",
 		.pm	= &qmp_combo_pm_ops,
