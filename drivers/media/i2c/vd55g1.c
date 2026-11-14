@@ -1436,8 +1436,11 @@ struct vd55g1 {
 	struct v4l2_ctrl *hdr_ctrl;
 	/* Latched regulator ownership failure: no further power transitions. */
 	bool power_fault;
-	/* Physical resource ownership, tracked across partial failures. */
-	bool rails_on;
+	/*
+	 * Physical resource ownership, tracked per consumer across partial
+	 * failures: bit N set = rail N still physically enabled / clock on.
+	 */
+	unsigned long rails_on;
 	bool xclk_on;
 };
 
@@ -2784,6 +2787,33 @@ static int vd55g1_detect(struct vd55g1 *sensor)
 	return 0;
 }
 
+/*
+ * Release every rail still recorded as owned, one regulator at a time,
+ * so a partial earlier failure (e.g. vana released, vddio stuck) cannot
+ * produce unbalanced disables on the already-released consumers. The
+ * per-rail bit is cleared as each disable succeeds; the first failure
+ * latches power_fault and leaves the remaining bits set for a later
+ * attempt (remove) to retry.
+ */
+static int vd55g1_release_rails(struct vd55g1 *sensor)
+{
+	unsigned int n = ARRAY_SIZE(vd55g1_supply_name);
+	int i, ret = 0;
+
+	for_each_set_bit(i, &sensor->rails_on, n) {
+		ret = regulator_disable(sensor->supplies[i].consumer);
+		if (ret) {
+			dev_err(sensor->dev,
+				"regulator %s disable failed: %d\n",
+				sensor->supplies[i].supply, ret);
+			return ret;
+		}
+		clear_bit(i, &sensor->rails_on);
+	}
+
+	return ret;
+}
+
 static int vd55g1_power_on(struct vd55g1 *sensor)
 {
 	int ret;
@@ -2791,10 +2821,14 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 	ret = regulator_bulk_enable(ARRAY_SIZE(vd55g1_supply_name),
 				    sensor->supplies);
 	if (ret) {
+		/*
+		 * regulator_bulk_enable() already unwinds its own successful
+		 * enables on failure; per-rail ownership stays untouched.
+		 */
 		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
 		return ret;
 	}
-	sensor->rails_on = true;
+	bitmap_fill(&sensor->rails_on, ARRAY_SIZE(vd55g1_supply_name));
 
 	ret = clk_prepare_enable(sensor->xclk);
 	if (ret) {
@@ -2850,19 +2884,9 @@ disable_bulk:
 	 * power_fault so runtime PM never reports suspended against
 	 * possibly-enabled rails and no further enable is attempted.
 	 */
-	if (sensor->rails_on) {
-		int cleanup = regulator_bulk_disable(ARRAY_SIZE(vd55g1_supply_name),
-						     sensor->supplies);
-
-		if (cleanup) {
-			dev_err(sensor->dev,
-				"regulator disable failed (%d); power state unknown\n",
-				cleanup);
-			WRITE_ONCE(sensor->power_fault, true);
-		} else {
-			sensor->rails_on = false;
-		}
-	}
+	ret = vd55g1_release_rails(sensor);
+	if (ret)
+		WRITE_ONCE(sensor->power_fault, true);
 
 	return ret;
 }
@@ -2882,15 +2906,9 @@ static int vd55g1_power_off(struct vd55g1 *sensor)
 		clk_disable_unprepare(sensor->xclk);
 		sensor->xclk_on = false;
 	}
-	if (sensor->rails_on) {
-		ret = regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
-		if (ret) {
-			dev_err(sensor->dev, "regulator disable failed: %d\n", ret);
-			WRITE_ONCE(sensor->power_fault, true);
-		} else {
-			sensor->rails_on = false;
-		}
-	}
+	ret = vd55g1_release_rails(sensor);
+	if (ret)
+		WRITE_ONCE(sensor->power_fault, true);
 
 	return ret;
 }
