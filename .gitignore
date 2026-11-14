@@ -194,3 +194,6 @@ sphinx_*/
 
 # bc language scripts (not LLVM bitcode)
 !kernel/time/timeconst.bc
+
+# SP11 self-compile package provenance stamps
+!sp11-selfcompile-drivers/*/.source-sha
