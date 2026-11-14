@@ -1044,6 +1044,12 @@ struct ov13858 {
 	struct gpio_desc *reset_gpio;
 	bool managed_power;
 	bool power_fault;
+	/*
+	 * Physical resource ownership, tracked per consumer across partial
+	 * failures: bit N set = rail N still physically enabled / clock on.
+	 */
+	unsigned long rails_on;
+	bool xclk_on;
 	unsigned long link_freq_bitmap;
 	struct ov13858_mode modes[ARRAY_SIZE(supported_modes)];
 	unsigned int num_modes;
@@ -1495,11 +1501,27 @@ static int ov13858_enable_streams(struct v4l2_subdev *sd,
 	 */
 	ret = ov13858_start_streaming(ov13858);
 	if (ret)
-		goto err_rpm_put;
+		goto err_rollback;
 
 	return 0;
 
-err_rpm_put:
+err_rollback:
+	/*
+	 * The final streaming write may have reached the sensor before
+	 * the failure (start_streaming reports its own last error only):
+	 * establish standby so the sensor is not left streaming when
+	 * the PM reference drops. A rollback failure is logged; the
+	 * sensor stays powered until runtime PM suspends it either way.
+	 */
+	{
+		int stop_ret = ov13858_stop_streaming(ov13858);
+
+		if (stop_ret)
+			dev_warn(ov13858->dev,
+				 "failed start rollback to standby: %d (start err %d)\n",
+				 stop_ret, ret);
+	}
+
 	pm_runtime_put(ov13858->dev);
 err_unlock:
 	return ret;
@@ -1799,11 +1821,42 @@ free_endpoint:
 	return ret;
 }
 
+/*
+ * Release every rail still recorded as owned, one regulator at a time,
+ * so a partial earlier failure cannot produce unbalanced disables on
+ * already-released consumers. The per-rail bit is cleared as each
+ * disable succeeds; the first failure latches power_fault and leaves
+ * the remaining bits set for a later attempt (remove) to retry.
+ *
+ * Accounting limit: the regulator core drops the consumer use count
+ * before voltage balancing or upstream-supply disable can fail, and
+ * its bulk-enable rollback ignores rollback-disable errors, so a bit
+ * can over- or under-report physical state at the margins. The bitmap
+ * is the driver's best knowledge, not a regulator-core guarantee.
+ */
+static int ov13858_release_rails(struct ov13858 *ov13858)
+{
+	unsigned int n = ARRAY_SIZE(ov13858_supply_names);
+	int i, ret = 0;
+
+	for_each_set_bit(i, &ov13858->rails_on, n) {
+		ret = regulator_disable(ov13858->supplies[i].consumer);
+		if (ret) {
+			dev_err(ov13858->dev,
+				"regulator %s disable failed: %d\n",
+				ov13858->supplies[i].supply, ret);
+			return ret;
+		}
+		clear_bit(i, &ov13858->rails_on);
+	}
+
+	return ret;
+}
+
 static int ov13858_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov13858 *ov13858 = to_ov13858(sd);
-	int cleanup_ret;
 	int ret;
 
 	if (!ov13858->managed_power)
@@ -1815,24 +1868,29 @@ static int ov13858_power_on(struct device *dev)
 	ret = regulator_bulk_enable(ARRAY_SIZE(ov13858_supply_names),
 				    ov13858->supplies);
 	if (ret) {
+		/*
+		 * regulator_bulk_enable() already unwinds its own
+		 * successful enables; the bulk-disable cleanup previously
+		 * here produced unbalanced disables and is removed.
+		 */
+
 		WRITE_ONCE(ov13858->power_fault, true);
 		dev_err(dev, "supply enable failed; power state unknown: %d\n", ret);
 		return -EIO;
 	}
+	ov13858->rails_on = GENMASK(ARRAY_SIZE(ov13858_supply_names) - 1, 0);
 
 	ret = clk_prepare_enable(ov13858->clk);
 	if (ret) {
 		dev_err(dev, "failed to enable clock: %d\n", ret);
-		cleanup_ret = regulator_bulk_disable(ARRAY_SIZE(ov13858_supply_names),
-						     ov13858->supplies);
-		if (cleanup_ret) {
+		/* Per-rail unwind; a failure latches and keeps the bits set. */
+		if (ov13858_release_rails(ov13858)) {
 			WRITE_ONCE(ov13858->power_fault, true);
-			dev_err(dev, "supply unwind failed; power state unknown: %d\n",
-				cleanup_ret);
 			return -EIO;
 		}
 		return ret;
 	}
+	ov13858->xclk_on = true;
 
 	fsleep(1000);
 	gpiod_set_value_cansleep(ov13858->reset_gpio, 0);
@@ -1850,19 +1908,27 @@ static int ov13858_power_off(struct device *dev)
 
 	if (!ov13858->managed_power)
 		return 0;
-	if (READ_ONCE(ov13858->power_fault))
-		return -EIO;
 
+	/*
+	 * Ownership-gated and idempotent: a faulted device still gets its
+	 * remaining owned resources released (never double-released), then
+	 * reports failure. The fault latch itself is only cleared by
+	 * unbind/rebind.
+	 */
 	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
-	ret = regulator_bulk_disable(ARRAY_SIZE(ov13858_supply_names),
-				     ov13858->supplies);
-	clk_disable_unprepare(ov13858->clk);
+	if (ov13858->xclk_on) {
+		clk_disable_unprepare(ov13858->clk);
+		ov13858->xclk_on = false;
+	}
+	ret = ov13858_release_rails(ov13858);
 	if (ret) {
-		/* Rollback can fail too; do not issue I/O or retry unknown rails. */
 		WRITE_ONCE(ov13858->power_fault, true);
 		dev_err(dev, "supply disable failed; power state unknown: %d\n", ret);
 		return -EIO;
 	}
+
+	if (READ_ONCE(ov13858->power_fault))
+		return -EIO;
 
 	return 0;
 }
@@ -2004,12 +2070,24 @@ static void ov13858_remove(struct i2c_client *client)
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
-	if (!pm_runtime_status_suspended(ov13858->dev))
+	if (!pm_runtime_status_suspended(ov13858->dev) ||
+	    ov13858->rails_on || ov13858->xclk_on) {
+		/*
+		 * A live or failed-stop stream holds a runtime PM usage
+		 * reference (retained failed stops never issue their PM
+		 * put). The device is going away: drop one reference
+		 * for the stream this remove tears down so it is not
+		 * inherited across unbind/rebind, then power off.
+		 * Reflect suspended state only when power off
+		 * actually succeeded.
+		 */
+		pm_runtime_put_noidle(ov13858->dev);
 		ret = ov13858_power_off(ov13858->dev);
-	if (ret)
-		dev_warn(ov13858->dev, "failed to power off sensor: %d\n", ret);
-	else
-		pm_runtime_set_suspended(ov13858->dev);
+		if (ret)
+			dev_warn(ov13858->dev, "failed to power off sensor: %d\n", ret);
+		else
+			pm_runtime_set_suspended(ov13858->dev);
+	}
 }
 
 static const struct i2c_device_id ov13858_id_table[] = {

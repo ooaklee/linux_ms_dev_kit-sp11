@@ -1434,6 +1434,14 @@ struct vd55g1 {
 	struct v4l2_ctrl *ae_bias_ctrl;
 	struct v4l2_ctrl *led_ctrl;
 	struct v4l2_ctrl *hdr_ctrl;
+	/* Latched regulator ownership failure: no further power transitions. */
+	bool power_fault;
+	/*
+	 * Physical resource ownership, tracked per consumer across partial
+	 * failures: bit N set = rail N still physically enabled / clock on.
+	 */
+	unsigned long rails_on;
+	bool xclk_on;
 };
 
 static inline struct vd55g1 *to_vd55g1(struct v4l2_subdev *sd)
@@ -2184,11 +2192,32 @@ static int vd55g1_enable_streams(struct v4l2_subdev *sd,
 	vd55g1_poll_reg(sensor, REG_STBY, 0, &ret);
 	vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_STREAMING, &ret);
 	if (ret)
-		goto err_rpm_put;
+		goto err_rollback;
 
 	vd55g1_grab_ctrls(sensor, true);
 
 	return 0;
+
+err_rollback:
+	/*
+	 * The START may have reached the sensor before the poll failed:
+	 * establish software standby so the sensor is not left streaming
+	 * with the PM reference dropped. The rollback failure is logged
+	 * alongside the original error; the sensor stays powered until
+	 * runtime PM suspends it either way.
+	 */
+	{
+		int stop_ret = 0;
+
+		vd55g1_write(sensor, REG_STREAMING, VD55G1_STREAMING_STOP_STREAM,
+			     &stop_ret);
+		vd55g1_poll_reg(sensor, REG_STREAMING, 0, &stop_ret);
+		vd55g1_wait_state(sensor, VD55G1_SYSTEM_FSM_SW_STBY, &stop_ret);
+		if (stop_ret)
+			dev_warn(sensor->dev,
+				 "failed start rollback to standby: %d (start err %d)\n",
+				 stop_ret, ret);
+	}
 
 err_rpm_put:
 	pm_runtime_put(sensor->dev);
@@ -2758,6 +2787,39 @@ static int vd55g1_detect(struct vd55g1 *sensor)
 	return 0;
 }
 
+/*
+ * Release every rail still recorded as owned, one regulator at a time,
+ * so a partial earlier failure (e.g. vana released, vddio stuck) cannot
+ * produce unbalanced disables on the already-released consumers. The
+ * per-rail bit is cleared as each disable succeeds; the first failure
+ * latches power_fault and leaves the remaining bits set for a later
+ * attempt (remove) to retry.
+ *
+ * Accounting limit: the regulator core drops the consumer use count
+ * before voltage balancing or upstream-supply disable can fail, and
+ * its bulk-enable rollback ignores rollback-disable errors, so a bit
+ * can over- or under-report physical state at the margins. The bitmap
+ * is the driver's best knowledge, not a regulator-core guarantee.
+ */
+static int vd55g1_release_rails(struct vd55g1 *sensor)
+{
+	unsigned int n = ARRAY_SIZE(vd55g1_supply_name);
+	int i, ret = 0;
+
+	for_each_set_bit(i, &sensor->rails_on, n) {
+		ret = regulator_disable(sensor->supplies[i].consumer);
+		if (ret) {
+			dev_err(sensor->dev,
+				"regulator %s disable failed: %d\n",
+				sensor->supplies[i].supply, ret);
+			return ret;
+		}
+		clear_bit(i, &sensor->rails_on);
+	}
+
+	return ret;
+}
+
 static int vd55g1_power_on(struct vd55g1 *sensor)
 {
 	int ret;
@@ -2765,15 +2827,26 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 	ret = regulator_bulk_enable(ARRAY_SIZE(vd55g1_supply_name),
 				    sensor->supplies);
 	if (ret) {
+		/*
+		 * regulator_bulk_enable() unwinds its own successful enables,
+		 * but its rollback ignores rollback-disable errors: a rail
+		 * whose rollback failed may remain enabled with no record.
+		 * The accounting is not observable from the driver, so latch
+		 * power_fault and refuse further transitions (ov13858 does
+		 * the same).
+		 */
 		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
+		WRITE_ONCE(sensor->power_fault, true);
 		return ret;
 	}
+	sensor->rails_on = GENMASK(ARRAY_SIZE(vd55g1_supply_name) - 1, 0);
 
 	ret = clk_prepare_enable(sensor->xclk);
 	if (ret) {
 		dev_dbg(sensor->dev, "Failed to enable clock: %d\n", ret);
 		goto disable_bulk;
 	}
+	sensor->xclk_on = true;
 
 	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 	usleep_range(5000, 10000);
@@ -2811,21 +2884,44 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 
 disable_clock:
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
-	clk_disable_unprepare(sensor->xclk);
+	if (sensor->xclk_on) {
+		clk_disable_unprepare(sensor->xclk);
+		sensor->xclk_on = false;
+	}
 disable_bulk:
-	regulator_bulk_disable(ARRAY_SIZE(vd55g1_supply_name),
-			       sensor->supplies);
+	/*
+	 * A failed rail release leaves regulator ownership uncertain:
+	 * preserve the acquisition error (the caller's result), latch
+	 * power_fault so runtime PM never reports suspended against
+	 * possibly-enabled rails, and keep any unreleased bits set for
+	 * the remove path to retry.
+	 */
+	if (vd55g1_release_rails(sensor))
+		WRITE_ONCE(sensor->power_fault, true);
 
 	return ret;
 }
 
 static int vd55g1_power_off(struct vd55g1 *sensor)
 {
-	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
-	clk_disable_unprepare(sensor->xclk);
-	regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+	int ret = 0;
 
-	return 0;
+	/*
+	 * Ownership-gated and idempotent: a failed runtime suspend may
+	 * have released the clock before the regulator disable failed,
+	 * and remove must still attempt the remaining physical cleanup
+	 * without double-releasing the clock.
+	 */
+	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
+	if (sensor->xclk_on) {
+		clk_disable_unprepare(sensor->xclk);
+		sensor->xclk_on = false;
+	}
+	ret = vd55g1_release_rails(sensor);
+	if (ret)
+		WRITE_ONCE(sensor->power_fault, true);
+
+	return ret;
 }
 
 static int vd55g1_pm_resume(struct device *dev)
@@ -2833,6 +2929,9 @@ static int vd55g1_pm_resume(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct vd55g1 *sensor = to_vd55g1(sd);
 	int ret;
+
+	if (READ_ONCE(sensor->power_fault))
+		return -EIO;
 
 	ret = vd55g1_power_on(sensor);
 	if (ret)
@@ -2846,6 +2945,11 @@ static int vd55g1_pm_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct vd55g1 *sensor = to_vd55g1(sd);
 	int ret;
+
+	if (READ_ONCE(sensor->power_fault)) {
+		dev_err(dev, "suspending with latched power fault; refusing uncertain transition\n");
+		return -EIO;
+	}
 
 	ret = vd55g1_power_off(sensor);
 	if (ret)
@@ -3041,7 +3145,6 @@ err_media:
 
 static void vd55g1_subdev_cleanup(struct vd55g1 *sensor)
 {
-	v4l2_async_unregister_subdev(&sensor->sd);
 	v4l2_subdev_cleanup(&sensor->sd);
 	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 	media_entity_cleanup(&sensor->sd.entity);
@@ -3171,11 +3274,15 @@ static void vd55g1_remove(struct i2c_client *client)
 	 * exposure cluster is saved and the sensor is not powered down
 	 * mid-stream.
 	 *
-	 * v4l2_subdev_is_streaming() requires the active-state lock to be
-	 * held; keep it across the quiesce so the check cannot race with a
-	 * concurrent stream or control operation. The active state is still
-	 * allocated here: it is freed by vd55g1_subdev_cleanup() below.
+	 * Unpublish the subdev FIRST: once unregistered, no new stream or
+	 * control operation can start, which closes the restart window
+	 * between quiescing and state destruction (a concurrent disable
+	 * could otherwise restart hardware after our stop). The remaining
+	 * in-flight operations are serialized by taking the active-state
+	 * lock for the quiesce; the active state is still allocated here,
+	 * freed by v4l2_subdev_cleanup() below.
 	 */
+	v4l2_async_unregister_subdev(sd);
 	state = v4l2_subdev_lock_and_get_active_state(sd);
 
 	if (v4l2_subdev_is_streaming(sd)) {
@@ -3202,9 +3309,23 @@ static void vd55g1_remove(struct i2c_client *client)
 	vd55g1_subdev_cleanup(sensor);
 
 	pm_runtime_disable(&client->dev);
-	if (!pm_runtime_status_suspended(&client->dev))
-		vd55g1_power_off(sensor);
-	pm_runtime_set_suspended(&client->dev);
+	if (!pm_runtime_status_suspended(&client->dev) ||
+	    sensor->rails_on || sensor->xclk_on) {
+		/*
+		 * A live or failed-stop stream holds a runtime PM usage
+		 * reference (retained failed stops never issue their PM
+		 * put). The device is going away: drop one reference
+		 * for the stream this remove tears down so it is not
+		 * inherited across unbind/rebind, then power off.
+		 * Reflect suspended state only when the rails
+		 * actually went down.
+		 */
+		pm_runtime_put_noidle(&client->dev);
+		if (vd55g1_power_off(sensor))
+			dev_warn(&client->dev, "power off failed on remove; rails may be live\n");
+		else
+			pm_runtime_set_suspended(&client->dev);
+	}
 	pm_runtime_dont_use_autosuspend(&client->dev);
 }
 
