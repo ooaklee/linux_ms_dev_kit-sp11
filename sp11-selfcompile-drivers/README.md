@@ -4,6 +4,12 @@ Standalone sources for the Surface Pro 11 (ARM64) research drivers from
 [ooaklee/linux_ms_dev_kit-sp11](https://github.com/ooaklee/linux_ms_dev_kit-sp11),
 so users can build and install them without rebuilding the whole kernel.
 
+## License
+
+GPL-2.0 — see the accompanying `COPYING` file (copied from the kernel
+tree by the export script). Individual sources carry SPDX identifiers
+and their original copyright notices.
+
 ## Requirements
 
 - Kernel **built from this repo** — e.g. `7.3.0-jg-1sp11v4` — with its
@@ -16,7 +22,7 @@ so users can build and install them without rebuilding the whole kernel.
 
 ```sh
 sudo apt install linux-headers-7.3.0-jg-1sp11v4   # adjust to your -jg kernel
-tar xf sp11-selfcompile-drivers-*.tar.xz && cd sp11-selfcompile-drivers-*
+tar xf sp11-selfcompile-drivers-<version>.tar.xz && cd sp11-selfcompile-drivers-<version>
 ./check-kernel.sh     # must print OK — refuses stock headers
 make                  # builds vd55g1.ko, ov13858.ko, ps883x.ko
 sudo make modules_install

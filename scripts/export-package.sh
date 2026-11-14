@@ -35,4 +35,16 @@ echo "$ENTRIES" | while IFS='|' read -r dir src mod; do
 	} > "$PKG/$dir/.source-sha"
 done
 
+# Standalone distribution must carry the license text (GPLv2 section 1).
+if [ -f "$ROOT/COPYING" ]; then
+	cp "$ROOT/COPYING" "$PKG/COPYING"
+else
+	echo "ERROR: kernel COPYING not found at $ROOT/COPYING" >&2
+	exit 1
+fi
+
+# Package-local ignores for build artifacts (useful when building in-tree).
+printf '%s\n' '*.o' '*.ko' '.*.cmd' '*.mod' '*.mod.c' 'Module.symvers' \
+	'modules.order' '.tmp_versions' > "$PKG/.gitignore"
+
 echo "Package sources refreshed under $PKG from $TREEISH"

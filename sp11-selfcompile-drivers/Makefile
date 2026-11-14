@@ -13,19 +13,19 @@ DIRS   := vd55g0 ov13858 ps883x
 .PHONY: all modules_install clean check $(DIRS)
 
 all: check
-	@for d in $(DIRS); do \
+	@set -e; for d in $(DIRS); do \
 		$(MAKE) -C $(HDR) M=$$PWD/$$d; \
 	done
 
 modules_install: check
-	@for d in $(DIRS); do \
+	@set -e; for d in $(DIRS); do \
 		$(MAKE) -C $(HDR) M=$$PWD/$$d modules_install; \
 	done
 
 check:
-	@KVER=$(KVER) ./check-kernel.sh
+	@KVER=$(KVER) HDR='$(HDR)' ./check-kernel.sh
 
 clean:
 	@for d in $(DIRS); do \
-		$(MAKE) -C $(HDR) M=$$PWD/$$d clean; \
+		$(MAKE) -C $(HDR) M=$$PWD/$$d clean || exit 1; \
 	done

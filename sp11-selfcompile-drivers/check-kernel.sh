@@ -6,7 +6,7 @@
 set -euo pipefail
 
 KVER=${KVER:-$(uname -r)}
-HDR="/lib/modules/$KVER/build"
+HDR=${HDR:-/lib/modules/$KVER/build}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
