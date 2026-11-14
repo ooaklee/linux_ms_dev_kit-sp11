@@ -157,6 +157,15 @@ struct pmic_glink_altmode {
 	 */
 	u32 ack_seq;
 	u32 acks_owed;
+	/* Generation the owed ACKs belong to (event_lock). */
+	u64 acks_owed_generation;
+	/*
+	 * Receive fence (event_lock): the transport does not flush pending
+	 * RX across a service-only PDR, so at most one stale reply can be
+	 * outstanding per transition. Fence exactly that one ACK off from
+	 * attribution after each service change.
+	 */
+	bool fence_one_ack;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -171,14 +180,21 @@ struct pmic_glink_altmode {
 	struct pmic_glink_altmode_port ports[PMIC_GLINK_MAX_PORTS];
 };
 
+/* Caller must hold event_lock. */
+static bool pmic_glink_altmode_current_locked(struct pmic_glink_altmode *altmode,
+					      u64 generation)
+{
+	return !altmode->stopping && altmode->service_up &&
+		generation == altmode->generation;
+}
+
 static bool pmic_glink_altmode_current(struct pmic_glink_altmode *altmode, u64 generation)
 {
 	unsigned long flags;
 	bool valid;
 
 	spin_lock_irqsave(&altmode->event_lock, flags);
-	valid = !altmode->stopping && altmode->service_up &&
-		generation == altmode->generation;
+	valid = pmic_glink_altmode_current_locked(altmode, generation);
 	spin_unlock_irqrestore(&altmode->event_lock, flags);
 	return valid;
 }
@@ -217,7 +233,8 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	 * drain times out, the firmware is unresponsive for attribution
 	 * purposes; let the caller reconcile or restart the generation.
 	 */
-	while (altmode->acks_owed) {
+	while (altmode->acks_owed &&
+	       altmode->acks_owed_generation == generation) {
 		baseline = altmode->ack_seq;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 
@@ -256,11 +273,18 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		 * separate checks could race on.
 		 */
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		cancelled = !pmic_glink_altmode_current(altmode, generation);
+		cancelled = !pmic_glink_altmode_current_locked(altmode, generation);
 		acked = altmode->ack_seq != baseline;
-		if (!acked && (cancelled || !left))
-			/* Send happened but no ACK observed: debt owed once. */
+		/*
+		 * Record debt only on timeout, tagged with this request's
+		 * generation: a cancellation wake under a NEW generation
+		 * must not recreate debt the PDR transition already
+		 * retired (the old waiter's exit races the new generation).
+		 */
+		if (!acked && !left && pmic_glink_altmode_current_locked(altmode, generation)) {
 			altmode->acks_owed++;
+			altmode->acks_owed_generation = generation;
+		}
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 		if (acked)
@@ -688,6 +712,16 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:
 		spin_lock_irqsave(&altmode->event_lock, flags);
+		/*
+		 * A service-only PDR does not flush the transport, so one
+		 * stale reply may arrive after the transition: consume the
+		 * fence without attribution.
+		 */
+		if (altmode->fence_one_ack) {
+			altmode->fence_one_ack = false;
+			spin_unlock_irqrestore(&altmode->event_lock, flags);
+			return;
+		}
 		altmode->ack_seq++;
 		if (altmode->acks_owed)
 			altmode->acks_owed--;
@@ -803,10 +837,15 @@ static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 		altmode->reconciled = false;
 		/*
 		 * The service transition restarted the remote: replies owed
-		 * from the old generation can never arrive now, so retire
+		 * from the OLD generation can never arrive now, so retire
 		 * their debt instead of draining forever on the next UP.
+		 * Scoped by generation so a stale cancelled waiter cannot
+		 * recreate retired debt under the new generation.
 		 */
-		altmode->acks_owed = 0;
+		if (altmode->acks_owed_generation != generation)
+			altmode->acks_owed = 0;
+		/* At most one stale reply survives a service transition. */
+		altmode->fence_one_ack = true;
 		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
 			if (altmode->ports[i].altmode)
 				kfifo_reset(&altmode->ports[i].events);
