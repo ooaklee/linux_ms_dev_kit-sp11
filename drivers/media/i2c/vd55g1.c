@@ -1436,6 +1436,9 @@ struct vd55g1 {
 	struct v4l2_ctrl *hdr_ctrl;
 	/* Latched regulator ownership failure: no further power transitions. */
 	bool power_fault;
+	/* Physical resource ownership, tracked across partial failures. */
+	bool rails_on;
+	bool xclk_on;
 };
 
 static inline struct vd55g1 *to_vd55g1(struct v4l2_subdev *sd)
@@ -2791,12 +2794,14 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
 		return ret;
 	}
+	sensor->rails_on = true;
 
 	ret = clk_prepare_enable(sensor->xclk);
 	if (ret) {
 		dev_dbg(sensor->dev, "Failed to enable clock: %d\n", ret);
 		goto disable_bulk;
 	}
+	sensor->xclk_on = true;
 
 	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 	usleep_range(5000, 10000);
@@ -2834,7 +2839,10 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 
 disable_clock:
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
-	clk_disable_unprepare(sensor->xclk);
+	if (sensor->xclk_on) {
+		clk_disable_unprepare(sensor->xclk);
+		sensor->xclk_on = false;
+	}
 disable_bulk:
 	/*
 	 * A failed bulk disable leaves regulator ownership uncertain:
@@ -2842,7 +2850,7 @@ disable_bulk:
 	 * power_fault so runtime PM never reports suspended against
 	 * possibly-enabled rails and no further enable is attempted.
 	 */
-	{
+	if (sensor->rails_on) {
 		int cleanup = regulator_bulk_disable(ARRAY_SIZE(vd55g1_supply_name),
 						     sensor->supplies);
 
@@ -2851,6 +2859,8 @@ disable_bulk:
 				"regulator disable failed (%d); power state unknown\n",
 				cleanup);
 			WRITE_ONCE(sensor->power_fault, true);
+		} else {
+			sensor->rails_on = false;
 		}
 	}
 
@@ -2859,14 +2869,27 @@ disable_bulk:
 
 static int vd55g1_power_off(struct vd55g1 *sensor)
 {
-	int ret;
+	int ret = 0;
 
+	/*
+	 * Ownership-gated and idempotent: a failed runtime suspend may
+	 * have released the clock before the regulator disable failed,
+	 * and remove must still attempt the remaining physical cleanup
+	 * without double-releasing the clock.
+	 */
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
-	clk_disable_unprepare(sensor->xclk);
-	ret = regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
-	if (ret) {
-		dev_err(sensor->dev, "regulator disable failed: %d\n", ret);
-		WRITE_ONCE(sensor->power_fault, true);
+	if (sensor->xclk_on) {
+		clk_disable_unprepare(sensor->xclk);
+		sensor->xclk_on = false;
+	}
+	if (sensor->rails_on) {
+		ret = regulator_bulk_disable(ARRAY_SIZE(sensor->supplies), sensor->supplies);
+		if (ret) {
+			dev_err(sensor->dev, "regulator disable failed: %d\n", ret);
+			WRITE_ONCE(sensor->power_fault, true);
+		} else {
+			sensor->rails_on = false;
+		}
 	}
 
 	return ret;
@@ -3257,7 +3280,8 @@ static void vd55g1_remove(struct i2c_client *client)
 	vd55g1_subdev_cleanup(sensor);
 
 	pm_runtime_disable(&client->dev);
-	if (!pm_runtime_status_suspended(&client->dev)) {
+	if (!pm_runtime_status_suspended(&client->dev) ||
+	    sensor->rails_on || sensor->xclk_on) {
 		/*
 		 * A live or failed-stop stream holds a runtime PM usage
 		 * reference (retained failed stops never issue their PM

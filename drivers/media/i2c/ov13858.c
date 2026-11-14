@@ -1495,9 +1495,26 @@ static int ov13858_enable_streams(struct v4l2_subdev *sd,
 	 */
 	ret = ov13858_start_streaming(ov13858);
 	if (ret)
-		goto err_rpm_put;
+		goto err_rollback;
 
 	return 0;
+
+err_rollback:
+	/*
+	 * The final streaming write may have reached the sensor before
+	 * the failure (start_streaming reports its own last error only):
+	 * establish standby so the sensor is not left streaming when
+	 * the PM reference drops. A rollback failure is logged; the
+	 * sensor stays powered until runtime PM suspends it either way.
+	 */
+	{
+		int stop_ret = ov13858_stop_streaming(ov13858);
+
+		if (stop_ret)
+			dev_warn(ov13858->dev,
+				 "failed start rollback to standby: %d (start err %d)\n",
+				 stop_ret, ret);
+	}
 
 err_rpm_put:
 	pm_runtime_put(ov13858->dev);
@@ -1815,8 +1832,18 @@ static int ov13858_power_on(struct device *dev)
 	ret = regulator_bulk_enable(ARRAY_SIZE(ov13858_supply_names),
 				    ov13858->supplies);
 	if (ret) {
+		/*
+		 * A bulk enable can fail after enabling some consumers:
+		 * best-effort disable of partially-enabled rails before
+		 * latching, so the managed handles released at probe
+		 * failure/remove do not warn about outstanding enables.
+		 */
+		int cleanup = regulator_bulk_disable(ARRAY_SIZE(ov13858_supply_names),
+						     ov13858->supplies);
+
 		WRITE_ONCE(ov13858->power_fault, true);
-		dev_err(dev, "supply enable failed; power state unknown: %d\n", ret);
+		dev_err(dev, "supply enable failed; power state unknown: %d (cleanup %d)\n",
+			ret, cleanup);
 		return -EIO;
 	}
 
@@ -1850,13 +1877,20 @@ static int ov13858_power_off(struct device *dev)
 
 	if (!ov13858->managed_power)
 		return 0;
-	if (READ_ONCE(ov13858->power_fault))
+	if (READ_ONCE(ov13858->power_fault)) {
+		/*
+		 * Ownership is uncertain, not abandoned: the clock at
+		 * least is known-enabled (power_on enabled it last), so
+		 * free it best-effort before refusing the faulted device.
+		 */
+		clk_disable_unprepare(ov13858->clk);
 		return -EIO;
+	}
 
 	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	clk_disable_unprepare(ov13858->clk);
 	ret = regulator_bulk_disable(ARRAY_SIZE(ov13858_supply_names),
 				     ov13858->supplies);
-	clk_disable_unprepare(ov13858->clk);
 	if (ret) {
 		/* Rollback can fail too; do not issue I/O or retry unknown rails. */
 		WRITE_ONCE(ov13858->power_fault, true);
@@ -2021,6 +2055,7 @@ static void ov13858_remove(struct i2c_client *client)
 		else
 			pm_runtime_set_suspended(ov13858->dev);
 	}
+}
 
 static const struct i2c_device_id ov13858_id_table[] = {
 	{ .name = "ov13858" },
