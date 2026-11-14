@@ -2794,6 +2794,12 @@ static int vd55g1_detect(struct vd55g1 *sensor)
  * per-rail bit is cleared as each disable succeeds; the first failure
  * latches power_fault and leaves the remaining bits set for a later
  * attempt (remove) to retry.
+ *
+ * Accounting limit: the regulator core drops the consumer use count
+ * before voltage balancing or upstream-supply disable can fail, and
+ * its bulk-enable rollback ignores rollback-disable errors, so a bit
+ * can over- or under-report physical state at the margins. The bitmap
+ * is the driver's best knowledge, not a regulator-core guarantee.
  */
 static int vd55g1_release_rails(struct vd55g1 *sensor)
 {
@@ -2828,7 +2834,7 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
 		return ret;
 	}
-	bitmap_fill(&sensor->rails_on, ARRAY_SIZE(vd55g1_supply_name));
+	sensor->rails_on = GENMASK(ARRAY_SIZE(vd55g1_supply_name) - 1, 0);
 
 	ret = clk_prepare_enable(sensor->xclk);
 	if (ret) {
@@ -2879,13 +2885,13 @@ disable_clock:
 	}
 disable_bulk:
 	/*
-	 * A failed bulk disable leaves regulator ownership uncertain:
-	 * preserve the acquisition error (the caller's result) but latch
+	 * A failed rail release leaves regulator ownership uncertain:
+	 * preserve the acquisition error (the caller's result), latch
 	 * power_fault so runtime PM never reports suspended against
-	 * possibly-enabled rails and no further enable is attempted.
+	 * possibly-enabled rails, and keep any unreleased bits set for
+	 * the remove path to retry.
 	 */
-	ret = vd55g1_release_rails(sensor);
-	if (ret)
+	if (vd55g1_release_rails(sensor))
 		WRITE_ONCE(sensor->power_fault, true);
 
 	return ret;

@@ -1827,6 +1827,12 @@ free_endpoint:
  * already-released consumers. The per-rail bit is cleared as each
  * disable succeeds; the first failure latches power_fault and leaves
  * the remaining bits set for a later attempt (remove) to retry.
+ *
+ * Accounting limit: the regulator core drops the consumer use count
+ * before voltage balancing or upstream-supply disable can fail, and
+ * its bulk-enable rollback ignores rollback-disable errors, so a bit
+ * can over- or under-report physical state at the margins. The bitmap
+ * is the driver's best knowledge, not a regulator-core guarantee.
  */
 static int ov13858_release_rails(struct ov13858 *ov13858)
 {
@@ -1872,7 +1878,7 @@ static int ov13858_power_on(struct device *dev)
 		dev_err(dev, "supply enable failed; power state unknown: %d\n", ret);
 		return -EIO;
 	}
-	bitmap_fill(&ov13858->rails_on, ARRAY_SIZE(ov13858_supply_names));
+	ov13858->rails_on = GENMASK(ARRAY_SIZE(ov13858_supply_names) - 1, 0);
 
 	ret = clk_prepare_enable(ov13858->clk);
 	if (ret) {
