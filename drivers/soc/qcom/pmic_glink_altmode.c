@@ -8,7 +8,6 @@
 #include <linux/cleanup.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
-#include <linux/delay.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/mutex.h>
@@ -113,9 +112,6 @@ struct pmic_glink_altmode_event {
 	bool has_mux_ctrl;
 };
 
-/* One stale-ACK drain window retry for the enable-barrier PAN_EN request. */
-#define ALTMODE_PAN_EN_RETRY_DELAY_MS	100
-
 #define work_to_altmode_port(w) container_of((w), struct pmic_glink_altmode_port, work)
 
 struct pmic_glink_altmode_port {
@@ -151,14 +147,15 @@ struct pmic_glink_altmode {
 	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
 	/*
-	 * ACK attribution by sequence (event_lock): every WRITE_REQ callback
-	 * bumps ack_seq once; a request only completes when ack_seq reaches
-	 * its own req_seq. A stale ACK for request N can never satisfy a
-	 * later request M > N, in any generation, so no cross-generation
-	 * reset is needed.
+	 * ACK attribution by send-time baseline (event_lock): every
+	 * WRITE_REQ callback bumps ack_seq once. A request captures the
+	 * current ack_seq immediately after a successful send and completes
+	 * only once ack_seq moves past that baseline. A failed or cancelled
+	 * send consumes nothing, and a stale ACK for an earlier request can
+	 * never satisfy a later one: requests are serialized by lock, so the
+	 * next ACK observed after the send is attributed to this request.
 	 */
 	u32 ack_seq;
-	u32 req_seq;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -191,7 +188,7 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	struct usbc_write_req req = {};
 	unsigned long flags;
 	unsigned long left;
-	u32 req_seq;
+	u32 baseline;
 	bool acked;
 	int ret;
 
@@ -205,9 +202,6 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		return -ECONNRESET;
 
 	/* Clear stored credits, not late replies arriving after a new request. */
-	spin_lock_irqsave(&altmode->event_lock, flags);
-	req_seq = ++altmode->req_seq;
-	spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 	req.hdr.owner = cpu_to_le32(altmode->owner_id);
 	req.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP);
@@ -221,6 +215,10 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		return ret;
 	}
 
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	baseline = altmode->ack_seq;
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+
 	if (!pmic_glink_altmode_current(altmode, generation))
 		return -ECONNRESET;
 
@@ -231,11 +229,12 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		if (!pmic_glink_altmode_current(altmode, generation))
 			return -ECONNRESET;
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		acked = altmode->ack_seq >= req_seq;
+		acked = altmode->ack_seq != baseline;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		/*
-		 * A wake without attribution (spurious or a stale ACK for an
-		 * earlier request) keeps waiting with the remaining time.
+		 * A wake without attribution (spurious) keeps waiting with
+		 * the remaining time; requests are serialized by lock, so the
+		 * first ACK after the send baseline is this request's.
 		 */
 		if (acked)
 			return 0;
@@ -716,6 +715,28 @@ static void pmic_glink_altmode_enable_worker(struct work_struct *work)
 			port->hpd_connected = false;
 		}
 
+		if (!up) {
+			/* DOWN stays closed; nothing to (re)request. */
+			return;
+		}
+
+		/*
+		 * Send PAN_EN before opening the barrier: the barrier must not
+		 * open for a state we could not (re)request, or retained
+		 * events could republish stale HPD. Doing this under
+		 * lifecycle_lock also serializes the failure close against
+		 * port application (apply takes the same lock), so a worker
+		 * past its readiness check cannot publish after closure.
+		 * The request waits on altmode->lock and the ACK completion;
+		 * neither takes lifecycle_lock, so no deadlock.
+		 */
+		ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
+		if (ret) {
+			dev_err(altmode->dev, "failed to request altmode notifications, generation %llu: %d\n",
+				(unsigned long long)generation, ret);
+			return;
+		}
+
 		spin_lock_irqsave(&altmode->event_lock, flags);
 		if (!altmode->stopping && up && altmode->service_up &&
 		    generation == altmode->generation) {
@@ -727,32 +748,6 @@ static void pmic_glink_altmode_enable_worker(struct work_struct *work)
 					queue_work(system_freezable_wq, &port->work);
 			}
 		}
-		spin_unlock_irqrestore(&altmode->event_lock, flags);
-	}
-
-	if (!up)
-		return;
-
-	/*
-	 * Reconciled is software state, not a dependency on a PAN_EN reply,
-	 * but the barrier must not open for a state we could not (re)request:
-	 * if the request fails (e.g. a prior timed-out request's stale-ACK
-	 * window), retained events could republish stale HPD. Retry briefly;
-	 * if it still fails, close the barrier again so a later overflow or
-	 * PDR transition reschedules this worker.
-	 */
-	ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
-	if (ret == -EAGAIN) {
-		msleep(ALTMODE_PAN_EN_RETRY_DELAY_MS);
-		ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0, generation);
-	}
-	if (ret) {
-		dev_err(altmode->dev, "failed to request altmode notifications, generation %llu: %d\n",
-			(unsigned long long)generation, ret);
-		spin_lock_irqsave(&altmode->event_lock, flags);
-		if (!altmode->stopping && altmode->service_up &&
-		    generation == altmode->generation)
-			altmode->reconciled = false;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 	}
 }
