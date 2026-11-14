@@ -2773,6 +2773,14 @@ struct qmp_combo {
 	struct mutex phy_mutex;
 	int init_count;
 	bool regulators_enabled;
+	/*
+	 * Resource-ownership quarantine (ported from the 7.2 overlay,
+	 * evidence/qmp-quarantine-report.md): after a failed acquire or
+	 * release the set of still-held resources is uncertain, so com_init
+	 * refuses to run until a full release cycle clears the latch.
+	 */
+	int quarantine_error;
+	bool quarantine_cleanup;
 	bool com_initialized;
 	bool runtime_suspended;
 	bool reconfiguration_failed;
@@ -4280,6 +4288,19 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	if (qmp->reconfiguration_failed)
 		return -EIO;
 
+	/*
+	 * Sticky quarantine gate: resource ownership is uncertain after a
+	 * failed acquire/release, so refuse until a full com_exit clears it.
+	 * This also sits before the USB4 tunnel-clock mode-register sample
+	 * below, so a quarantined PHY can never re-latch the sample.
+	 */
+	if (qmp->quarantine_error) {
+		dev_err(qmp->dev, "PHY quarantined (%d%s), refusing com_init\n",
+			qmp->quarantine_error,
+			qmp->quarantine_cleanup ? ", cleanup failed" : "");
+		return qmp->quarantine_error;
+	}
+
 	if (WARN_ON(qmp->runtime_suspended))
 		return -EBUSY;
 
@@ -4304,6 +4325,12 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		if (ret) {
 			dev_err(qmp->dev, "failed to enable regulators, err=%d\n",
 				ret);
+			/*
+			 * Bulk enable may have partially succeeded before
+			 * failing: regulator ownership is uncertain, so keep
+			 * whatever is still enabled held and quarantine.
+			 */
+			qmp->quarantine_error = ret;
 			goto err_decrement_count;
 		}
 
@@ -4313,13 +4340,16 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
 	if (ret) {
 		dev_err(qmp->dev, "reset assert failed\n");
-		goto err_disable_regulators;
+		/* Reset line state uncertain: keep regulators held, quarantine. */
+		qmp->quarantine_error = ret;
+		goto err_decrement_count;
 	}
 
 	ret = reset_control_bulk_deassert(cfg->num_resets, qmp->resets);
 	if (ret) {
 		dev_err(qmp->dev, "reset deassert failed\n");
-		goto err_disable_regulators;
+		qmp->quarantine_error = ret;
+		goto err_decrement_count;
 	}
 
 	ret = clk_bulk_prepare_enable(qmp->num_clks, qmp->clks);
@@ -4436,15 +4466,25 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 			SW_PWRDN);
 
 	qmp->com_initialized = true;
+	qmp->quarantine_cleanup = false;
 
 	return 0;
 
 err_disable_clocks:
 	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
 err_assert_reset:
-	reset_control_bulk_assert(cfg->num_resets, qmp->resets);
+	ret = reset_control_bulk_assert(cfg->num_resets, qmp->resets);
+	if (ret) {
+		/* Unwind failed mid-ladder: reset state uncertain, quarantine. */
+		qmp->quarantine_error = ret;
+		qmp->quarantine_cleanup = true;
+	}
 err_disable_regulators:
-	qmp_combo_disable_regulators(qmp);
+	if (qmp_combo_disable_regulators(qmp)) {
+		/* Regulators possibly still enabled: quarantine. */
+		qmp->quarantine_error = -EIO;
+		qmp->quarantine_cleanup = true;
+	}
 err_decrement_count:
 	qmp->com_initialized = false;
 	if (!force)
@@ -4496,8 +4536,30 @@ static int qmp_combo_com_exit(struct qmp_combo *qmp, bool force)
 	clk_disable_unprepare(qmp->pipe_clk);
 	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
 
-	qmp_combo_disable_regulators(qmp);
+	if (qmp_combo_disable_regulators(qmp))
+		ret = -EIO;
+
 	qmp->com_initialized = false;
+
+	if (ret) {
+		/*
+		 * Release failed partway: ownership of resets/regulators is
+		 * uncertain, so quarantine until an explicit recovery path
+		 * (unbind/rebind) clears it.
+		 */
+		qmp->quarantine_error = ret;
+		qmp->quarantine_cleanup = true;
+		return ret;
+	}
+
+	/*
+	 * Full release succeeded: everything is back to NONE/ASSERTED, so a
+	 * stale quarantine latch (which the frozen 7.2 overlay never
+	 * cleared — see evidence/qmp-quarantine-report.md section 1.4)
+	 * is cleared here.
+	 */
+	qmp->quarantine_error = 0;
+	qmp->quarantine_cleanup = false;
 
 	return 0;
 }
