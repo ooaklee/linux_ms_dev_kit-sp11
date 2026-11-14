@@ -146,6 +146,8 @@ struct pmic_glink_altmode {
 
 	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
+	/* A request whose ACK has not been observed yet (event_lock). */
+	bool ack_outstanding;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -191,7 +193,19 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 
 	/* Clear stored credits, not late replies arriving after a new request. */
 	spin_lock_irqsave(&altmode->event_lock, flags);
+	/*
+	 * A previous request timed out and its ACK may still be in flight;
+	 * the ack carries no request identity, so admitting a new request
+	 * would let a stale ACK satisfy it. Wait for the outstanding ACK to
+	 * drain (or the generation to change) before sending again.
+	 */
+	if (altmode->ack_outstanding) {
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+		dev_err(altmode->dev, "altmode request %#x blocked: previous ACK not drained\n", cmd);
+		return -EAGAIN;
+	}
 	reinit_completion(&altmode->pan_ack);
+	altmode->ack_outstanding = true;
 	spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 	req.hdr.owner = cpu_to_le32(altmode->owner_id);
@@ -203,6 +217,9 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	ret = pmic_glink_send_generation(altmode->client, &req, sizeof(req), generation);
 	if (ret) {
 		dev_err(altmode->dev, "failed to send altmode request: %#x (%d)\n", cmd, ret);
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		altmode->ack_outstanding = false;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		return ret;
 	}
 
@@ -211,9 +228,22 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 
 	left = wait_for_completion_timeout(&altmode->pan_ack, 5 * HZ);
 	/* PDR/stop also wake the waiter; neither wake is a firmware response. */
-	if (!pmic_glink_altmode_current(altmode, generation))
+	if (!pmic_glink_altmode_current(altmode, generation)) {
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		altmode->ack_outstanding = false;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		return -ECONNRESET;
+	}
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	if (left)
+		altmode->ack_outstanding = false;
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
 	if (!left) {
+		/*
+		 * Stale ACK may still land; keep ack_outstanding set so the
+		 * next request refuses to run until the ACK drains or a
+		 * generation change resets the state below.
+		 */
 		dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
 		return -ETIMEDOUT;
 	}
@@ -483,9 +513,23 @@ static void pmic_glink_altmode_queue_event(struct pmic_glink_altmode_port *port,
 	spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 	/* Never overwrite older events or invent ACK/replay semantics on rejection. */
-	if (!queued)
+	if (!queued) {
 		dev_err_ratelimited(altmode->dev, "altmode event queue full on port %u\n",
 				    port->index);
+		/*
+		 * The rejected event may be the final disconnect: the published
+		 * HPD state is now indistinguishable from firmware state. Mark
+		 * desynchronized and reconcile the whole generation (disconnect
+		 * publish + fresh state request), which re-derives connector
+		 * state instead of replaying a lost event.
+		 */
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		if (!altmode->stopping && altmode->service_up) {
+			altmode->reconciled = false;
+			queue_work(system_freezable_wq, &altmode->enable_work);
+		}
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+	}
 }
 
 static enum typec_orientation pmic_glink_altmode_orientation(unsigned int orientation)
@@ -618,6 +662,7 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:
 		spin_lock_irqsave(&altmode->event_lock, flags);
+		altmode->ack_outstanding = false;
 		complete(&altmode->pan_ack);
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		break;
@@ -715,6 +760,8 @@ static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 		altmode->generation = generation;
 		altmode->service_up = up;
 		altmode->reconciled = false;
+		/* New generation: old ACKs can no longer be attributed either way. */
+		altmode->ack_outstanding = false;
 		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
 			if (altmode->ports[i].altmode)
 				kfifo_reset(&altmode->ports[i].events);
@@ -749,6 +796,22 @@ static void pmic_glink_altmode_stop(void *data)
 		spin_lock_irqsave(&altmode->event_lock, flags);
 		kfifo_reset(&port->events);
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
+	}
+
+	/*
+	 * Queued disconnect events may have been discarded above: publish the
+	 * final disconnect here while the bridges are still alive, so unbind
+	 * with a connected sink does not leave HPD high indefinitely.
+	 */
+	scoped_guard(mutex, &altmode->lifecycle_lock) {
+		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
+			port = &altmode->ports[i];
+			if (!port->altmode || !port->hpd_connected)
+				continue;
+			drm_aux_hpd_bridge_notify(&port->bridge->dev,
+						  connector_status_disconnected);
+			port->hpd_connected = false;
+		}
 	}
 }
 
