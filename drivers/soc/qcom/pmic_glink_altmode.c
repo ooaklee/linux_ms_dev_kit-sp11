@@ -241,7 +241,8 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 			 * expire exactly one debt per timeout so reconciliation
 			 * cannot block forever, while later debts keep their
 			 * own drain window. A rare misattributed straggler is
-			 * bounded by the generation barrier.
+			 * bounded by the generation barrier. The lock is held
+			 * across the decision, matching the loop-head invariant.
 			 */
 			spin_lock_irqsave(&altmode->event_lock, flags);
 			if (altmode->acks_owed)
@@ -250,7 +251,7 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 				 altmode->acks_owed);
 			if (!altmode->acks_owed)
 				break;
-			spin_unlock_irqrestore(&altmode->event_lock, flags);
+			/* Loop head re-checks acks_owed under the held lock. */
 			continue;
 		}
 
