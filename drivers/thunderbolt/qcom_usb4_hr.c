@@ -7,33 +7,52 @@
  * the firmware and Qualcomm-specific initialization sequence are incomplete.
  *
  * Controller ownership contract between this driver and the QMP PHY driver
- * (qualification area c):
+ * (qualification area c, updated with 2026-11-14 REA evidence in
+ * evidence/rea-usb4-20261114.md):
  *
  * - The PHY driver (phy-qcom-qmp-combo, #24 series) owns the QMP block,
  *   its "phy_nocsr" reset (we take it only as an optional SHARED reset),
- *   and the USB4 pipe-clock/ownership state machine it acquired in #24/#87.
- *   We consume the PHY exclusively through phy_get/phy_set_mode_ext/
- *   phy_init/phy_exit and never write its registers -- the one historical
- *   exception, the AON clamp release at PHY base +0x104, is default-off
- *   behind uc_skip_clamp=0.
+ *   and the USB4 pipe-clock/ownership state machine it acquired in
+ *   #24/#87. The DP tunnel clock also stays entirely in the QMP-combo
+ *   domain; this frontend never touches it. We consume the PHY
+ *   exclusively through phy_get/phy_set_mode_ext/phy_init/phy_exit and
+ *   never write its registers -- the one historical exception, the AON
+ *   clamp release at PHY base +0x104, is default-off behind
+ *   uc_skip_clamp=0.
  * - This driver owns the host-router NHI block: its named MMIO regions,
- *   the remaining resets, the clocks, the UC firmware stream and the NHI
- *   rings/interrupts once activated.
- * - Stop/restart: activation is serialised under hr->lock and one-shot.
- *   After qcom_usb4_hr_stop() (remove/shutdown), state is STOPPED and
- *   cannot be re-entered; qcom_usb4_hr_release_activation() unwinds in
- *   strict reverse activation order: nhi_remove() -> domain devres group
- *   -> phy_exit() -> reset assertion -> clocks disabled. If any physical
- *   unwind step fails, cleanup_error is recorded, state becomes FAILED
- *   and restart is refused; a software unwind never claims the UC is
- *   safely restartable. The PHY itself may still be held by its own
- *   driver for the USB/DP alternate paths, which is why we do not touch
- *   its resources in remove() beyond phy_exit().
+ *   the remaining resets, the clocks, and the NHI rings/interrupts once
+ *   activated. Firmware is NOT host-owned: the router boots autonomously
+ *   and the host only reads version/capabilities (the old experimental
+ *   request_firmware upload path is removed; it targeted a window that
+ *   aliases host DRAM).
+ * - MMIO discovery (REA 1.1, QcUsb4Filter8380 FUN_140018470): the router
+ *   MMIO base is NOT in _CRS. Windows scans the DSDT AML for the literal
+ *   "SOSI" signature and reads the u64 physical base at SOSI+5; the
+ *   header is 0xb8 bytes and the full region size is
+ *   (u32@0xa4 + u32@0x9c + 0x2e) * 4 bytes; register access uses an
+ *   indexed u32 window at SOSI_base + u32@0xa0. Until a DT binding
+ *   publishes these regions, this scaffold validates named DT resources
+ *   only (fail-closed) with sizes from DT, not fixed constants.
+ * - Stop/restart ownership (REA 1.4/1.5): on disconnect the router
+ *   sequence is PHY standby (RXSTANDBY) -> drive SBTX low -> sideband
+ *   slot reset ("CS/SB registers are reset. Disconnect completed"); on
+ *   resume it is wake FSM -> HSE retrain phases (lnk_hse_p1..p5) ->
+ *   SB reconnect ("Enable SBTX") -> DROM revalidation. This frontend
+ *   implements NONE of that physical sequence yet: stop() only unwinds
+ *   host-side state in strict reverse activation order (nhi_remove ->
+ *   devres groups -> phy_exit -> resets -> clocks) and the physical
+ *   disconnect/resume sequence remains unqualified.
+ * - Activation is serialised under hr->lock and one-shot. After
+ *   qcom_usb4_hr_stop() (remove/shutdown), state is STOPPED and cannot
+ *   be re-entered; if any physical unwind step fails, cleanup_error is
+ *   recorded, state becomes FAILED and restart is refused. The PHY
+ *   itself may still be held by its own driver for the USB/DP alternate
+ *   paths, which is why we do not touch its resources in remove()
+ *   beyond phy_exit().
  */
 
 #include <linux/clk.h>
 #include <linux/device.h>
-#include <linux/firmware.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
@@ -463,177 +482,50 @@ MODULE_PARM_DESC(usbap_allow,
 		 "allow the deadly raw usbap_config RMW experiment");
 
 /*
- * 2026-08-26 round-9: reading back "uc_ram" after the load returns LINUX
- * KERNEL STRINGS (driver-core rodata) and zero UC firmware strings - the
- * 0x15613000 window aliases host DRAM, so every "firmware load" sprayed
- * ~40KB into kernel memory (explains the corrupted activated flag and
- * Runtime PM underflows). Block the load until the real UC RAM/IOVA
- * mechanism is identified from the Windows ACPI resource table.
+ * 2026-11-14 REA evidence (evidence/rea-usb4-20261114.md, QcUsb4Filter8380
+ * full-corpus decompile): there is NO host-side firmware loading for this
+ * router. The router boots autonomously from its own storage; the host only
+ * reads version/capabilities from the SOSI-published MMIO region. The old
+ * experimental upload path is removed: it wrote into a window that aliases
+ * host DRAM (2026-08-26 round-9 finding) and no upload path exists in the
+ * Windows drivers either.
  */
-static bool fw_load_allow;
-module_param_named(fw_load_allow, fw_load_allow, bool, 0644);
-MODULE_PARM_DESC(fw_load_allow,
-		 "allow the UC firmware stream into the window0 fw area");
-
-static int qcom_usb4_hr_validate_firmware(const struct firmware *fw)
-{
-	const u8 *data = fw->data;
-	size_t remaining = fw->size;
-
-	if (!remaining || remaining % sizeof(u32))
-		return -EINVAL;
-
-	while (remaining) {
-		u32 target, count;
-		size_t length;
-
-		if (remaining < 2 * sizeof(u32))
-			return -EINVAL;
-
-		target = get_unaligned_le32(data);
-		count = get_unaligned_le32(data + sizeof(u32));
-		data += 2 * sizeof(u32);
-		remaining -= 2 * sizeof(u32);
-
-		if (!count || count > 0x4000 ||
-		    !IS_ALIGNED(target, sizeof(u32)) ||
-		    target > 56 * SZ_1K ||
-		    count > remaining / sizeof(u32) ||
-		    count > (56 * SZ_1K - target) / sizeof(u32))
-			return -EINVAL;
-
-		length = (size_t)count * sizeof(u32);
-		data += length;
-		remaining -= length;
-	}
-
-	return 0;
-}
 
 static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 {
-	static const char * const fw_name =
-		"qcom/x1e80100/microsoft/Denali/sp11-usb4-uc-fw.bin";
 	void __iomem *uc_ctl = hr->regs[6] + 0x1000; /* uc_per + 0x1000 */
-	void __iomem *uc_ram = hr->regs[5];         /* uc_ram (writes real;
-						     * reads alias DRAM) */
-	const struct firmware *fw;
-	const u8 *data;
-	size_t remaining;
-	unsigned int i;
 	u32 val;
-	int ret;
 
 	/*
-	 * Sequence reverse-engineered from the Windows QcUsb4Filter driver
-	 * (static analysis only; addresses and order documented in the
-	 * experiment README). The UC implements the NHI ring protocol, so
-	 * once it is running the common Thunderbolt stack can talk to it.
+	 * 2026-11-14 REA evidence: the router boots autonomously; the host
+	 * NEVER loads firmware (no request_firmware path exists in the
+	 * Windows drivers either - the old experimental upload wrote into a
+	 * window that aliases host DRAM and is removed). The host-side job
+	 * is only to clear the two gates so the autonomously-booted UC
+	 * becomes ring-protocol reachable, and read version/capabilities.
 	 */
 	val = readl(uc_ctl);
 	dev_info(hr->nhi.dev, "hr-bring: uc_ctl status=%#x\n", val);
 	if (val & BIT(0)) {
 		/*
-		 * Warm start: the UC is already executing (boot firmware or
-		 * ADSP started it - we have never loaded real firmware).
-		 * Do NOT halt it; just fall through to gate clearing so the
-		 * router reaches a ring-protocol-accessible state.
+		 * Warm start: the UC is already executing (it booted from
+		 * its own storage - we never load firmware). Do NOT halt
+		 * it; just fall through to gate clearing so the router
+		 * reaches a ring-protocol-accessible state.
 		 */
 		dev_info(hr->nhi.dev,
-			 "USB4 UC already running (warm start); not halting\n");
-	} else if (fw_load_allow) {
-		/*
-		 * Firmware error-path contract (qualification area b):
-		 *
-		 * - request_firmware()/validate failing returns with NOTHING
-		 *   acquired: the UC has not been halted yet (the halt write
-		 *   only happens below), no firmware is held, and the caller's
-		 *   err_release path powers the whole block down through
-		 *   qcom_usb4_hr_release_activation() (nhi_remove, domain
-		 *   release, phy_exit, reset assertion, clocks off).
-		 * - The only resource held between acquire and release_firmware
-		 *   is the firmware blob itself, and every exit between them
-		 *   releases it.
-		 * - If the post-load ready poll times out, the UC is left in
-		 *   its failed boot state but power is removed by the caller's
-		 *   unwind, so the device is never left powered-and-hung.
-		 */
-		ret = request_firmware(&fw, fw_name, hr->nhi.dev);
-		if (ret)
-			return dev_err_probe(hr->nhi.dev, ret,
-					     "USB4 UC firmware unavailable\n");
-
-		ret = qcom_usb4_hr_validate_firmware(fw);
-		if (ret) {
-			release_firmware(fw);
-			return dev_err_probe(hr->nhi.dev, ret,
-					     "bad UC firmware container\n");
-		}
-
-		/* Halt the UC, then stream {target, count, words[]} segments. */
-		writel(0, uc_ctl);
-		dev_info(hr->nhi.dev, "hr-bring: halted, streaming segments\n");
-
-		data = fw->data;
-		remaining = fw->size;
-		while (remaining) {
-			u32 target = get_unaligned_le32(data);
-			u32 count = get_unaligned_le32(data + sizeof(u32));
-			size_t length = (size_t)count * sizeof(u32);
-
-			data += 2 * sizeof(u32);
-			remaining -= 2 * sizeof(u32);
-			for (i = 0; i < count; i++)
-				writel(get_unaligned_le32(data + i * sizeof(u32)),
-				       uc_ram + target + i * sizeof(u32));
-			data += length;
-			remaining -= length;
-		}
-		dev_info(hr->nhi.dev, "USB4 UC firmware loaded (%zu bytes)\n",
-			 fw->size);
-		release_firmware(fw);
+			 "USB4 UC already running (autonomous boot); not halting\n");
 	} else {
 		/*
-		 * No load allowed and no warm UC: halt and continue; ready
-		 * may or may not come up, but nothing is corrupted.
+		 * Cold and not yet running: nothing the host can safely do
+		 * without a qualified firmware mechanism (there is none).
+		 * Report and fail activation; the caller's unwind removes
+		 * power, so the device is never left half-brought-up.
 		 */
-		dev_info(hr->nhi.dev,
-			 "hr-bring: firmware load SKIPPED (fw_load_allow=0)\n");
-		writel(0, uc_ctl);
+		dev_warn(hr->nhi.dev,
+			 "hr-bring: UC not executing and no host load path exists\n");
+		return -ENODEV;
 	}
-
-
-	if (uc_skip_clamp) {
-		dev_info(hr->nhi.dev, "hr-bring: clamp release SKIPPED\n");
-	} else {
-		/*
-		 * The QMP driver leaves the USB4 AON clamp engaged (com_init
-		 * sets it and only the autonomous-mode path clears it, which
-		 * never runs for the router). With the clamp set the PHY pins
-		 * are isolated and the UC cannot see the partner. Release it:
-		 * the router owns the pins.
-		 */
-		struct device_node *np = hr->usb4_phy->dev.of_node;
-		void __iomem *phy_base = of_iomap(np, 0);
-		u32 v;
-
-		dev_info(hr->nhi.dev, "hr-bring: clamp map=%p\n", phy_base);
-		if (phy_base) {
-			void __iomem *clmp = phy_base + 0x104;
-
-			v = readl(clmp);
-			dev_info(hr->nhi.dev, "hr-bring: clamp read=%#x\n", v);
-			writel(v & ~0x01010101u, clmp);
-			dev_info(hr->nhi.dev,
-				 "hr-bring: USB4 AON clamp written, now=%#x\n",
-				 readl(clmp));
-			iounmap(phy_base);
-		} else {
-			dev_warn(hr->nhi.dev,
-				 "could not map PHY to release clamp\n");
-		}
-	}
-
 	/* Clear the two gates, then release the UC. */
 	dev_info(hr->nhi.dev, "hr-bring: clearing port_group gate\n");
 	/*
@@ -645,32 +537,11 @@ static int qcom_usb4_hr_uc_bringup(struct qcom_usb4_hr *hr)
 	qcom_usb4_hr_rmw(hr->regs[3] + 0x64, 0, BIT(6));   /* port_group */
 	dev_info(hr->nhi.dev, "hr-bring: clearing router_config gate\n");
 	qcom_usb4_hr_rmw(hr->regs[1] + 0x18, 0, BIT(24));  /* router_config */
-	if (!(val & BIT(0))) {
-		dev_info(hr->nhi.dev, "hr-bring: releasing UC (GO)\n");
-		qcom_usb4_hr_rmw(uc_ctl, 1, BIT(0));           /* GO */
-	} else {
-		dev_info(hr->nhi.dev, "hr-bring: warm UC, GO not reissued\n");
-	}
-
 	/*
-	 * Ready (window0+0x18 BIT24) is a boot-done pulse the UC raises on
-	 * a fresh halt+GO boot. A warm UC already consumed it, so only
-	 * poll when we actually (re)started the UC ourselves.
+	 * The UC was already running, so no GO reissue and no ready poll:
+	 * ready (window0+0x18 BIT24) is a boot-done pulse consumed at the
+	 * autonomous boot, not something the host can wait for here.
 	 */
-	if (!(val & BIT(0))) {
-		dev_info(hr->nhi.dev, "hr-bring: polling for UC ready\n");
-		ret = readl_poll_timeout(hr->regs[0] + 0x18, val,
-					 val & BIT(24), 5000,
-					 10 * USEC_PER_SEC);
-		if (ret)
-			return dev_err_probe(hr->nhi.dev, ret,
-					     "USB4 UC did not report ready\n");
-		dev_info(hr->nhi.dev, "USB4 UC ready\n");
-	} else {
-		dev_info(hr->nhi.dev,
-			 "hr-bring: warm UC, skipping ready poll\n");
-		ret = 0;
-	}
 
 	/*
 	 * UC interrupt/config arming (Windows order, values exact):
