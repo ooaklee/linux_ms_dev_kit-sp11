@@ -237,19 +237,21 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 			return -ECONNRESET;
 		if (!left) {
 			/*
-			 * The owed reply is at least a full ACK timeout late.
-			 * It is either lost or wedged behind a dead service;
-			 * keeping the debt would block this generation's
-			 * reconciliation forever, so expire it and proceed.
-			 * The rare misattributed late reply is bounded by the
-			 * generation barrier (the next transition resets
-			 * firmware state and the enable barrier anyway).
+			 * This owed reply is at least a full ACK timeout late:
+			 * expire exactly one debt per timeout so reconciliation
+			 * cannot block forever, while later debts keep their
+			 * own drain window. A rare misattributed straggler is
+			 * bounded by the generation barrier.
 			 */
-			dev_warn(altmode->dev, "expiring %u owed altmode ACK(s) after drain timeout\n",
-				 altmode->acks_owed);
 			spin_lock_irqsave(&altmode->event_lock, flags);
-			altmode->acks_owed = 0;
-			break;
+			if (altmode->acks_owed)
+				altmode->acks_owed--;
+			dev_warn(altmode->dev, "expired one owed altmode ACK after drain timeout (%u left)\n",
+				 altmode->acks_owed);
+			if (!altmode->acks_owed)
+				break;
+			spin_unlock_irqrestore(&altmode->event_lock, flags);
+			continue;
 		}
 
 		spin_lock_irqsave(&altmode->event_lock, flags);
@@ -280,12 +282,14 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		cancelled = !pmic_glink_altmode_current_locked(altmode, generation);
 		acked = altmode->ack_seq != baseline;
 		/*
-		 * This send's ACK has not been observed: record the debt in
-		 * the same critical section as the decision, exactly once,
-		 * on every non-acked exit (cancellation or timeout). Debt
-		 * survives transitions; a queued late reply retires it.
+		 * Debt is recorded only on an unacked EXIT, in the same
+		 * critical section as the decision, exactly once per send.
+		 * A continuing wait (spurious wake, or a PDR/stop wake whose
+		 * stored completion credit was consumed without any ACK
+		 * advancing ack_seq) records nothing: this send's reply is
+		 * still pending, not owed.
 		 */
-		if (!acked)
+		if (!acked && (cancelled || !left))
 			altmode->acks_owed++;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 
@@ -296,7 +300,7 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 			return -ECONNRESET;
 		if (!left)
 			break;
-		/* Spurious wake with time left: keep waiting. */
+		/* Spurious/PDR credit wake with time left: keep waiting. */
 	}
 
 	dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
