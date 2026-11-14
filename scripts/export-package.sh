@@ -35,13 +35,23 @@ echo "$ENTRIES" | while IFS='|' read -r dir src mod; do
 	} > "$PKG/$dir/.source-sha"
 done
 
-# Standalone distribution must carry the license text (GPLv2 section 1).
+# Standalone distribution must carry the license text (GPLv2 section 1),
+# including the texts COPYING points at, so the package is self-contained.
 if [ -f "$ROOT/COPYING" ]; then
 	cp "$ROOT/COPYING" "$PKG/COPYING"
 else
 	echo "ERROR: kernel COPYING not found at $ROOT/COPYING" >&2
 	exit 1
 fi
+mkdir -p "$PKG/LICENSES/preferred" "$PKG/LICENSES/exceptions"
+for lic in preferred/GPL-2.0 exceptions/Linux-syscall-note; do
+	if [ -f "$ROOT/LICENSES/$lic" ]; then
+		cp "$ROOT/LICENSES/$lic" "$PKG/LICENSES/$lic"
+	else
+		echo "ERROR: license text LICENSES/$lic not found" >&2
+		exit 1
+	fi
+done
 
 # Package-local ignores for build artifacts (useful when building in-tree).
 printf '%s\n' '*.o' '*.ko' '.*.cmd' '*.mod' '*.mod.c' 'Module.symvers' \
