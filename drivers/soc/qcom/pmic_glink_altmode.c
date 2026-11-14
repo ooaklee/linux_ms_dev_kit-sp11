@@ -147,25 +147,21 @@ struct pmic_glink_altmode {
 	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
 	/*
-	 * ACK attribution (event_lock): every WRITE_REQ callback bumps
-	 * ack_seq once and retires one owed ACK. A request first drains any
-	 * ACK owed by a previously timed-out request, then captures
-	 * ack_seq BEFORE sending and completes when it advances. With zero
-	 * ACKs in flight at send time, the first advance is this request's
-	 * ACK; a stale ACK can never satisfy it, and the request's own ACK
-	 * can never be swallowed by a late baseline capture.
+	 * ACK attribution (event_lock): acks_owed counts sends whose ACK
+	 * has not been observed (timeout or cancellation) — replies are
+	 * 1:1 with sends and requests are serialized by lock. A callback
+	 * first retires owed debt silently (a reply to an unacked send
+	 * must never be attributed to a later request, even across a
+	 * service transition — the transport does not flush pending RX);
+	 * only a debt-free callback advances ack_seq. A new request
+	 * drains owed debt first, then captures ack_seq BEFORE sending,
+	 * so the first advance is provably its own ACK. Debt survives
+	 * service transitions because a queued old reply retires exactly
+	 * the debt it owes; debt whose reply was truly lost is expired by
+	 * the drain after one timeout to guarantee forward progress.
 	 */
 	u32 ack_seq;
 	u32 acks_owed;
-	/* Generation the owed ACKs belong to (event_lock). */
-	u64 acks_owed_generation;
-	/*
-	 * Receive fence (event_lock): the transport does not flush pending
-	 * RX across a service-only PDR, so at most one stale reply can be
-	 * outstanding per transition. Fence exactly that one ACK off from
-	 * attribution after each service change.
-	 */
-	bool fence_one_ack;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -233,23 +229,31 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	 * drain times out, the firmware is unresponsive for attribution
 	 * purposes; let the caller reconcile or restart the generation.
 	 */
-	while (altmode->acks_owed &&
-	       altmode->acks_owed_generation == generation) {
-		baseline = altmode->ack_seq;
+	while (altmode->acks_owed) {
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 		left = wait_for_completion_timeout(&altmode->pan_ack, 5 * HZ);
 		if (!pmic_glink_altmode_current(altmode, generation))
 			return -ECONNRESET;
 		if (!left) {
-			dev_err(altmode->dev, "drain of owed altmode ACK timed out\n");
-			return -EAGAIN;
+			/*
+			 * The owed reply is at least a full ACK timeout late.
+			 * It is either lost or wedged behind a dead service;
+			 * keeping the debt would block this generation's
+			 * reconciliation forever, so expire it and proceed.
+			 * The rare misattributed late reply is bounded by the
+			 * generation barrier (the next transition resets
+			 * firmware state and the enable barrier anyway).
+			 */
+			dev_warn(altmode->dev, "expiring %u owed altmode ACK(s) after drain timeout\n",
+				 altmode->acks_owed);
+			spin_lock_irqsave(&altmode->event_lock, flags);
+			altmode->acks_owed = 0;
+			break;
 		}
 
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		/* Spurious wake (no ACK advanced): keep draining. */
-		if (altmode->ack_seq == baseline)
-			continue;
+		/* Spurious wake (no debt retired): keep draining. */
 	}
 
 	baseline = altmode->ack_seq;
@@ -276,15 +280,13 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		cancelled = !pmic_glink_altmode_current_locked(altmode, generation);
 		acked = altmode->ack_seq != baseline;
 		/*
-		 * Record debt only on timeout, tagged with this request's
-		 * generation: a cancellation wake under a NEW generation
-		 * must not recreate debt the PDR transition already
-		 * retired (the old waiter's exit races the new generation).
+		 * This send's ACK has not been observed: record the debt in
+		 * the same critical section as the decision, exactly once,
+		 * on every non-acked exit (cancellation or timeout). Debt
+		 * survives transitions; a queued late reply retires it.
 		 */
-		if (!acked && !left && pmic_glink_altmode_current_locked(altmode, generation)) {
+		if (!acked)
 			altmode->acks_owed++;
-			altmode->acks_owed_generation = generation;
-		}
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 		if (acked)
@@ -712,19 +714,16 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 	switch (opcode) {
 	case USBC_CMD_WRITE_REQ:
 		spin_lock_irqsave(&altmode->event_lock, flags);
-		/*
-		 * A service-only PDR does not flush the transport, so one
-		 * stale reply may arrive after the transition: consume the
-		 * fence without attribution.
-		 */
-		if (altmode->fence_one_ack) {
-			altmode->fence_one_ack = false;
-			spin_unlock_irqrestore(&altmode->event_lock, flags);
-			return;
-		}
-		altmode->ack_seq++;
-		if (altmode->acks_owed)
+		if (altmode->acks_owed) {
+			/*
+			 * Reply to an unacked earlier send (possibly queued
+			 * across a service transition): retire its debt
+			 * without attribution and wake a drainer.
+			 */
 			altmode->acks_owed--;
+		} else {
+			altmode->ack_seq++;
+		}
 		complete(&altmode->pan_ack);
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		break;
@@ -836,16 +835,11 @@ static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 		altmode->service_up = up;
 		altmode->reconciled = false;
 		/*
-		 * The service transition restarted the remote: replies owed
-		 * from the OLD generation can never arrive now, so retire
-		 * their debt instead of draining forever on the next UP.
-		 * Scoped by generation so a stale cancelled waiter cannot
-		 * recreate retired debt under the new generation.
+		 * acks_owed deliberately survives the transition: the
+		 * transport does not flush pending RX, so a queued reply to
+		 * an earlier send can still arrive and must retire its debt
+		 * rather than be attributed to a new-generation request.
 		 */
-		if (altmode->acks_owed_generation != generation)
-			altmode->acks_owed = 0;
-		/* At most one stale reply survives a service transition. */
-		altmode->fence_one_ack = true;
 		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
 			if (altmode->ports[i].altmode)
 				kfifo_reset(&altmode->ports[i].events);
