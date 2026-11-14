@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
+
+  * Register battery nodes for the Surface Pro 11 in the surface
+    aggregator: BAT0/BAT1 SPA battery nodes plus the BATT thermal
+    zone template exposed to userspace, matching the SAM decompila-
+    tion findings recorded in REA-5 (#91).
+  * Qualcomm USB4 host-router research frontend (USB4_QCOM_EXPERI-
+    MENTAL, default-off): qualified MMIO mapping with pre-map
+    alignment validation, documented firmware error-path and
+    PHY/host-router stop-restart ownership contracts, no in-tree DT
+    node so the scaffold cannot probe on stock hardware (#92).
+
+ -- Leon Silcott <lnsilcott@gmail.com>  Sat, 14 Nov 2026 19:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
 
   * Harden qmp-combo common-resource ownership for USB4/TBT3: per-
