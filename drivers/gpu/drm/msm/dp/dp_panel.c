@@ -114,10 +114,6 @@ static int msm_dp_panel_read_dpcd(struct msm_dp_panel *msm_dp_panel)
 
 	msm_dp_panel->vsc_sdp_supported = drm_dp_vsc_sdp_supported(panel->aux, dpcd);
 	link_info = &msm_dp_panel->link_info;
-
-	/* Drop the capabilities of the previous sink, they are recomputed below */
-	memset(link_info, 0, sizeof(*link_info));
-
 	link_info->revision = dpcd[DP_DPCD_REV];
 	major = (link_info->revision >> 4) & 0x0f;
 	minor = link_info->revision & 0x0f;
@@ -249,8 +245,8 @@ static u32 msm_dp_panel_get_supported_bpp(struct msm_dp_panel *msm_dp_panel,
 	return min_supported_bpp;
 }
 
-int msm_dp_panel_read_link_caps(struct msm_dp_panel *msm_dp_panel,
-				struct drm_connector *connector)
+int msm_dp_panel_read_sink_caps(struct msm_dp_panel *msm_dp_panel,
+	struct drm_connector *connector)
 {
 	int rc, bw_code;
 	int count;
@@ -288,7 +284,34 @@ int msm_dp_panel_read_link_caps(struct msm_dp_panel *msm_dp_panel,
 
 	rc = drm_dp_read_downstream_info(panel->aux, msm_dp_panel->dpcd,
 					 msm_dp_panel->downstream_ports);
+	if (rc)
+		return rc;
+
+	drm_edid_free(msm_dp_panel->drm_edid);
+
+	msm_dp_panel->drm_edid = drm_edid_read_ddc(connector, &panel->aux->ddc);
+
+	drm_edid_connector_update(connector, msm_dp_panel->drm_edid);
+
+	if (!msm_dp_panel->drm_edid) {
+		DRM_ERROR("panel edid read failed\n");
+		/* check edid read fail is due to unplug */
+		if (!msm_dp_aux_is_link_connected(panel->aux)) {
+			rc = -ETIMEDOUT;
+			goto end;
+		}
+	}
+
+end:
 	return rc;
+}
+
+void msm_dp_panel_unplugged(struct msm_dp_panel *msm_dp_panel,
+			    struct drm_connector *connector)
+{
+	drm_edid_connector_update(connector, NULL);
+	drm_edid_free(msm_dp_panel->drm_edid);
+	msm_dp_panel->drm_edid = NULL;
 }
 
 u32 msm_dp_panel_get_mode_bpp(struct msm_dp_panel *msm_dp_panel,
@@ -314,6 +337,22 @@ u32 msm_dp_panel_get_mode_bpp(struct msm_dp_panel *msm_dp_panel,
 	return bpp;
 }
 
+int msm_dp_panel_get_modes(struct msm_dp_panel *msm_dp_panel,
+	struct drm_connector *connector)
+{
+	if (!msm_dp_panel) {
+		DRM_ERROR("invalid input\n");
+		return -EINVAL;
+	}
+
+	if (msm_dp_panel->drm_edid) {
+		drm_edid_connector_update(connector, msm_dp_panel->drm_edid);
+		return drm_edid_connector_add_modes(connector);
+	}
+
+	return 0;
+}
+
 static u8 msm_dp_panel_get_edid_checksum(const struct edid *edid)
 {
 	edid += edid->extensions;
@@ -321,8 +360,7 @@ static u8 msm_dp_panel_get_edid_checksum(const struct edid *edid)
 	return edid->checksum;
 }
 
-void msm_dp_panel_handle_sink_request(struct msm_dp_panel *msm_dp_panel,
-				      const struct drm_edid *drm_edid)
+void msm_dp_panel_handle_sink_request(struct msm_dp_panel *msm_dp_panel)
 {
 	struct msm_dp_panel_private *panel;
 
@@ -335,7 +373,7 @@ void msm_dp_panel_handle_sink_request(struct msm_dp_panel *msm_dp_panel,
 
 	if (panel->link->sink_request & DP_TEST_LINK_EDID_READ) {
 		/* FIXME: get rid of drm_edid_raw() */
-		const struct edid *edid = drm_edid_raw(drm_edid);
+		const struct edid *edid = drm_edid_raw(msm_dp_panel->drm_edid);
 		u8 checksum;
 
 		if (edid)
@@ -664,26 +702,14 @@ int msm_dp_panel_timing_cfg(struct msm_dp_panel *msm_dp_panel, bool wide_bus_en)
 	return 0;
 }
 
-int msm_dp_panel_init_panel_info(struct msm_dp_panel *msm_dp_panel,
-				 const struct drm_display_mode *adjusted_mode,
-				 u32 bpp)
+int msm_dp_panel_init_panel_info(struct msm_dp_panel *msm_dp_panel)
 {
 	struct drm_display_mode *drm_mode;
 	struct msm_dp_panel_private *panel;
 
-	panel = container_of(msm_dp_panel, struct msm_dp_panel_private, msm_dp_panel);
-
-	drm_mode_copy(&msm_dp_panel->msm_dp_mode.drm_mode, adjusted_mode);
-	msm_dp_panel->msm_dp_mode.bpp = bpp;
-	msm_dp_panel->msm_dp_mode.v_active_low =
-		!!(adjusted_mode->flags & DRM_MODE_FLAG_NVSYNC);
-	msm_dp_panel->msm_dp_mode.h_active_low =
-		!!(adjusted_mode->flags & DRM_MODE_FLAG_NHSYNC);
-	msm_dp_panel->msm_dp_mode.out_fmt_is_yuv_420 =
-		drm_mode_is_420_only(&msm_dp_panel->connector->display_info, adjusted_mode) &&
-		msm_dp_panel->vsc_sdp_supported;
-
 	drm_mode = &msm_dp_panel->msm_dp_mode.drm_mode;
+
+	panel = container_of(msm_dp_panel, struct msm_dp_panel_private, msm_dp_panel);
 
 	/*
 	 * print resolution info as this is a result
@@ -706,7 +732,8 @@ int msm_dp_panel_init_panel_info(struct msm_dp_panel *msm_dp_panel,
 				drm_mode->clock);
 	drm_dbg_dp(panel->drm_dev, "bpp = %d\n", msm_dp_panel->msm_dp_mode.bpp);
 
-	msm_dp_panel->msm_dp_mode.bpp = msm_dp_panel_get_mode_bpp(msm_dp_panel, msm_dp_panel->msm_dp_mode.bpp,
+	msm_dp_panel->msm_dp_mode.bpp =
+		msm_dp_panel_get_mode_bpp(msm_dp_panel, msm_dp_panel->msm_dp_mode.bpp,
 						      msm_dp_panel->msm_dp_mode.drm_mode.clock);
 
 	drm_dbg_dp(panel->drm_dev, "updated bpp = %d\n",
@@ -744,3 +771,10 @@ struct msm_dp_panel *msm_dp_panel_get(struct device *dev, struct drm_dp_aux *aux
 	return msm_dp_panel;
 }
 
+void msm_dp_panel_put(struct msm_dp_panel *msm_dp_panel)
+{
+	if (!msm_dp_panel)
+		return;
+
+	drm_edid_free(msm_dp_panel->drm_edid);
+}
