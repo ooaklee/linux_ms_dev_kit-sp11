@@ -1,0 +1,2 @@
+# SPDX-License-Identifier: GPL-2.0
+obj-m += vd55g1.o
