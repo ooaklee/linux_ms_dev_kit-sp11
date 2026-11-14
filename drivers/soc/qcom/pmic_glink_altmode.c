@@ -190,7 +190,6 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	unsigned long flags;
 	unsigned long left;
 	u32 baseline;
-	bool acked;
 	int ret;
 
 	/*
@@ -245,38 +244,36 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 		return ret;
 	}
 
-	if (!pmic_glink_altmode_current(altmode, generation))
-		return -ECONNRESET;
-
 	left = 5 * HZ;
 	while (left) {
+		bool cancelled, acked;
+
 		left = wait_for_completion_timeout(&altmode->pan_ack, left);
-		/* PDR/stop also wake the waiter; neither wake is a firmware response. */
-		if (!pmic_glink_altmode_current(altmode, generation)) {
-			/* The firmware may still ACK later: keep it owed. */
-			spin_lock_irqsave(&altmode->event_lock, flags);
-			altmode->acks_owed++;
-			spin_unlock_irqrestore(&altmode->event_lock, flags);
-			return -ECONNRESET;
-		}
-		spin_lock_irqsave(&altmode->event_lock, flags);
-		acked = altmode->ack_seq != baseline;
-		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		/*
-		 * Zero ACKs were in flight at send time, so the first
-		 * ack_seq advance after the pre-send baseline is this
-		 * request's ACK; anything else (spurious wake) keeps
-		 * waiting with the remaining time.
+		 * Decide generation change and attribution in ONE atomic
+		 * critical section: recording debt for an ACK that already
+		 * arrived (or missing debt for one still in flight) is what
+		 * separate checks could race on.
 		 */
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		cancelled = !pmic_glink_altmode_current(altmode, generation);
+		acked = altmode->ack_seq != baseline;
+		if (!acked && (cancelled || !left))
+			/* Send happened but no ACK observed: debt owed once. */
+			altmode->acks_owed++;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+
 		if (acked)
 			return 0;
+		/* PDR/stop also wake the waiter; neither wake is a firmware response. */
+		if (cancelled)
+			return -ECONNRESET;
+		if (!left)
+			break;
+		/* Spurious wake with time left: keep waiting. */
 	}
 
 	dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
-	/* The ACK is still owed: mark it so the next request drains it. */
-	spin_lock_irqsave(&altmode->event_lock, flags);
-	altmode->acks_owed++;
-	spin_unlock_irqrestore(&altmode->event_lock, flags);
 	return -ETIMEDOUT;
 }
 
@@ -804,6 +801,12 @@ static void pmic_glink_altmode_pdr_notify(void *priv, int state)
 		altmode->generation = generation;
 		altmode->service_up = up;
 		altmode->reconciled = false;
+		/*
+		 * The service transition restarted the remote: replies owed
+		 * from the old generation can never arrive now, so retire
+		 * their debt instead of draining forever on the next UP.
+		 */
+		altmode->acks_owed = 0;
 		for (i = 0; i < ARRAY_SIZE(altmode->ports); i++) {
 			if (altmode->ports[i].altmode)
 				kfifo_reset(&altmode->ports[i].events);
