@@ -147,15 +147,16 @@ struct pmic_glink_altmode {
 	/* One waiter at a time under lock; completion does not identify a request. */
 	struct completion pan_ack;
 	/*
-	 * ACK attribution by send-time baseline (event_lock): every
-	 * WRITE_REQ callback bumps ack_seq once. A request captures the
-	 * current ack_seq immediately after a successful send and completes
-	 * only once ack_seq moves past that baseline. A failed or cancelled
-	 * send consumes nothing, and a stale ACK for an earlier request can
-	 * never satisfy a later one: requests are serialized by lock, so the
-	 * next ACK observed after the send is attributed to this request.
+	 * ACK attribution (event_lock): every WRITE_REQ callback bumps
+	 * ack_seq once and retires one owed ACK. A request first drains any
+	 * ACK owed by a previously timed-out request, then captures
+	 * ack_seq BEFORE sending and completes when it advances. With zero
+	 * ACKs in flight at send time, the first advance is this request's
+	 * ACK; a stale ACK can never satisfy it, and the request's own ACK
+	 * can never be swallowed by a late baseline capture.
 	 */
 	u32 ack_seq;
+	u32 acks_owed;
 	struct pmic_glink_client *client;
 
 	struct work_struct enable_work;
@@ -209,15 +210,40 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	req.cmd = cpu_to_le32(cmd);
 	req.arg = cpu_to_le32(arg);
 
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	/*
+	 * A previously timed-out request may still have an ACK in flight.
+	 * Drain it first: until acks_owed is zero, a captured baseline could
+	 * be advanced (or the request satisfied) by a stale ACK. If the
+	 * drain times out, the firmware is unresponsive for attribution
+	 * purposes; let the caller reconcile or restart the generation.
+	 */
+	while (altmode->acks_owed) {
+		baseline = altmode->ack_seq;
+		spin_unlock_irqrestore(&altmode->event_lock, flags);
+
+		left = wait_for_completion_timeout(&altmode->pan_ack, 5 * HZ);
+		if (!pmic_glink_altmode_current(altmode, generation))
+			return -ECONNRESET;
+		if (!left) {
+			dev_err(altmode->dev, "drain of owed altmode ACK timed out\n");
+			return -EAGAIN;
+		}
+
+		spin_lock_irqsave(&altmode->event_lock, flags);
+		/* Spurious wake (no ACK advanced): keep draining. */
+		if (altmode->ack_seq == baseline)
+			continue;
+	}
+
+	baseline = altmode->ack_seq;
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
+
 	ret = pmic_glink_send_generation(altmode->client, &req, sizeof(req), generation);
 	if (ret) {
 		dev_err(altmode->dev, "failed to send altmode request: %#x (%d)\n", cmd, ret);
 		return ret;
 	}
-
-	spin_lock_irqsave(&altmode->event_lock, flags);
-	baseline = altmode->ack_seq;
-	spin_unlock_irqrestore(&altmode->event_lock, flags);
 
 	if (!pmic_glink_altmode_current(altmode, generation))
 		return -ECONNRESET;
@@ -226,21 +252,31 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode,
 	while (left) {
 		left = wait_for_completion_timeout(&altmode->pan_ack, left);
 		/* PDR/stop also wake the waiter; neither wake is a firmware response. */
-		if (!pmic_glink_altmode_current(altmode, generation))
+		if (!pmic_glink_altmode_current(altmode, generation)) {
+			/* The firmware may still ACK later: keep it owed. */
+			spin_lock_irqsave(&altmode->event_lock, flags);
+			altmode->acks_owed++;
+			spin_unlock_irqrestore(&altmode->event_lock, flags);
 			return -ECONNRESET;
+		}
 		spin_lock_irqsave(&altmode->event_lock, flags);
 		acked = altmode->ack_seq != baseline;
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		/*
-		 * A wake without attribution (spurious) keeps waiting with
-		 * the remaining time; requests are serialized by lock, so the
-		 * first ACK after the send baseline is this request's.
+		 * Zero ACKs were in flight at send time, so the first
+		 * ack_seq advance after the pre-send baseline is this
+		 * request's ACK; anything else (spurious wake) keeps
+		 * waiting with the remaining time.
 		 */
 		if (acked)
 			return 0;
 	}
 
 	dev_err(altmode->dev, "timeout waiting for altmode request ack for: %#x\n", cmd);
+	/* The ACK is still owed: mark it so the next request drains it. */
+	spin_lock_irqsave(&altmode->event_lock, flags);
+	altmode->acks_owed++;
+	spin_unlock_irqrestore(&altmode->event_lock, flags);
 	return -ETIMEDOUT;
 }
 
@@ -656,6 +692,8 @@ static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv
 	case USBC_CMD_WRITE_REQ:
 		spin_lock_irqsave(&altmode->event_lock, flags);
 		altmode->ack_seq++;
+		if (altmode->acks_owed)
+			altmode->acks_owed--;
 		complete(&altmode->pan_ack);
 		spin_unlock_irqrestore(&altmode->event_lock, flags);
 		break;
