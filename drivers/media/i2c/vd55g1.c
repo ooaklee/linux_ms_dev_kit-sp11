@@ -2828,10 +2828,15 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 				    sensor->supplies);
 	if (ret) {
 		/*
-		 * regulator_bulk_enable() already unwinds its own successful
-		 * enables on failure; per-rail ownership stays untouched.
+		 * regulator_bulk_enable() unwinds its own successful enables,
+		 * but its rollback ignores rollback-disable errors: a rail
+		 * whose rollback failed may remain enabled with no record.
+		 * The accounting is not observable from the driver, so latch
+		 * power_fault and refuse further transitions (ov13858 does
+		 * the same).
 		 */
 		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
+		WRITE_ONCE(sensor->power_fault, true);
 		return ret;
 	}
 	sensor->rails_on = GENMASK(ARRAY_SIZE(vd55g1_supply_name) - 1, 0);
