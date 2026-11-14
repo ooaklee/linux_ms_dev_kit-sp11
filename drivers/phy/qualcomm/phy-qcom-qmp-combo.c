@@ -2796,6 +2796,8 @@ struct qmp_combo {
 	 * so com_init/quarantine recovery knows exactly what is still held.
 	 */
 	unsigned long exit_hold; /* enum qmp_exit_hold bits */
+	/* USB4 router pipe clock enable reference is held. */
+	bool usb4_pipe_on;
 	bool com_initialized;
 	bool runtime_suspended;
 	bool reconfiguration_failed;
@@ -4275,7 +4277,15 @@ static int qmp_combo_disable_regulators(struct qmp_combo *qmp)
 	const struct qmp_phy_cfg *cfg = qmp->cfg;
 	int ret;
 
-	if (!qmp->regulators_enabled)
+	/*
+	 * callers gate on the QMP_HOLD_REGS ownership bit, which is the
+	 * driver's best knowledge of physical state; regulators_enabled
+	 * tracks only the last clean enable. Do not early-return here on
+	 * a failed-enable quarantine path: attempt the disable anyway so
+	 * a bulk-enable rollback failure (supplies possibly still on) is
+	 * not silently discarded.
+	 */
+	if (!qmp->regulators_enabled && !test_bit(QMP_HOLD_REGS, &qmp->exit_hold))
 		return 0;
 
 	ret = regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
@@ -5030,7 +5040,6 @@ static int qmp_combo_reconfigure_phy(struct qmp_combo *qmp,
 	ret = qmp_combo_com_init(qmp, true);
 	if (ret)
 		goto restore_old_common;
-
 	if (usb_consumer && new_mode != QMPPHY_MODE_DP_ONLY) {
 		ret = qmp_combo_usb_power_on(qmp->usb_phy);
 		if (ret)
@@ -5074,6 +5083,25 @@ restore_old_common:
 	}
 
 restore_active_phys:
+	/*
+	 * A failed force com_exit may have left the common state partly
+	 * torn down (clocks off, com_initialized false). DP consumers
+	 * still hold init references: re-acquire the common state before
+	 * any dp_aux_init, otherwise the AUX hardware is programmed
+	 * against stopped clocks. Quarantine from a failed release
+	 * blocks com_init, so this degrades to reconfiguration_failed.
+	 */
+	if (!qmp->com_initialized) {
+		rollback_ret = qmp_combo_com_init(qmp, true);
+		if (rollback_ret) {
+			dev_err(qmp->dev,
+				"failed to re-acquire common PHY after exit failure: %d\n",
+				rollback_ret);
+			qmp->reconfiguration_failed = true;
+			return ret;
+		}
+	}
+
 	if (usb_was_powered) {
 		rollback_ret = qmp_combo_usb_power_on(qmp->usb_phy);
 		if (rollback_ret) {
@@ -5114,10 +5142,12 @@ static int qmp_combo_usb4_init(struct phy *phy)
 		dev_err(qmp->dev, "p2rr2p_pipe enable failed: %d\n", ret);
 		return ret;
 	}
+	qmp->usb4_pipe_on = true;
 
 	ret = qmp_combo_com_init(qmp, false);
 	if (ret) {
 		clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+		qmp->usb4_pipe_on = false;
 		return ret;
 	}
 
@@ -5167,6 +5197,7 @@ static int qmp_combo_usb4_exit(struct phy *phy)
 	qmp->usb4_init_count--;
 
 	clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+	qmp->usb4_pipe_on = false;
 
 	return 0;
 }
@@ -5308,6 +5339,9 @@ static int __maybe_unused qmp_combo_runtime_suspend(struct device *dev)
 
 	clk_disable_unprepare(qmp->pipe_clk);
 	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+	/* Clocks physically released: keep ownership bits in sync. */
+	clear_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold);
+	clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 	qmp->runtime_suspended = true;
 
 	return 0;
@@ -5340,13 +5374,16 @@ static int __maybe_unused qmp_combo_runtime_resume(struct device *dev)
 	ret = clk_bulk_prepare_enable(qmp->num_clks, qmp->clks);
 	if (ret)
 		return ret;
+	set_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 
 	ret = clk_prepare_enable(qmp->pipe_clk);
 	if (ret) {
 		dev_err(dev, "pipe_clk enable failed, err=%d\n", ret);
 		clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+		clear_bit(QMP_HOLD_CLKS, &qmp->exit_hold);
 		return ret;
 	}
+	set_bit(QMP_HOLD_PIPE_CLK, &qmp->exit_hold);
 
 	qmp_combo_disable_autonomous_mode(qmp);
 	qmp->runtime_suspended = false;
@@ -6422,6 +6459,17 @@ static void qmp_combo_remove(struct platform_device *pdev)
 	 * the resources to device teardown; nothing else can retry.
 	 */
 	pm_runtime_disable(&pdev->dev);
+
+	/*
+	 * A failed usb4_exit() can return with the router pipe clock
+	 * still enabled (devm clk_put does not balance an enable):
+	 * release it first, mirroring the exit order.
+	 */
+	if (qmp->usb4_pipe_on) {
+		clk_disable_unprepare(qmp->p2rr2p_pipe_clk);
+		qmp->usb4_pipe_on = false;
+	}
+
 	if (!pm_runtime_status_suspended(&pdev->dev) || qmp->exit_hold) {
 		if (test_bit(QMP_HOLD_RESET, &qmp->exit_hold)) {
 			cleanup = reset_control_bulk_assert(cfg->num_resets,
