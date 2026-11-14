@@ -4275,7 +4275,7 @@ static int qmp_combo_dp_calibrate(struct phy *phy)
 static int qmp_combo_disable_regulators(struct qmp_combo *qmp)
 {
 	const struct qmp_phy_cfg *cfg = qmp->cfg;
-	int i, ret;
+	int ret;
 
 	if (!qmp->regulators_enabled && !test_bit(QMP_HOLD_REGS, &qmp->exit_hold))
 		return 0;
@@ -4295,24 +4295,20 @@ static int qmp_combo_disable_regulators(struct qmp_combo *qmp)
 
 	/*
 	 * Uncertain state: a bulk enable failed and its rollback result
-	 * is unknowable from the driver (the core ignores rollback
-	 * errors, and a mixed rollback leaves per-supply enable counts
-	 * the bulk API cannot address). A bulk disable could hit an
-	 * already-zero count and stop early. Disable per supply,
-	 * best-effort: an unbalanced-disable error here means that supply
-	 * was already released by the core's rollback — continue with
-	 * the rest so a mid-array stuck supply cannot mask the others.
+	 * is unknowable from the driver. The core ignores rollback-disable
+	 * errors and this tree exposes no consumer enable-count query, so
+	 * per-supply disable attempts cannot distinguish a supply the
+	 * rollback already released (unbalanced-disable WARN + -EIO) from
+	 * a genuinely failing one. Any blind disable is therefore unsafe.
+	 * Refuse instead: QMP_HOLD_REGS stays set (the caller clears it
+	 * only on success), the acquire-failure quarantine stays latched,
+	 * and the supplies are resolved only by device teardown / power
+	 * removal — the conservative terminal position.
 	 */
-	for (i = 0; i < cfg->num_vregs; i++) {
-		ret = regulator_disable(qmp->vregs[i].consumer);
-		if (ret && ret != -EINVAL)
-			dev_warn(qmp->dev, "uncertain state: failed to disable regulator %s: %d\n",
-				 qmp->vregs[i].supply, ret);
-	}
+	dev_warn(qmp->dev,
+		 "uncertain regulator ownership after failed bulk enable; supplies left to device teardown\n");
 
-	qmp->regulators_enabled = false;
-
-	return 0;
+	return -EIO;
 }
 
 static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
