@@ -2096,7 +2096,8 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 	struct fastrpc_phy_page pages;
 	struct fastrpc_req_mmap req;
 	struct device *dev = fl->sctx->dev;
-	int err;
+	bool pages_assigned = false;
+	int err, unwind_err;
 	u32 sc;
 
 	if (copy_from_user(&req, argp, sizeof(req)))
@@ -2167,6 +2168,8 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 				&buf->dma_addr, buf->size, err);
 			goto err_assign;
 		}
+
+		pages_assigned = true;
 	}
 
 	spin_lock(&fl->lock);
@@ -2175,7 +2178,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 
 	if (copy_to_user((void __user *)argp, &req, sizeof(req))) {
 		err = -EFAULT;
-		goto err_assign;
+		goto err_copy;
 	}
 
 	dev_dbg(dev, "mmap\t\tpt 0x%09lx OK [len 0x%08llx]\n",
@@ -2183,8 +2186,38 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 
 	return 0;
 
+err_copy:
+	/* buf must not sit on fl->mmaps while we unwind and free it */
+	spin_lock(&fl->lock);
+	list_del(&buf->node);
+	spin_unlock(&fl->lock);
 err_assign:
-	fastrpc_req_munmap_impl(fl, buf);
+	/*
+	 * Unwind in reverse order of the success path: if the pages
+	 * were hyp_assign'ed away from HLOS, take them back first,
+	 * then ask the DSP to drop the mapping, which also frees the
+	 * buffer. Without the reclaim, the remote-heap pages leak and
+	 * later memunmap of the same region can hang in the SCM call.
+	 */
+	if (pages_assigned) {
+		struct qcom_scm_vmperm perm;
+		u64 src_perms = BIT(QCOM_SCM_VMID_HLOS) |
+				BIT(fl->cctx->vmperms[0].vmid);
+		dma_addr_t phys = buf->dma_addr;
+		u64 size = buf->size;
+
+		perm.vmid = QCOM_SCM_VMID_HLOS;
+		perm.perm = QCOM_SCM_PERM_RWX;
+		unwind_err = qcom_scm_assign_mem(phys, size, &src_perms,
+						 &perm, 1);
+		if (unwind_err)
+			dev_err(dev, "Failed to reclaim memory dma_addr %pad err %d\n",
+				&phys, unwind_err);
+	}
+
+	unwind_err = fastrpc_req_munmap_impl(fl, buf);
+	if (unwind_err)
+		dev_err(dev, "mmap unwind error %d\n", unwind_err);
 
 	return err;
 }
