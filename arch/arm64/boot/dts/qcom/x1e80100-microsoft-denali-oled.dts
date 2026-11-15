@@ -140,6 +140,17 @@
 };
 
 /*
+ * DTB-swap experiment (PR #98 comment 6903222882): hypothesis that the
+ * VD55G0 IR sensor actually lives on CCI0 I2C0 rather than CCI1 I2C0.
+ * CCI0 (0xac15000) uses TLMM gpio101 (SDA0) / gpio102 (SCL0), adjacent
+ * to the GPIO109 reset + MCLK0 pin cluster. CCI0 and its pinctrl states
+ * are fully defined in hamoa.dtsi; only status is needed here.
+ */
+&cci0 {
+	status = "okay";
+};
+
+/*
  * IR / depth auxiliary sensor (Windows Hello). Windows identifies it as
  * ACPI\SMO55F0 MSHW0492 (ST VD55G0 global shutter); power resource
  * CAMI_RES_MSHW0492: GPIO109 reset (active low), MCLK0 at 19.2 MHz,
@@ -150,10 +161,14 @@
  * IrLedCurrentMilliampere=700) — see the pm8550_flash IR child above.
  * Therefore no st,leds sensor-GPIO strobe property is defined here.
  *
- * On its own CCI1 I2C0 bus so the front-camera IMX681 keeps exclusive
- * use of I2C1; routed to CSIPHY0 (D-PHY).
+ * wiring experiment: moved to CCI0 I2C0 (see cci0 note above); CCI1 I2C0
+ * kept enabled with its bus speed for A/B testing via DTB swap.
  */
 &cci1_i2c0 {
+	clock-frequency = <400000>;
+};
+
+&cci0_i2c0 {
 	clock-frequency = <400000>;
 
 	vd55g0: ir-camera@62 {
