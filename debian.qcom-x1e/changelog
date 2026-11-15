@@ -1,3 +1,12 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v10) stonking; urgency=medium
+
+  * TEST BUILD ONLY — do not merge: integrates the reworked PR #99
+    (camcc MCLK0 keepalive with fixed registration-order, both
+    commits) and PR #98 (vd55g1 power-on rail ordering to match
+    the Windows sequence) for live probe testing.
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 18:05:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
 
   * fastrpc buffer lifetime hardening: map/unmap and buffer
