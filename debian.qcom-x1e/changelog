@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
+
+  * fastrpc buffer lifetime hardening: map/unmap and buffer
+    allocation now carry coherent ownership and mmap validation,
+    with correct error unwinding so partial setups cannot leak
+    mappings or pinned pages (#94).
+  * Enable the VD55G0 IR camera and PM8550 IR illuminator device
+    tree nodes for Windows Hello on Denali (#95, plus IR-led
+    precursor).
+  * sp11-selfcompile-drivers publish-ready package documentation
+    (#93).
+
+ -- Leon Silcott <lnsilcott@gmail.com>  Sun, 15 Nov 2026 03:15:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
 
   * Register battery nodes for the Surface Pro 11 in the surface
