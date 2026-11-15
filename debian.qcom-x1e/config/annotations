@@ -13629,7 +13629,7 @@ CONFIG_VIDEO_USBTV                              policy<{'arm64': 'm'}>
 CONFIG_VIDEO_V4L2_I2C                           policy<{'arm64': 'y'}>
 CONFIG_VIDEO_V4L2_SUBDEV_API                    policy<{'arm64': 'y'}>
 CONFIG_VIDEO_V4L2_TPG                           policy<{'arm64': 'm'}>
-CONFIG_VIDEO_VD55G1                             policy<{'arm64': 'n'}>
+CONFIG_VIDEO_VD55G1                             policy<{'arm64': 'm'}>
 CONFIG_VIDEO_VD56G3                             policy<{'arm64': 'n'}>
 CONFIG_VIDEO_VGXY61                             policy<{'arm64': 'm'}>
 CONFIG_VIDEO_VICODEC                            policy<{'arm64': 'm'}>
