@@ -4,6 +4,7 @@
  */
 
 #include <linux/clk-provider.h>
+#include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -2075,19 +2076,31 @@ static struct clk_branch cam_cc_mclk0_clk = {
 			},
 			.num_parents = 1,
 			/*
-			 * CLK_IS_CRITICAL rather than CLK_IGNORE_UNUSED: the
-			 * VD55G0 IR sensor (denali i2c0 0-0062, sole consumer)
-			 * probes before every other camcc consumer, so camcc
-			 * sync_state is still pending when it is released from
-			 * reset ("camcc-x1e80100 ... sync_state() pending due
-			 * to 0-0062"). IGNORE_UNUSED would still let a later
-			 * disable turn the gate off; IS_CRITICAL keeps the
-			 * framework enable_count held so the 19.2 MHz xclk is
-			 * guaranteed from registration until the sensor driver
-			 * takes over via clk_prepare_enable(), fixing the
-			 * -ENXIO/-ETIMEDOUT first-register-read probe failure.
+			 * The VD55G0 IR sensor (denali i2c0 0-0062, sole
+			 * consumer) probes before every other camcc consumer,
+			 * so camcc sync_state is still pending when it is
+			 * released from reset, and the MCLK0 branch gate can
+			 * be physically off at that moment. The xclk must
+			 * therefore be held on from camcc probe until the
+			 * sensor driver claims it with clk_prepare_enable().
+			 *
+			 * That hold is done in cam_cc_x1e80100_probe() via the
+			 * normal framework path, NOT with CLK_IS_CRITICAL:
+			 * this branch is registered before its parent
+			 * cam_cc_mclk0_clk_src (the clock table is generated
+			 * in DT-binding index order), so __clk_core_init()
+			 * would run the critical enable with the RCG orphaned
+			 * and unconfigured. clk_rcg2_enable() cannot switch
+			 * the orphan off of its reset parent (a powered-down
+			 * PLL), the CBCR halt bit never clears and the whole
+			 * camcc probe fails -EBUSY, as observed on the v9
+			 * test kernel:
+			 *
+			 *   cam_cc_mclk0_clk status stuck at 'off'
+			 *   __clk_core_init: critical clk 'cam_cc_mclk0_clk'
+			 *   failed to enable
 			 */
-			.flags = CLK_SET_RATE_PARENT | CLK_IS_CRITICAL,
+			.flags = CLK_SET_RATE_PARENT,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -2548,9 +2561,71 @@ static const struct of_device_id cam_cc_x1e80100_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, cam_cc_x1e80100_match_table);
 
+static struct clk *cam_cc_mclk0_keepalive_clk;
+
 static int cam_cc_x1e80100_probe(struct platform_device *pdev)
 {
-	return qcom_cc_probe(pdev, &cam_cc_x1e80100_desc);
+	int ret;
+
+	ret = qcom_cc_probe(pdev, &cam_cc_x1e80100_desc);
+	if (ret)
+		return ret;
+
+	/*
+	 * Keep CAM_CC_MCLK0_CLK running for the VD55G0 IR sensor on the
+	 * denali OLED panel (sole consumer, i2c0 0-0062). Its driver probes
+	 * before every other camcc consumer, so camcc sync_state is still
+	 * pending when the sensor is released from reset and the branch
+	 * could otherwise be gated off, leaving the sensor without its
+	 * 19.2 MHz xclk (-ENXIO/-ETIMEDOUT on the first register read).
+	 *
+	 * This cannot be a CLK_IS_CRITICAL flag on the branch itself:
+	 * cam_cc_mclk0_clk is registered before its parent RCG (the clock
+	 * table follows the DT-binding index order), so __clk_core_init()
+	 * would enable the critical clock with the RCG still orphaned and
+	 * unconfigured, clk_rcg2_enable() would fail to move the orphan
+	 * off the powered-down reset parent, and camcc probe would fail
+	 * -EBUSY ("status stuck at 'off'"), as observed on the v9 test
+	 * kernel.
+	 *
+	 * Instead, hold the clock on through the normal framework path once
+	 * all provider clocks are registered and the parent chain is fully
+	 * initialised: set the 19.2 MHz rate (an RCG set_rate on an orphan
+	 * is a silent no-op, so this must happen after registration) and
+	 * take a runtime reference that is never released. The provider
+	 * device owns the hold for its lifetime; the sensor driver layers
+	 * its own clk_prepare_enable()/clk_disable_unprepare() on top.
+	 */
+	if (!cam_cc_mclk0_keepalive_clk) {
+		struct clk *mclk0;
+
+		mclk0 = clk_hw_get_clk(&cam_cc_mclk0_clk.clkr.hw,
+				       "vd55g0-xclk-keepalive");
+		if (IS_ERR(mclk0))
+			return PTR_ERR(mclk0);
+
+		ret = clk_set_rate(mclk0, 19200000);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"failed to set MCLK0 rate for VD55G0 xclk: %d\n",
+				ret);
+			return ret;
+		}
+
+		ret = clk_prepare_enable(mclk0);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"failed to enable MCLK0 for VD55G0 xclk: %d\n",
+				ret);
+			return ret;
+		}
+
+		/* Intentionally never released: holds the xclk on for
+		 * the lifetime of the provider. */
+		cam_cc_mclk0_keepalive_clk = mclk0;
+	}
+
+	return 0;
 }
 
 static struct platform_driver cam_cc_x1e80100_driver = {
