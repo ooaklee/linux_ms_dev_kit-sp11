@@ -2074,7 +2074,20 @@ static struct clk_branch cam_cc_mclk0_clk = {
 				&cam_cc_mclk0_clk_src.clkr.hw,
 			},
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			/*
+			 * CLK_IS_CRITICAL rather than CLK_IGNORE_UNUSED: the
+			 * VD55G0 IR sensor (denali i2c0 0-0062, sole consumer)
+			 * probes before every other camcc consumer, so camcc
+			 * sync_state is still pending when it is released from
+			 * reset ("camcc-x1e80100 ... sync_state() pending due
+			 * to 0-0062"). IGNORE_UNUSED would still let a later
+			 * disable turn the gate off; IS_CRITICAL keeps the
+			 * framework enable_count held so the 19.2 MHz xclk is
+			 * guaranteed from registration until the sensor driver
+			 * takes over via clk_prepare_enable(), fixing the
+			 * -ENXIO/-ETIMEDOUT first-register-read probe failure.
+			 */
+			.flags = CLK_SET_RATE_PARENT | CLK_IS_CRITICAL,
 			.ops = &clk_branch2_ops,
 		},
 	},
