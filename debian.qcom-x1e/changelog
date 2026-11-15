@@ -10,7 +10,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
   * sp11-selfcompile-drivers publish-ready package documentation
     (#93).
 
- -- Leon Silcott <lnsilcott@gmail.com>  Sun, 15 Nov 2026 03:15:00 +0000
+ -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 03:15:00 +0000
 
 linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
 
@@ -24,7 +24,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
     PHY/host-router stop-restart ownership contracts, no in-tree DT
     node so the scaffold cannot probe on stock hardware (#92).
 
- -- Leon Silcott <lnsilcott@gmail.com>  Sat, 14 Nov 2026 19:00:00 +0000
+ -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 19:00:00 +0000
 
 linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
 
