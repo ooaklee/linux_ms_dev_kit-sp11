@@ -1,3 +1,12 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v9) stonking; urgency=medium
+
+  * TEST BUILD ONLY — do not merge: integrates PR #98 (vd55g1
+    power-on rail ordering to match the Windows sequence) and
+    PR #99 (CLK_IS_CRITICAL on cam_cc_mclk0_clk for the denali
+    VD55G0 IR sensor) for live probe testing.
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 16:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
 
   * fastrpc buffer lifetime hardening: map/unmap and buffer
