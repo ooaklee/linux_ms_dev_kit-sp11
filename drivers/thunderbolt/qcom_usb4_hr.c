@@ -53,6 +53,7 @@
 
 #include <linux/clk.h>
 #include <linux/device.h>
+#include <linux/efi.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
@@ -67,6 +68,7 @@
 #include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
+#include <linux/acpi.h>
 
 #include "nhi.h"
 #include "qcom_usb4_hr.h"
@@ -317,6 +319,185 @@ MODULE_PARM_DESC(arm_int, "apply the Windows UC interrupt-arming sequence after 
 static unsigned long long window0 = 0x1563F000;
 module_param(window0, ullong, 0444);
 MODULE_PARM_DESC(window0, "USB4 router flat window physical base");
+
+/*
+ * SOSI DSDT discovery diagnostic (issue linux-surface-pro-11-oe#52).
+ *
+ * QcUsb4Filter8380 does NOT take the router MMIO base from _CRS. It scans
+ * the first 0x1000 bytes of the raw DSDT AML for the literal "SOSI" and
+ * reads the u64 physical base at SOSI+5 (REA evidence
+ * evidence/rea-usb4-20261114.md section 1.1, FUN_140018470). The header
+ * is 0xb8 bytes; the full region size is
+ * (u32@hdr+0xa4 + u32@hdr+0x9c + 0x2e) * 4 bytes, and the live register
+ * file is the indexed u32 window at base + u32@hdr+0xa0 (section 1.2/1.3).
+ *
+ * SP11 Linux boots DT-first: /sys/firmware/acpi does not exist, so the
+ * usual ACPI table interfaces are unavailable even though UEFI still
+ * published the DSDT through the EFI configuration table. This probe
+ * walks the EFI system table -> EFI_ACPI_TABLE_GUID config table ->
+ * ACPI RSDP -> XSDT -> DSDT entirely read-only, decodes the SOSI header
+ * fields, and cross-checks the discovered base against the window0
+ * module parameter the activation path actually uses. It maps nothing
+ * outside the SOSI header and performs no writes: the known-unsafe
+ * windows (usbap_config 0x15681000, uc mailbox 0x15623000) are never
+ * touched, and only the 0xb8-byte header region is briefly mapped.
+ *
+ * This exists to answer, at the next diagnostic boot: does the firmware
+ * published SOSI base agree with the hardcoded window0, and what does
+ * the live router header report (version word at +0x7c, register-file
+ * geometry at +0x9c/+0xa0/+0xa4)?
+ */
+
+static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct acpi_table_header *dsdt = NULL;
+	void __iomem *hdr = NULL;
+	struct acpi_table_rsdp *rsdp;
+	struct acpi_table_xsdt *xsdt;
+	u64 sosi_base = 0;
+	u32 w27, w29, w2a;
+	size_t map_len, scan_len;
+	int i, xsdt_entries;
+	u8 *p, *end;
+
+	if (!efi.acpi20 && !efi.acpi) {
+		dev_info(dev, "sosi-probe: no EFI ACPI table pointer\n");
+		return -ENODEV;
+	}
+
+	rsdp = memremap((phys_addr_t)(efi.acpi20 ? efi.acpi20 : efi.acpi),
+			sizeof(*rsdp), MEMREMAP_WB);
+	if (!rsdp)
+		return -ENOMEM;
+
+	xsdt = memremap((phys_addr_t)rsdp->xsdt_physical_address,
+			sizeof(*xsdt), MEMREMAP_WB);
+	memunmap(rsdp);
+	if (!xsdt)
+		return -ENOMEM;
+
+	/* Locate the DSDT: the XSDT references the FACP, whose +0x28/+0x8c
+	 * fields point at the (X_)DSDT.
+	 */
+	xsdt_entries = (xsdt->header.length - sizeof(xsdt->header)) /
+		       sizeof(u64);
+	for (i = 0; i < xsdt_entries; i++) {
+		struct acpi_table_header *h;
+		u32 facp_len;
+		u64 dsdt_addr;
+
+		h = memremap((phys_addr_t)xsdt->table_offset_entry[i],
+			     sizeof(*h), MEMREMAP_WB);
+		if (!h)
+			continue;
+		if (strncmp(h->signature, "FACP", 4)) {
+			memunmap(h);
+			continue;
+		}
+		facp_len = h->length;
+		memunmap(h);
+
+		h = memremap((phys_addr_t)xsdt->table_offset_entry[i],
+			     max(facp_len, 148u), MEMREMAP_WB);
+		if (!h)
+			continue;
+		dsdt_addr = *(u64 *)((u8 *)h + 140); /* X_DSDT */
+		if (!dsdt_addr)
+			dsdt_addr = *(u32 *)((u8 *)h + 40); /* DSDT */
+		memunmap(h);
+		if (!dsdt_addr)
+			continue;
+		dsdt = memremap((phys_addr_t)dsdt_addr, 36, MEMREMAP_WB);
+		if (dsdt) {
+			u32 dsdt_len = dsdt->length;
+
+			memunmap(dsdt);
+			dsdt = memremap((phys_addr_t)dsdt_addr, dsdt_len,
+					MEMREMAP_WB);
+		}
+		break;
+	}
+	memunmap(xsdt);
+	if (!dsdt)
+		return -ENODEV;
+
+	/*
+	 * Scan the first 0x1000 bytes of raw AML for "SOSI", exactly like
+	 * FUN_140018470 (memchr 'S' + 4-byte compare).
+	 */
+	scan_len = min_t(u32, dsdt->length, 0x1000);
+	end = (u8 *)dsdt + scan_len;
+	for (p = (u8 *)dsdt + sizeof(*dsdt); p + 13 <= end; p++) {
+		u32 v0, caps[4], ver, j;
+		char name[17];
+
+		if (p[0] != 'S' || memcmp(p, "SOSI", 4))
+			continue;
+
+		sosi_base = get_unaligned_le64(p + 5);
+		dev_info(dev,
+			 "sosi-probe: found SOSI at DSDT+%#tx, phys base=%pap\n",
+			 p - (u8 *)dsdt, &sosi_base);
+
+		/*
+		 * Map ONLY the 0xb8-byte header (same first probe step as
+		 * QcUsb4Filter; device memory is mapped uncached, unlike
+		 * the write-back mapping used for the ACPI tables in RAM).
+		 */
+		hdr = ioremap((phys_addr_t)sosi_base, 0xb8);
+		if (!hdr) {
+			dev_info(dev, "sosi-probe: header map failed\n");
+			break;
+		}
+
+		w27 = readl(hdr + 0x9c);
+		w2a = readl(hdr + 0xa0);
+		w29 = readl(hdr + 0xa4);
+		map_len = ((size_t)w29 + w27 + 0x2e) * 4;
+
+		v0 = readl(hdr);
+		caps[0] = readl(hdr + 0x04);
+		caps[1] = readl(hdr + 0x08);
+		caps[2] = readl(hdr + 0x2c);
+		caps[3] = readl(hdr + 0x30);
+		ver = readl(hdr + 0x60);
+		for (j = 0; j < 16; j++)
+			name[j] = readb(hdr + 0x7c + j);
+		name[16] = '\0';
+
+		dev_info(dev,
+			 "sosi-probe: hdr ver=%#x caps=%#x/%#x/%#x/%#x name=\"%s\" param(+0x60)=%#x\n",
+			 v0, caps[0], caps[1], caps[2], caps[3], name, ver);
+		dev_info(dev,
+			 "sosi-probe: regfile words(+0x9c)=%u window_off(+0xa0)=%#x extra_words(+0xa4)=%u full_len=%#zx\n",
+			 w27, w2a, w29, map_len);
+		dev_info(dev,
+			 "sosi-probe: register file window at %pap + %#x\n",
+			 &sosi_base, w2a);
+
+		if (window0 && sosi_base != window0)
+			dev_info(dev,
+				 "sosi-probe: NOTE base %pap != window0 %llx (activation path uses window0)\n",
+				 &sosi_base, window0);
+		else if (window0)
+			dev_info(dev, "sosi-probe: base matches window0 %llx\n",
+				 window0);
+		break;
+	}
+
+	if (hdr)
+		iounmap(hdr);
+	memunmap(dsdt);
+
+	if (!sosi_base) {
+		dev_info(dev,
+			 "sosi-probe: no SOSI signature in first %#zx DSDT bytes\n",
+			 scan_len);
+		return -ENOENT;
+	}
+	return 0;
+}
 
 static int __qcom_usb4_hr_nhi_preflight(struct qcom_usb4_hr *hr,
 					struct platform_device *pdev)
@@ -1077,6 +1258,13 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 	mutex_init(&hr->lock);
 	hr->nhi.dev = &pdev->dev;
 
+	/*
+	 * Read-only SOSI/DSDT discovery diagnostic (#52). Never gates
+	 * probe; failures only mean the answer is "table not reachable
+	 * through EFI on this boot".
+	 */
+	qcom_usb4_hr_sosi_probe(pdev);
+
 	ret = qcom_usb4_hr_map_resources(hr, pdev);
 	if (ret)
 		return ret;
@@ -1170,13 +1358,32 @@ static struct platform_driver qcom_usb4_hr_driver = {
 		.dev_groups = qcom_usb4_hr_groups,
 	},
 };
+static struct platform_device *qcom_usb4_hr_pdev;
+
 int __init qcom_usb4_hr_register(void)
 {
-	return platform_driver_register(&qcom_usb4_hr_driver);
+	int ret;
+
+	ret = platform_driver_register(&qcom_usb4_hr_driver);
+	if (ret)
+		return ret;
+
+	/* No DT node exists for the host router on this firmware: the
+	 * platform is described by ACPI only. Register a dummy device so
+	 * the diagnostic SOSI probe runs on every module load.
+	 */
+	qcom_usb4_hr_pdev = platform_device_register_simple(
+		"qcom-usb4-hr", PLATFORM_DEVID_NONE, NULL, 0);
+	if (IS_ERR(qcom_usb4_hr_pdev)) {
+		platform_driver_unregister(&qcom_usb4_hr_driver);
+		return PTR_ERR(qcom_usb4_hr_pdev);
+	}
+	return 0;
 }
 
 void __exit qcom_usb4_hr_unregister(void)
 {
+	platform_device_unregister(qcom_usb4_hr_pdev);
 	platform_driver_unregister(&qcom_usb4_hr_driver);
 }
 
