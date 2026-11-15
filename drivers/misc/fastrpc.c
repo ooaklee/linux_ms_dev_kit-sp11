@@ -221,6 +221,7 @@ struct fastrpc_buf_overlap {
 
 struct fastrpc_buf {
 	struct fastrpc_user *fl;
+	struct fastrpc_channel_ctx *cctx;
 	struct dma_buf *dmabuf;
 	struct device *dev;
 	void *virt;
@@ -463,13 +464,34 @@ static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd,
 	return ret;
 }
 
+static void fastrpc_channel_ctx_free(struct kref *ref)
+{
+	struct fastrpc_channel_ctx *cctx;
+
+	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
+
+	idr_destroy(&cctx->ctx_idr);
+	kfree(cctx);
+}
+
+static void fastrpc_channel_ctx_get(struct fastrpc_channel_ctx *cctx)
+{
+	kref_get(&cctx->refcount);
+}
+
+static void fastrpc_channel_ctx_put(struct fastrpc_channel_ctx *cctx)
+{
+	kref_put(&cctx->refcount, fastrpc_channel_ctx_free);
+}
+
 static void fastrpc_buf_free(struct fastrpc_buf *buf)
 {
 	if (!buf)
 		return;
 
 	dma_free_coherent(buf->dev, buf->size, buf->virt,
-			  fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr));
+			  fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr));
+	fastrpc_channel_ctx_put(buf->cctx);
 	kfree(buf);
 }
 
@@ -487,6 +509,13 @@ static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 	mutex_init(&buf->lock);
 
 	buf->fl = fl;
+	/*
+	 * The buffer can outlive its fastrpc_user (e.g. an exported
+	 * dma-buf fd held by another process), so keep our own
+	 * reference to the channel ctx for fastrpc_buf_free().
+	 */
+	fastrpc_channel_ctx_get(fl->cctx);
+	buf->cctx = fl->cctx;
 	buf->virt = NULL;
 	buf->dma_addr = 0;
 	buf->size = size;
@@ -530,26 +559,6 @@ static int fastrpc_remote_heap_alloc(struct fastrpc_user *fl, struct device *dev
 	struct device *rdev = &fl->cctx->rpdev->dev;
 
 	return  __fastrpc_buf_alloc(fl, rdev, size, obuf);
-}
-
-static void fastrpc_channel_ctx_free(struct kref *ref)
-{
-	struct fastrpc_channel_ctx *cctx;
-
-	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
-
-	idr_destroy(&cctx->ctx_idr);
-	kfree(cctx);
-}
-
-static void fastrpc_channel_ctx_get(struct fastrpc_channel_ctx *cctx)
-{
-	kref_get(&cctx->refcount);
-}
-
-static void fastrpc_channel_ctx_put(struct fastrpc_channel_ctx *cctx)
-{
-	kref_put(&cctx->refcount, fastrpc_channel_ctx_free);
 }
 
 static void fastrpc_context_put(struct fastrpc_invoke_ctx *ctx);
@@ -810,7 +819,7 @@ static int fastrpc_dma_buf_attach(struct dma_buf *dmabuf,
 		return -ENOMEM;
 
 	ret = dma_get_sgtable(buffer->dev, &a->sgt, buffer->virt,
-			      fastrpc_ipa_to_dma_addr(buffer->fl->cctx, buffer->dma_addr),
+			      fastrpc_ipa_to_dma_addr(buffer->cctx, buffer->dma_addr),
 			      buffer->size);
 	if (ret < 0) {
 		dev_err(buffer->dev, "failed to get scatterlist from DMA API\n");
@@ -860,7 +869,7 @@ static int fastrpc_mmap(struct dma_buf *dmabuf,
 	dma_resv_assert_held(dmabuf->resv);
 
 	return dma_mmap_coherent(buf->dev, vma, buf->virt,
-				 fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr), size);
+				 fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr), size);
 }
 
 static const struct dma_buf_ops fastrpc_dma_buf_ops = {
