@@ -362,8 +362,8 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 	u8 *p, *end;
 
 	if (!efi.acpi20 && !efi.acpi) {
-		dev_info(dev, "sosi-probe: no EFI ACPI table pointer\n");
-		return -ENODEV;
+		dev_dbg(dev, "sosi-probe: no EFI ACPI table pointer\n");
+		return -EINVAL;
 	}
 
 	rsdp = memremap((phys_addr_t)(efi.acpi20 ? efi.acpi20 : efi.acpi),
@@ -420,7 +420,7 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 	}
 	memunmap(xsdt);
 	if (!dsdt)
-		return -ENODEV;
+		return -EINVAL;
 
 	/*
 	 * Scan the first 0x1000 bytes of raw AML for "SOSI", exactly like
@@ -436,7 +436,7 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 			continue;
 
 		sosi_base = get_unaligned_le64(p + 5);
-		dev_info(dev,
+		dev_dbg(dev,
 			 "sosi-probe: found SOSI at DSDT+%#tx, phys base=%pap\n",
 			 p - (u8 *)dsdt, &sosi_base);
 
@@ -447,7 +447,7 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 		 */
 		hdr = ioremap((phys_addr_t)sosi_base, 0xb8);
 		if (!hdr) {
-			dev_info(dev, "sosi-probe: header map failed\n");
+			dev_dbg(dev, "sosi-probe: header map failed\n");
 			break;
 		}
 
@@ -466,22 +466,22 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 			name[j] = readb(hdr + 0x7c + j);
 		name[16] = '\0';
 
-		dev_info(dev,
+		dev_dbg(dev,
 			 "sosi-probe: hdr ver=%#x caps=%#x/%#x/%#x/%#x name=\"%s\" param(+0x60)=%#x\n",
 			 v0, caps[0], caps[1], caps[2], caps[3], name, ver);
-		dev_info(dev,
+		dev_dbg(dev,
 			 "sosi-probe: regfile words(+0x9c)=%u window_off(+0xa0)=%#x extra_words(+0xa4)=%u full_len=%#zx\n",
 			 w27, w2a, w29, map_len);
-		dev_info(dev,
+		dev_dbg(dev,
 			 "sosi-probe: register file window at %pap + %#x\n",
 			 &sosi_base, w2a);
 
 		if (window0 && sosi_base != window0)
-			dev_info(dev,
+			dev_dbg(dev,
 				 "sosi-probe: NOTE base %pap != window0 %llx (activation path uses window0)\n",
 				 &sosi_base, window0);
 		else if (window0)
-			dev_info(dev, "sosi-probe: base matches window0 %llx\n",
+			dev_dbg(dev, "sosi-probe: base matches window0 %llx\n",
 				 window0);
 		break;
 	}
@@ -491,10 +491,10 @@ static int qcom_usb4_hr_sosi_probe(struct platform_device *pdev)
 	memunmap(dsdt);
 
 	if (!sosi_base) {
-		dev_info(dev,
-			 "sosi-probe: no SOSI signature in first %#zx DSDT bytes\n",
-			 scan_len);
-		return -ENOENT;
+		dev_dbg(dev,
+			"sosi-probe: no SOSI signature in first %#zx DSDT bytes\n",
+			scan_len);
+		return -EINVAL;
 	}
 	return 0;
 }
@@ -1260,8 +1260,9 @@ static int qcom_usb4_hr_probe(struct platform_device *pdev)
 
 	/*
 	 * Read-only SOSI/DSDT discovery diagnostic (#52). Never gates
-	 * probe; failures only mean the answer is "table not reachable
-	 * through EFI on this boot".
+	 * probe; the return value is deliberately ignored — failures
+	 * only mean the answer is "table not reachable through EFI on
+	 * this boot".
 	 */
 	qcom_usb4_hr_sosi_probe(pdev);
 
@@ -1360,6 +1361,17 @@ static struct platform_driver qcom_usb4_hr_driver = {
 };
 static struct platform_device *qcom_usb4_hr_pdev;
 
+/*
+ * No DT node exists for the host router on this firmware: the platform
+ * is described by ACPI only. When set, register a dummy device so the
+ * diagnostic SOSI probe runs at module load. Default off, because a
+ * dummy device whose real resources (clocks/MMIO) do not exist always
+ * fails probe and pollutes the kernel log with a failed-probe event on
+ * every load.
+ */
+static bool register_dummy_pdev;
+module_param_named(register_dummy_pdev, register_dummy_pdev, bool, 0444);
+
 int __init qcom_usb4_hr_register(void)
 {
 	int ret;
@@ -1368,10 +1380,9 @@ int __init qcom_usb4_hr_register(void)
 	if (ret)
 		return ret;
 
-	/* No DT node exists for the host router on this firmware: the
-	 * platform is described by ACPI only. Register a dummy device so
-	 * the diagnostic SOSI probe runs on every module load.
-	 */
+	if (!register_dummy_pdev)
+		return 0;
+
 	qcom_usb4_hr_pdev = platform_device_register_simple(
 		"qcom-usb4-hr", PLATFORM_DEVID_NONE, NULL, 0);
 	if (IS_ERR(qcom_usb4_hr_pdev)) {
@@ -1383,7 +1394,8 @@ int __init qcom_usb4_hr_register(void)
 
 void __exit qcom_usb4_hr_unregister(void)
 {
-	platform_device_unregister(qcom_usb4_hr_pdev);
+	if (qcom_usb4_hr_pdev)
+		platform_device_unregister(qcom_usb4_hr_pdev);
 	platform_driver_unregister(&qcom_usb4_hr_driver);
 }
 
