@@ -865,18 +865,16 @@ static int fastrpc_mmap(struct dma_buf *dmabuf,
 {
 	struct fastrpc_buf *buf = dmabuf->priv;
 	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long offset = PFN_PHYS(vma->vm_pgoff);
 
 	dma_resv_assert_held(dmabuf->resv);
 
-	if (!PAGE_ALIGNED(vma->vm_pgoff))
-		return -EINVAL;
-
-	if (vma->vm_pgoff >= buf->size || size > buf->size - vma->vm_pgoff)
+	if (offset >= buf->size || size > buf->size - offset)
 		return -EINVAL;
 
 	return dma_mmap_coherent(buf->dev, vma, buf->virt,
 				 fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr) +
-				 vma->vm_pgoff, size);
+				 offset, size);
 }
 
 static const struct dma_buf_ops fastrpc_dma_buf_ops = {
