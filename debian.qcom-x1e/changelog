@@ -1,3 +1,15 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
+
+  * TEST BUILD ONLY — do not merge: PR #98 alone (vd55g1 power-on
+    rail ordering to match the Windows sequence: vddio -> vcore ->
+    vana with stagger, clock first). PR #99 (camcc MCLK0 keepalive)
+    is dropped from this test line: new evidence from the v8 probe
+    log shows the sensor's own clk_prepare_enable succeeded at
+    4.4s and the -ENXIO was an I2C NAK after clock-on, so the
+    MCLK0 keepalive premise was wrong.
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 19:20:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
 
   * fastrpc buffer lifetime hardening: map/unmap and buffer
