@@ -1135,6 +1135,11 @@ static const char * const vd55g1_supply_name[] = {
 	"vana",
 };
 
+/* Indices into vd55g1_supply_name[] / sensor->supplies[] */
+#define VD55G1_SUPPLY_VCORE	0
+#define VD55G1_SUPPLY_VDDIO	1
+#define VD55G1_SUPPLY_VANA	2
+
 enum vd55g1_hdr_mode {
 	VD55G1_NO_HDR,
 	VD55G1_HDR_SUB,
@@ -2806,7 +2811,10 @@ static int vd55g1_release_rails(struct vd55g1 *sensor)
 	unsigned int n = ARRAY_SIZE(vd55g1_supply_name);
 	int i, ret = 0;
 
-	for_each_set_bit(i, &sensor->rails_on, n) {
+	/* Reverse power-ON order: vana, vcore, vddio. */
+	for (i = n - 1; i >= 0; i--) {
+		if (!test_bit(i, &sensor->rails_on))
+			continue;
 		ret = regulator_disable(sensor->supplies[i].consumer);
 		if (ret) {
 			dev_err(sensor->dev,
@@ -2820,33 +2828,64 @@ static int vd55g1_release_rails(struct vd55g1 *sensor)
 	return ret;
 }
 
+static int vd55g1_enable_rail(struct vd55g1 *sensor, unsigned int idx)
+{
+	int ret;
+
+	ret = regulator_enable(sensor->supplies[idx].consumer);
+	if (ret) {
+		dev_err(sensor->dev, "regulator %s enable failed: %d\n",
+			sensor->supplies[idx].supply, ret);
+		return ret;
+	}
+
+	set_bit(idx, &sensor->rails_on);
+	dev_dbg(sensor->dev, "enabled rail %s\n",
+		sensor->supplies[idx].supply);
+
+	return 0;
+}
+
 static int vd55g1_power_on(struct vd55g1 *sensor)
 {
 	int ret;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(vd55g1_supply_name),
-				    sensor->supplies);
-	if (ret) {
-		/*
-		 * regulator_bulk_enable() unwinds its own successful enables,
-		 * but its rollback ignores rollback-disable errors: a rail
-		 * whose rollback failed may remain enabled with no record.
-		 * The accounting is not observable from the driver, so latch
-		 * power_fault and refuse further transitions (ov13858 does
-		 * the same).
-		 */
-		dev_dbg(sensor->dev, "Failed to enable regulators: %d\n", ret);
-		WRITE_ONCE(sensor->power_fault, true);
-		return ret;
-	}
-	sensor->rails_on = GENMASK(ARRAY_SIZE(vd55g1_supply_name) - 1, 0);
+	/*
+	 * Windows CAMI_RES power-ON sequence for this sensor (SP11 IR
+	 * camera, 0x62): clocks come up before the LDOs, reset stays
+	 * asserted throughout, then LDO4 (vddio, 1.8V) first, LDO2
+	 * (vcore, 1.2V) second, LDO7 (vana, 2.8V) last, a settle delay,
+	 * and only then is reset released. Enabling the rails in bulk
+	 * order (vcore, vddio, vana, no stagger) leaves the sensor
+	 * silent at the first post-reset I2C read.
+	 */
 
 	ret = clk_prepare_enable(sensor->xclk);
 	if (ret) {
 		dev_dbg(sensor->dev, "Failed to enable clock: %d\n", ret);
-		goto disable_bulk;
+		return ret;
 	}
 	sensor->xclk_on = true;
+
+	/* Keep reset asserted while the rails come up. */
+	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
+
+	ret = vd55g1_enable_rail(sensor, VD55G1_SUPPLY_VDDIO);
+	if (ret)
+		goto disable_clock;
+	usleep_range(1000, 2000);
+
+	ret = vd55g1_enable_rail(sensor, VD55G1_SUPPLY_VCORE);
+	if (ret)
+		goto disable_clock;
+	usleep_range(1000, 2000);
+
+	ret = vd55g1_enable_rail(sensor, VD55G1_SUPPLY_VANA);
+	if (ret)
+		goto disable_clock;
+
+	/* Settle before releasing reset, per the Windows sequence. */
+	usleep_range(5000, 10000);
 
 	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 	usleep_range(5000, 10000);
@@ -2888,7 +2927,7 @@ disable_clock:
 		clk_disable_unprepare(sensor->xclk);
 		sensor->xclk_on = false;
 	}
-disable_bulk:
+
 	/*
 	 * A failed rail release leaves regulator ownership uncertain:
 	 * preserve the acquisition error (the caller's result), latch
