@@ -27,10 +27,43 @@
 		privacy_led: privacy-led {
 			function = LED_FUNCTION_INDICATOR;
 			color = <LED_COLOR_ID_WHITE>;
-			/* GPIO225 polarity is pending hardware validation. */
+			/*
+			 * Front-camera privacy indicator. GPIO225, active-high
+			 * (pending hardware validation, issue #77). Always
+			 * default-off.
+			 */
 			gpios = <&tlmm 225 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
 		};
+	};
+};
+
+/*
+ * IR illuminator (Windows Hello VCSEL) for the front VD55G0 IR camera.
+ *
+ * Windows drives it through the Qualcomm CamZ flash stack: ACPI device
+ * QCOM0C27 handled by qccamflash8380.sys (CameraWhiteLEDFlashPMIC.c,
+ * i.e. the PM8550 SPMI flash-led module), with the SP11-specific
+ * extension INF (qccamflash_ext8380) programming
+ * IrLedCurrentMilliampere=700. It is NOT a TLMM GPIO and NOT SAM-
+ * controlled; there is no illuminator resource in the CAMI_RES_*
+ * AeoB blobs.
+ *
+ * The upstream leds-qcom-flash driver exposes it as a v4l2-flash
+ * device, so userspace (Howdy/libcamera) can strobe it during IR
+ * capture. No led default trigger; the LED powers up off.
+ */
+&pm8550_flash {
+	status = "okay";
+
+	ir_illuminator: led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_IR>;
+		led-sources = <1>;
+		/* IrLedCurrentMilliampere = 700 mA (qccamflash_ext8380.inf) */
+		led-max-microamp = <700000>;
+		flash-max-microamp = <700000>;
+		flash-max-timeout-us = <1280000>;
 	};
 };
 
