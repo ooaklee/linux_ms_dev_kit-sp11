@@ -1,3 +1,12 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v13) stonking; urgency=medium
+
+  * Switch the VD55G0 link frequency from 600 MHz to 384 MHz so the
+    MIPI data rate (768 Mbps) is an integer multiple (40x) of the
+    19.2 MHz MCLK, the only rate inside the sensor's 750-1200 Mbps
+    window that satisfies the integer-ratio rule at this xclk.
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 22:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
 
   * Route the VD55G0 IR sensor using the Windows-decoded CCI0 master 0,
