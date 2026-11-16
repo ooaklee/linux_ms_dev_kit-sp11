@@ -193,7 +193,9 @@
 		port {
 			vd55g0_ep: endpoint {
 				data-lanes = <1>;
-				link-frequencies = /bits/ 64 <600000000>;
+				/* MIPI 768Mbps = 40 x 19.2MHz integer rule (Lebedev series);
+			 * only valid in-window value at 19.2MHz xclk (750-1200Mbps) */
+			link-frequencies = /bits/ 64 <384000000>;
 				remote-endpoint = <&camss_csiphy0_inep0>;
 			};
 		};
