@@ -3036,7 +3036,7 @@ static int vd55g1_power_on(struct vd55g1 *sensor)
 
 	/*
 	 * Windows CAMI_RES power-ON sequence for this sensor (SP11 IR
-	 * camera, 0x62): clocks come up before the LDOs, reset stays
+	 * camera): clocks come up before the LDOs, reset stays
 	 * asserted throughout, then LDO4 (vddio, 1.8V) first, LDO2
 	 * (vcore, 1.2V) second, LDO7 (vana, 2.8V) last, a settle delay,
 	 * and only then is reset released. Enabling the rails in bulk
