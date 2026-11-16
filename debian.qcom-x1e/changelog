@@ -1,3 +1,11 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
+
+  * Test-only VD55G0 bring-up image: use the Windows-decoded CCI0
+    master 0, address 0x60 and 19.2 MHz MCLK0 route, with an opt-in
+    pre-first-I2C clock, reset and regulator diagnostic (#98).
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 17:40:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
 
   * vd55g1 power-on rail ordering fixed to match the Windows
