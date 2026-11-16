@@ -152,13 +152,23 @@
  *
  * On its own CCI1 I2C0 bus so the front-camera IMX681 keeps exclusive
  * use of I2C1; routed to CSIPHY0 (D-PHY).
+ *
+ * DTB-swap experiment (PR #98 synthesis comment 6914802416): probe the
+ * VD55G0 at its ST-documented default 7-bit address 0x10 (ST datasheet
+ * and the vd55g1 driver use 0x10; the previously assumed 0x62 has never
+ * answered). Also drop xclk 19.2 MHz -> 24 MHz and link frequency
+ * 600 MHz -> 396 MHz: the MIPI 2x link rate must be an integer
+ * multiple of xclk (792 = 33 x 24). 24 MHz is an RCG-native rate
+ * (camcc-x1e80100 mclk0 freq table), unlike 12 MHz which the RCG
+ * cannot produce, and 24 MHz + 792 Mbps is the ST/Lebedev-proven
+ * pairing (Intel SP11 bring-up).
  */
 &cci1_i2c0 {
 	clock-frequency = <400000>;
 
-	vd55g0: ir-camera@62 {
+	vd55g0: ir-camera@10 {
 		compatible = "st,vd55g0";
-		reg = <0x62>;
+		reg = <0x10>;
 
 		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
 		pinctrl-0 = <&cam_ir_default>;
@@ -166,7 +176,7 @@
 
 		clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
-		assigned-clock-rates = <19200000>;
+		assigned-clock-rates = <24000000>;
 
 		vddio-supply = <&vreg_l4m_1p8>;
 		vcore-supply = <&vreg_l2m_1p15>;
@@ -178,7 +188,7 @@
 		port {
 			vd55g0_ep: endpoint {
 				data-lanes = <1>;
-				link-frequencies = /bits/ 64 <600000000>;
+				link-frequencies = /bits/ 64 <396000000>;
 				remote-endpoint = <&camss_csiphy0_inep0>;
 			};
 		};
