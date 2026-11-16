@@ -29,20 +29,14 @@ diagnostic-only 1 ms observation interval.
 
 ## Build and boot
 
-Build this branch using the normal qcom-x1e packaging flow. Add this kernel
-command-line argument for the diagnostic boot:
+Build this branch using the normal qcom-x1e packaging flow. The diagnostic is
+a `module_param` in the built-in `vd55g1` driver, so it must be enabled on the
+kernel command line (for example, through `/etc/default/grub` followed by
+`sudo update-grub`):
 
 ```text
 vd55g1.sp11_mclk_diag=1
 ```
-
-The parameter can alternatively be placed in `/etc/modprobe.d/vd55g1.conf`:
-
-```text
-options vd55g1 sp11_mclk_diag=1
-```
-
-Rebuild the initramfs if `vd55g1` is loaded from it.
 
 ## Capture
 
