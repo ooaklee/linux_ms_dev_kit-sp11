@@ -1,3 +1,16 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
+
+  * Route the VD55G0 IR sensor using the Windows-decoded CCI0 master 0,
+    7-bit address 0x60, 400 kHz I2C and MCLK0 at 19.2 MHz tuple. The
+    sensor now probes and binds, and its media graph is active; frame
+    streaming validation is still in progress and Windows Hello
+    userspace is not wired.
+  * Backport upstream commit 0265dfc5d2a8 (i2c: qcom-cci: always enable
+    SCL clock stretching), required for the VD55G0 first-contact ACK on
+    X1E.
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 20:20:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
 
   * vd55g1 power-on rail ordering fixed to match the Windows
