@@ -1,3 +1,14 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
+
+  * vd55g1 power-on rail ordering fixed to match the Windows
+    sequence (vddio -> vcore -> vana with stagger, clock first)
+    (#98). The IR camera sensor still does not enumerate; probe
+    investigation continues on PR #98. Note: v11 skips v9/v10
+    (test-only camcc MCLK0 keepalive line, refuted and parked
+    in #99).
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 10:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
 
   * fastrpc buffer lifetime hardening: map/unmap and buffer
