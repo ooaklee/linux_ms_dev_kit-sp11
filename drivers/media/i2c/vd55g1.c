@@ -3024,8 +3024,16 @@ static int vd55g1_check_csi_conf(struct vd55g1 *sensor,
 		goto done;
 	}
 
-	/* Handle polarities in sensor configuration */
-	sensor->oif_ctrl = (ep.bus.mipi_csi2.lane_polarities[0] << 3) |
+	/*
+	 * Program OIF_CTRL per the VD55G0 reference driver bitfield:
+	 * bits[2:0] = number of data lanes, bit[3] = clock lane polarity,
+	 * bits[7:4] = physical lane of first data lane, bit[6] = data lane
+	 * polarity. The G1-inherited value left the lane count at 0, which
+	 * kept the CSI2 TX serializer disabled.
+	 */
+	sensor->oif_ctrl = n_lanes |
+			   (ep.bus.mipi_csi2.lane_polarities[0] << 3) |
+			   ((ep.bus.mipi_csi2.data_lanes[0] - 1) << 4) |
 			   (ep.bus.mipi_csi2.lane_polarities[1] << 6);
 
 	/* Check the link frequency set in device tree */
@@ -3127,6 +3135,9 @@ static int vd55g1_parse_dt(struct vd55g1 *sensor)
 	fwnode_handle_put(endpoint);
 	if (ret)
 		return ret;
+
+	dev_info(sensor->dev, "OIF_CTRL configured: 0x%04x\n",
+		 sensor->oif_ctrl);
 
 	return vd55g1_parse_dt_gpios(sensor);
 }
