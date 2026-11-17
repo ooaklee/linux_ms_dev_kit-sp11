@@ -6,12 +6,16 @@
  * Copyright (C) 2025 STMicroelectronics SA
  */
 
+#include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
@@ -27,6 +31,49 @@
 #include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
 #include <media/v4l2-subdev.h>
+
+/*
+ * Surface Pro 11 VD55G0 boot diagnostics.
+ *
+ * This is deliberately gated by both the exact Denali OLED machine and the
+ * st,vd55g0 DT compatible.  It samples the hardware immediately before the
+ * first sensor register access so a single serial boot log can establish
+ * whether MCLK0 reaches TLMM GPIO96 with the requested source/divider.
+ */
+#define VD55G0_SP11_CAMCC_BASE			0x0ade0000
+#define VD55G0_SP11_CAMCC_SIZE			0x16040
+#define VD55G0_SP11_MCLK0_CMD_RCGR		0x15000
+#define VD55G0_SP11_MCLK0_CFG_RCGR		0x15004
+#define VD55G0_SP11_MCLK0_M_REG			0x15008
+#define VD55G0_SP11_MCLK0_N_REG			0x1500c
+#define VD55G0_SP11_MCLK0_D_REG			0x15010
+#define VD55G0_SP11_MCLK0_CBCR			0x15018
+#define VD55G0_SP11_TITAN_TOP_GDSCR		0x13a6c
+
+#define VD55G0_SP11_TLMM_BASE			0x0f100000
+#define VD55G0_SP11_TLMM_SIZE			0x0f00000
+#define VD55G0_SP11_TLMM_GPIO_STRIDE		0x1000
+#define VD55G0_SP11_TLMM_GPIO96_CTL		(96 * VD55G0_SP11_TLMM_GPIO_STRIDE)
+#define VD55G0_SP11_TLMM_GPIO96_IO		(VD55G0_SP11_TLMM_GPIO96_CTL + 0x4)
+
+#define VD55G0_SP11_RCG_CMD_UPDATE		BIT(0)
+#define VD55G0_SP11_RCG_CMD_ROOT_EN		BIT(1)
+#define VD55G0_SP11_RCG_CMD_ROOT_OFF		BIT(31)
+#define VD55G0_SP11_RCG_CFG_SRC_DIV_MASK	GENMASK(4, 0)
+#define VD55G0_SP11_RCG_CFG_SRC_SEL_MASK	GENMASK(10, 8)
+#define VD55G0_SP11_CBCR_CLOCK_ENABLE		BIT(0)
+#define VD55G0_SP11_CBCR_CLK_OFF		BIT(31)
+#define VD55G0_SP11_TLMM_PULL_MASK		GENMASK(1, 0)
+#define VD55G0_SP11_TLMM_FUNC_MASK		GENMASK(5, 2)
+#define VD55G0_SP11_TLMM_DRV_MASK		GENMASK(8, 6)
+#define VD55G0_SP11_TLMM_OE			BIT(9)
+#define VD55G0_SP11_TLMM_IO_IN			BIT(0)
+#define VD55G0_SP11_TLMM_IO_OUT			BIT(1)
+
+static bool sp11_mclk_diag;
+module_param_named(sp11_mclk_diag, sp11_mclk_diag, bool, 0444);
+MODULE_PARM_DESC(sp11_mclk_diag,
+		 "log Surface Pro 11 VD55G0 MCLK0/TLMM state before detection");
 
 /* Register Map */
 #define VD55G1_SYSTEM_FSM_READY_TO_BOOT			0x01
@@ -1449,6 +1496,107 @@ struct vd55g1 {
 	bool xclk_on;
 };
 
+struct vd55g0_sp11_diag_sample {
+	u32 cmd;
+	u32 cfg;
+	u32 m;
+	u32 n;
+	u32 d;
+	u32 cbcr;
+	u32 gdsc;
+	u32 gpio96_ctl;
+	u32 gpio96_io;
+};
+
+static bool vd55g0_sp11_diag_enabled(struct vd55g1 *sensor)
+{
+	return sp11_mclk_diag && IS_ENABLED(CONFIG_OF) &&
+		of_machine_is_compatible("microsoft,denali-oled") &&
+		sensor->dev->of_node &&
+		of_device_is_compatible(sensor->dev->of_node, "st,vd55g0");
+}
+
+static void vd55g0_sp11_diag_sample(void __iomem *camcc, void __iomem *tlmm,
+				    struct vd55g0_sp11_diag_sample *sample)
+{
+	sample->cmd = readl(camcc + VD55G0_SP11_MCLK0_CMD_RCGR);
+	sample->cfg = readl(camcc + VD55G0_SP11_MCLK0_CFG_RCGR);
+	sample->m = readl(camcc + VD55G0_SP11_MCLK0_M_REG);
+	sample->n = readl(camcc + VD55G0_SP11_MCLK0_N_REG);
+	sample->d = readl(camcc + VD55G0_SP11_MCLK0_D_REG);
+	sample->cbcr = readl(camcc + VD55G0_SP11_MCLK0_CBCR);
+	sample->gdsc = readl(camcc + VD55G0_SP11_TITAN_TOP_GDSCR);
+	sample->gpio96_ctl = readl(tlmm + VD55G0_SP11_TLMM_GPIO96_CTL);
+	sample->gpio96_io = readl(tlmm + VD55G0_SP11_TLMM_GPIO96_IO);
+}
+
+static void vd55g0_sp11_diag_log(struct vd55g1 *sensor, const char *stage,
+				 const struct vd55g0_sp11_diag_sample *sample)
+{
+	dev_info(sensor->dev,
+		 "SP11-MCLK-DIAG %s: xclk=%lu cmd=%#010x update=%u root_en=%u root_off=%u cfg=%#010x src=%u hid=%u m=%#010x n=%#010x d=%#010x cbcr=%#010x cbcr_en=%u cbcr_off=%u gdsc=%#010x\n",
+		 stage, clk_get_rate(sensor->xclk), sample->cmd,
+		 !!(sample->cmd & VD55G0_SP11_RCG_CMD_UPDATE),
+		 !!(sample->cmd & VD55G0_SP11_RCG_CMD_ROOT_EN),
+		 !!(sample->cmd & VD55G0_SP11_RCG_CMD_ROOT_OFF), sample->cfg,
+		 (u32)FIELD_GET(VD55G0_SP11_RCG_CFG_SRC_SEL_MASK, sample->cfg),
+		 (u32)FIELD_GET(VD55G0_SP11_RCG_CFG_SRC_DIV_MASK, sample->cfg),
+		 sample->m, sample->n, sample->d, sample->cbcr,
+		 !!(sample->cbcr & VD55G0_SP11_CBCR_CLOCK_ENABLE),
+		 !!(sample->cbcr & VD55G0_SP11_CBCR_CLK_OFF), sample->gdsc);
+	dev_info(sensor->dev,
+		 "SP11-MCLK-DIAG %s: gpio96_ctl=%#010x func=%u drv=%umA pull=%u oe=%u gpio96_io=%#010x in=%u out=%u\n",
+		 stage, sample->gpio96_ctl,
+		 (u32)FIELD_GET(VD55G0_SP11_TLMM_FUNC_MASK, sample->gpio96_ctl),
+		 (u32)(FIELD_GET(VD55G0_SP11_TLMM_DRV_MASK,
+				sample->gpio96_ctl) + 1) * 2,
+		 (u32)FIELD_GET(VD55G0_SP11_TLMM_PULL_MASK, sample->gpio96_ctl),
+		 !!(sample->gpio96_ctl & VD55G0_SP11_TLMM_OE),
+		 sample->gpio96_io,
+		 !!(sample->gpio96_io & VD55G0_SP11_TLMM_IO_IN),
+		 !!(sample->gpio96_io & VD55G0_SP11_TLMM_IO_OUT));
+}
+
+static void vd55g0_sp11_diag_mclk(struct vd55g1 *sensor,
+				  const char *stage, unsigned int settle_us)
+{
+	struct vd55g0_sp11_diag_sample sample;
+	void __iomem *camcc;
+	void __iomem *tlmm;
+
+	if (!vd55g0_sp11_diag_enabled(sensor))
+		return;
+
+	camcc = devm_ioremap(sensor->dev, VD55G0_SP11_CAMCC_BASE,
+			     VD55G0_SP11_CAMCC_SIZE);
+	if (!camcc) {
+		dev_err(sensor->dev,
+			"SP11-MCLK-DIAG %s: failed to map CAM_CC\n", stage);
+		return;
+	}
+
+	tlmm = devm_ioremap(sensor->dev, VD55G0_SP11_TLMM_BASE,
+			    VD55G0_SP11_TLMM_SIZE);
+	if (!tlmm) {
+		dev_err(sensor->dev,
+			"SP11-MCLK-DIAG %s: failed to map TLMM\n", stage);
+		devm_iounmap(sensor->dev, camcc);
+		return;
+	}
+
+	vd55g0_sp11_diag_sample(camcc, tlmm, &sample);
+	vd55g0_sp11_diag_log(sensor, stage, &sample);
+
+	if (settle_us) {
+		usleep_range(settle_us, settle_us + 200);
+		vd55g0_sp11_diag_sample(camcc, tlmm, &sample);
+		vd55g0_sp11_diag_log(sensor, "pre-detect+1ms", &sample);
+	}
+
+	devm_iounmap(sensor->dev, tlmm);
+	devm_iounmap(sensor->dev, camcc);
+}
+
 static inline struct vd55g1 *to_vd55g1(struct v4l2_subdev *sd)
 {
 	return container_of_const(sd, struct vd55g1, sd);
@@ -2759,6 +2907,9 @@ static int vd55g1_detect(struct vd55g1 *sensor)
 	u64 color, id, rev;
 	int ret = 0;
 
+	/* Power-on has completed; no sensor I/O has happened before this point. */
+	vd55g0_sp11_diag_mclk(sensor, "pre-detect", 1000);
+
 	vd55g1_read(sensor, REG_MODEL_ID, &id, &ret);
 	vd55g1_read(sensor, REG_REVISION, &rev, &ret);
 	vd55g1_read(sensor, REG_COLOR_VERSION, &color, &ret);
@@ -3233,6 +3384,15 @@ static int vd55g1_probe(struct i2c_client *client)
 				     "Failed to get xclk\n");
 
 	sensor->xclk_freq = clk_get_rate(sensor->xclk);
+	if (vd55g0_sp11_diag_enabled(sensor)) {
+		struct clk *parent = clk_get_parent(sensor->xclk);
+
+		dev_info(dev,
+			 "SP11-MCLK-DIAG acquired: requested=%u actual=%u parent=%s parent_rate=%lu\n",
+			 12000000U, sensor->xclk_freq,
+			 parent ? __clk_get_name(parent) : "none",
+			 parent ? clk_get_rate(parent) : 0);
+	}
 	ret = vd55g1_prepare_clock_tree(sensor);
 	if (ret)
 		return dev_err_probe(dev, ret, "Unsupported clock configuration\n");
