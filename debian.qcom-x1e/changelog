@@ -1,3 +1,12 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v14) stonking; urgency=medium
+
+  * Program the VD55G0 OIF_CTRL register with the correct data-lane
+    count and physical-lane mapping per the vendor reference driver.
+    The G1-inherited value left the lane count at 0, which kept the
+    CSI2 TX serializer disabled so CSID never received MIPI traffic.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 10:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v13) stonking; urgency=medium
 
   * Switch the VD55G0 link frequency from 600 MHz to 384 MHz so the
