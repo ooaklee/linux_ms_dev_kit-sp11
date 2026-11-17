@@ -1,3 +1,29 @@
+linux-qcom-x1e (7.3.0-jg-1sp11v15) stonking; urgency=medium
+
+  * Publish-consolidation release: first OE-published release since
+    1sp11v4. Versions v5-v14 were built, changelogged and deployed
+    for qualification but not published to the releases page; this
+    release is v14 content plus evidence docs with no code delta
+    against the v14 release commit (88e39be902744).
+  * Published delta vs 1sp11v4: qmp-combo USB4/TBT3 common-resource
+    ownership hardening with quarantine semantics, per-consumer
+    camera rail ownership for ov13858/vd55g1, SAM BAT0/BAT1 battery
+    and BATT thermal-zone nodes, fastrpc buffer lifetime hardening,
+    and the default-off Qualcomm USB4 host-router research scaffold
+    (#87, #88, #90, #91, #92, #94).
+  * VD55G0 IR sensor enablement: Windows-decoded CCI0 master 0,
+    7-bit address 0x60, 400 kHz I2C routing with MCLK0 at 19.2 MHz,
+    the qcom-cci SCL clock-stretching backport (0265dfc5d2a8), the
+    384 MHz link frequency satisfying the MIPI/MCLK integer-ratio
+    rule, and OIF_CTRL data-lane count/physical-lane programming;
+    IR camera and PM8550 illuminator DT nodes enabled. Evidence
+    docs for the camcc MCLK0 investigation included (#95, #98, #99).
+  * Branch hygiene: superseded sp11/beta-* branches were removed
+    after validation confirmed all of their content is carried in
+    sp11/ubuntu-qcom-x1e-7.3.y.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 19:17:12 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v14) stonking; urgency=medium
 
   * Program the VD55G0 OIF_CTRL register with the correct data-lane
