@@ -221,6 +221,7 @@ struct fastrpc_buf_overlap {
 
 struct fastrpc_buf {
 	struct fastrpc_user *fl;
+	struct fastrpc_channel_ctx *cctx;
 	struct dma_buf *dmabuf;
 	struct device *dev;
 	void *virt;
@@ -463,13 +464,34 @@ static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd,
 	return ret;
 }
 
+static void fastrpc_channel_ctx_free(struct kref *ref)
+{
+	struct fastrpc_channel_ctx *cctx;
+
+	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
+
+	idr_destroy(&cctx->ctx_idr);
+	kfree(cctx);
+}
+
+static void fastrpc_channel_ctx_get(struct fastrpc_channel_ctx *cctx)
+{
+	kref_get(&cctx->refcount);
+}
+
+static void fastrpc_channel_ctx_put(struct fastrpc_channel_ctx *cctx)
+{
+	kref_put(&cctx->refcount, fastrpc_channel_ctx_free);
+}
+
 static void fastrpc_buf_free(struct fastrpc_buf *buf)
 {
 	if (!buf)
 		return;
 
 	dma_free_coherent(buf->dev, buf->size, buf->virt,
-			  fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr));
+			  fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr));
+	fastrpc_channel_ctx_put(buf->cctx);
 	kfree(buf);
 }
 
@@ -487,6 +509,13 @@ static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 	mutex_init(&buf->lock);
 
 	buf->fl = fl;
+	/*
+	 * The buffer can outlive its fastrpc_user (e.g. an exported
+	 * dma-buf fd held by another process), so keep our own
+	 * reference to the channel ctx for fastrpc_buf_free().
+	 */
+	fastrpc_channel_ctx_get(fl->cctx);
+	buf->cctx = fl->cctx;
 	buf->virt = NULL;
 	buf->dma_addr = 0;
 	buf->size = size;
@@ -530,26 +559,6 @@ static int fastrpc_remote_heap_alloc(struct fastrpc_user *fl, struct device *dev
 	struct device *rdev = &fl->cctx->rpdev->dev;
 
 	return  __fastrpc_buf_alloc(fl, rdev, size, obuf);
-}
-
-static void fastrpc_channel_ctx_free(struct kref *ref)
-{
-	struct fastrpc_channel_ctx *cctx;
-
-	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
-
-	idr_destroy(&cctx->ctx_idr);
-	kfree(cctx);
-}
-
-static void fastrpc_channel_ctx_get(struct fastrpc_channel_ctx *cctx)
-{
-	kref_get(&cctx->refcount);
-}
-
-static void fastrpc_channel_ctx_put(struct fastrpc_channel_ctx *cctx)
-{
-	kref_put(&cctx->refcount, fastrpc_channel_ctx_free);
 }
 
 static void fastrpc_context_put(struct fastrpc_invoke_ctx *ctx);
@@ -810,7 +819,7 @@ static int fastrpc_dma_buf_attach(struct dma_buf *dmabuf,
 		return -ENOMEM;
 
 	ret = dma_get_sgtable(buffer->dev, &a->sgt, buffer->virt,
-			      fastrpc_ipa_to_dma_addr(buffer->fl->cctx, buffer->dma_addr),
+			      fastrpc_ipa_to_dma_addr(buffer->cctx, buffer->dma_addr),
 			      buffer->size);
 	if (ret < 0) {
 		dev_err(buffer->dev, "failed to get scatterlist from DMA API\n");
@@ -855,12 +864,17 @@ static int fastrpc_mmap(struct dma_buf *dmabuf,
 			struct vm_area_struct *vma)
 {
 	struct fastrpc_buf *buf = dmabuf->priv;
-	size_t size = vma->vm_end - vma->vm_start;
+	unsigned long size = vma->vm_end - vma->vm_start;
+	unsigned long offset = PFN_PHYS(vma->vm_pgoff);
 
 	dma_resv_assert_held(dmabuf->resv);
 
+	if (offset >= buf->size || size > buf->size - offset)
+		return -EINVAL;
+
 	return dma_mmap_coherent(buf->dev, vma, buf->virt,
-				 fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr), size);
+				 fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr) +
+				 offset, size);
 }
 
 static const struct dma_buf_ops fastrpc_dma_buf_ops = {
@@ -2080,7 +2094,8 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 	struct fastrpc_phy_page pages;
 	struct fastrpc_req_mmap req;
 	struct device *dev = fl->sctx->dev;
-	int err;
+	bool pages_assigned = false;
+	int err, unwind_err;
 	u32 sc;
 
 	if (copy_from_user(&req, argp, sizeof(req)))
@@ -2151,6 +2166,8 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 				&buf->dma_addr, buf->size, err);
 			goto err_assign;
 		}
+
+		pages_assigned = true;
 	}
 
 	spin_lock(&fl->lock);
@@ -2159,7 +2176,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 
 	if (copy_to_user((void __user *)argp, &req, sizeof(req))) {
 		err = -EFAULT;
-		goto err_assign;
+		goto err_copy;
 	}
 
 	dev_dbg(dev, "mmap\t\tpt 0x%09lx OK [len 0x%08llx]\n",
@@ -2167,8 +2184,38 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
 
 	return 0;
 
+err_copy:
+	/* buf must not sit on fl->mmaps while we unwind and free it */
+	spin_lock(&fl->lock);
+	list_del(&buf->node);
+	spin_unlock(&fl->lock);
 err_assign:
-	fastrpc_req_munmap_impl(fl, buf);
+	/*
+	 * Unwind in reverse order of the success path: if the pages
+	 * were hyp_assign'ed away from HLOS, take them back first,
+	 * then ask the DSP to drop the mapping, which also frees the
+	 * buffer. Without the reclaim, the remote-heap pages leak and
+	 * later memunmap of the same region can hang in the SCM call.
+	 */
+	if (pages_assigned) {
+		struct qcom_scm_vmperm perm;
+		u64 src_perms = BIT(QCOM_SCM_VMID_HLOS) |
+				BIT(fl->cctx->vmperms[0].vmid);
+		dma_addr_t phys = buf->dma_addr;
+		u64 size = buf->size;
+
+		perm.vmid = QCOM_SCM_VMID_HLOS;
+		perm.perm = QCOM_SCM_PERM_RWX;
+		unwind_err = qcom_scm_assign_mem(phys, size, &src_perms,
+						 &perm, 1);
+		if (unwind_err)
+			dev_err(dev, "Failed to reclaim memory dma_addr %pad err %d\n",
+				&phys, unwind_err);
+	}
+
+	unwind_err = fastrpc_req_munmap_impl(fl, buf);
+	if (unwind_err)
+		dev_err(dev, "mmap unwind error %d\n", unwind_err);
 
 	return err;
 }
