@@ -1,3 +1,186 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v1) stonking; urgency=medium
+
+  * Rebase the SP11 device delta onto upstream 7.3.3-jg-1
+    (jglathe jg/ubuntu-qcom-x1e-7.3.y tip 1fa928c8073f, merge 962771e9764e),
+    superseding the 7.3.0-jg-1 base of 1sp11v1..v15.
+  * Upstream content absorbed: x1-denali DisplayPort audio dai-links and
+    volume-key definitions, DP audio power-off fix (27cbafd8), Iris iova
+    restriction series (34a2bc2), qmp-combo explicit initial mode, qrtr
+    send-lock deadlock fix (045abac), x126100 ideapad-slim3 series,
+    t14s pwrseq bluetooth, glymur Gen11 EC driver, ubuntu archive
+    config refresh (7.3.0-29.29..7.3.3).
+  * SP11 delta retained: camss denali C-PHY plan dispatch, VD55G0 IR +
+    ov13858/imx681 sensor enablement, mshw0485 touch/IPTSD, SAM
+    BAT0/BAT1 + thermal, DP ownership state machine (#85), qmp-combo
+    USB4/TBT3 quarantine (#87 #88 #90), protected audioreach/q6apm
+    configuration, fastrpc lifetime hardening, selfcompile driver
+    packaging.
+  * This candidate is not hardware-qualified; physical regression tests
+    pending against the 7.3.3 baseline.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 18 Nov 2026 05:20:00 +0000
+
+linux-qcom-x1e (7.3.0-jg-1sp11v15) stonking; urgency=medium
+
+  * Publish-consolidation release: first OE-published release since
+    1sp11v4. Versions v5-v14 were built, changelogged and deployed
+    for qualification but not published to the releases page; this
+    release is v14 content plus evidence docs with no code delta
+    against the v14 release commit (88e39be902744).
+  * Published delta vs 1sp11v4: qmp-combo USB4/TBT3 common-resource
+    ownership hardening with quarantine semantics, per-consumer
+    camera rail ownership for ov13858/vd55g1, SAM BAT0/BAT1 battery
+    and BATT thermal-zone nodes, fastrpc buffer lifetime hardening,
+    and the default-off Qualcomm USB4 host-router research scaffold
+    (#87, #88, #90, #91, #92, #94).
+  * VD55G0 IR sensor enablement: Windows-decoded CCI0 master 0,
+    7-bit address 0x60, 400 kHz I2C routing with MCLK0 at 19.2 MHz,
+    the qcom-cci SCL clock-stretching backport (0265dfc5d2a8), the
+    384 MHz link frequency satisfying the MIPI/MCLK integer-ratio
+    rule, and OIF_CTRL data-lane count/physical-lane programming;
+    IR camera and PM8550 illuminator DT nodes enabled. Evidence
+    docs for the camcc MCLK0 investigation included (#95, #98, #99).
+  * Branch hygiene: superseded sp11/beta-* branches were removed
+    after validation confirmed all of their content is carried in
+    sp11/ubuntu-qcom-x1e-7.3.y.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 19:17:12 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v14) stonking; urgency=medium
+
+  * Program the VD55G0 OIF_CTRL register with the correct data-lane
+    count and physical-lane mapping per the vendor reference driver.
+    The G1-inherited value left the lane count at 0, which kept the
+    CSI2 TX serializer disabled so CSID never received MIPI traffic.
+
+ -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 10:00:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v13) stonking; urgency=medium
+
+  * Switch the VD55G0 link frequency from 600 MHz to 384 MHz so the
+    MIPI data rate (768 Mbps) is an integer multiple (40x) of the
+    19.2 MHz MCLK, the only rate inside the sensor's 750-1200 Mbps
+    window that satisfies the integer-ratio rule at this xclk.
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 22:30:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
+
+  * Route the VD55G0 IR sensor using the Windows-decoded CCI0 master 0,
+    7-bit address 0x60, 400 kHz I2C and MCLK0 at 19.2 MHz tuple. The
+    sensor now probes and binds, and its media graph is active; frame
+    streaming validation is still in progress and Windows Hello
+    userspace is not wired.
+  * Backport upstream commit 0265dfc5d2a8 (i2c: qcom-cci: always enable
+    SCL clock stretching), required for the VD55G0 first-contact ACK on
+    X1E.
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 20:20:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
+
+  * vd55g1 power-on rail ordering fixed to match the Windows
+    sequence (vddio -> vcore -> vana with stagger, clock first)
+    (#98). The IR camera sensor still does not enumerate; probe
+    investigation continues on PR #98. Note: v11 skips v9/v10
+    (test-only camcc MCLK0 keepalive line, refuted and parked
+    in #99).
+
+ -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 10:00:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
+
+  * fastrpc buffer lifetime hardening: map/unmap and buffer
+    allocation now carry coherent ownership and mmap validation,
+    with correct error unwinding so partial setups cannot leak
+    mappings or pinned pages (#94).
+  * Enable the VD55G0 IR camera and PM8550 IR illuminator device
+    tree nodes for Windows Hello on Denali (#95, plus IR-led
+    precursor).
+  * sp11-selfcompile-drivers publish-ready package documentation
+    (#93).
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 03:15:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
+
+  * Register battery nodes for the Surface Pro 11 in the surface
+    aggregator: BAT0/BAT1 SPA battery nodes plus the BATT thermal
+    zone template exposed to userspace, matching the SAM decompila-
+    tion findings recorded in REA-5 (#91).
+  * Qualcomm USB4 host-router research frontend (USB4_QCOM_EXPERI-
+    MENTAL, default-off): qualified MMIO mapping with pre-map
+    alignment validation, documented firmware error-path and
+    PHY/host-router stop-restart ownership contracts, no in-tree DT
+    node so the scaffold cannot probe on stock hardware (#92).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 19:00:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
+
+  * Harden qmp-combo common-resource ownership for USB4/TBT3: per-
+    resource exit_hold tracking so partial releases never
+    double-release or forget held resources, failed releases
+    quarantine with the caller's reference restored so retries drive
+    the release ladder, every admission path (USB init USB4
+    shortcut, typec switch/mux, usb4 set_mode, DP configure/
+    calibrate) honors quarantine, runtime-PM clock ownership stays
+    in sync, the retained USB4 router pipe clock is released at
+    remove, and uncertain regulator-core rollback accounting takes
+    the documented conservative terminal position (#87, #88, #90).
+  * Consistent camera power ownership for ov13858/vd55g1: per-
+    consumer rail ownership bitmaps with exact masks, acquisition
+    errors preserved through cleanup unwind, remove gated on
+    recorded ownership, and failed bulk enables latch power_fault
+    (#89).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 08:30:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v5) stonking; urgency=medium
+
+  * Port the Qualcomm USB4 host-router research frontend behind the
+    default-off CONFIG_USB4_QCOM_EXPERIMENTAL scaffold: conditional
+    composite linkage, domain -> PCI -> Qualcomm registration with
+    reverse unwind, the REA-evidenced whole-container firmware
+    validator, full pre-map MMIO bounds validation, and serialised
+    stop/restart ownership (PR #76).
+  * Map the UCS0 mailbox through a named optional platform resource
+    before falling back to the fixed ACPI-declared window, with the
+    mapping failure unwound through the prepare devres group.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 22:30:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v4) stonking; urgency=medium
+
+  * Port the X1E QMP-combo USB4/TBT3 PHY support to the 7.3 lifetime:
+    transactional reconfiguration with explicit common/regulator/USB
+    ownership, rollback of failed mode switches, rejection of
+    incompatible USB4 admissions, and explicit reporting of DP
+    tunnel-clock loss through common exit (PR #24).
+  * Propagate Qualcomm reset-controller register errors and retry
+    failed PS883x orientation updates with balanced unwind (PR #79).
+  * Retain failed V4L2 subdev stop state opt-in (PR #80).
+  * Port the OV13858 binding with native OF power management and the
+    VD55G0 global-shutter groundwork in st-vd55g1: indirect register
+    addressing, unified frame timing, corrected register widths,
+    bounded LED configuration with illumination gated pending
+    qualification, and stream ownership retained until stop succeeds
+    (PR #73).
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 20:30:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v3) stonking; urgency=medium
+
+  * Quarantine further stream and control operations after the first
+    experimental post-resume start-programming failure.
+  * Preserve the original errno and single owned stream-PM reference release.
+  * Retain the default-off experimental_stream_safe setting and matching
+    exact-control-contract Simple IPA requirement; leave pre-programming
+    PM-resume failures and the default-off path unchanged.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 31 Oct 2026 18:28:00 +0000
+linux-qcom-x1e (7.3.0-jg-1sp11v2) stonking; urgency=medium
+
+  * Add a default-off IMX681 fixed-gain/direct-exposure experiment inspired
+    by Richard Burt, retaining the accepted mode, C-PHY/CAMSS route and DTB.
+  * Require the matching exact-control-contract Simple IPA; preserve normal
+    controls when the experimental_stream_safe parameter is disabled.
+  * Balance experimental stream lifecycle references and reject further
+    operations after a failed standby write until reprobe.
+  * Host-function fixtures passed; native packages, actual exposure/gain,
+    image quality, capture longevity and privacy remain unqualified.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 29 Oct 2026 09:58:00 +0000
 linux-qcom-x1e (7.3.3-jg-1) stonking; urgency=medium
 
   * arm64: dts: qcom: lenovo-t14s: remove compatible for Bluetooth definition
@@ -23,14 +206,12 @@ linux-qcom-x1e (7.3.3-jg-1) stonking; urgency=medium
   * Ubuntu: update annotations and ubuntu_x1e_defconfig
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Tue, 17 Nov 2026 18:27:35 +0100
-
 linux-qcom-x1e (7.3.3-jg-0) stonking; urgency=medium
 
   * power: sequencing: pcie-m2: refuse serdev creation on dual-wired connectors
   * rebase the stack onto v7.3.3
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Sun, 08 Nov 2026 09:56:06 +0100
-
 linux-qcom-x1e (7.3.1-jg-0) stonking; urgency=medium
 
   * rebase the stack onto v7.3.1
@@ -38,20 +219,17 @@ linux-qcom-x1e (7.3.1-jg-0) stonking; urgency=medium
   * power: sequencing: pcie-m2: stop requiring subsystem IDs for WCN6855/WCN7850
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Thu, 05 Nov 2026 22:38:20 +0100
-
 linux-qcom-x1e (7.3.0-jg-5) stonking; urgency=medium
 
   * rebase onto git+ssh://git.launchpad.net/~ubuntu-concept/ubuntu/+source/linux/+git/stonking repo, 7.3.0-29.29 including config(-ish)
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Fri, 30 Oct 2026 06:44:47 +0100
-
 linux-qcom-x1e (7.3.0-jg-4) stonking; urgency=medium
 
   * media: iris: apply clock defaults after power domains
   * net: qrtr: smd: release send_lock before endpoint unregister on open failure [Ethan RAMSEY <132889564+3thanRam@users.noreply.github.com>]
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Wed, 28 Oct 2026 22:36:03 +0100
-
 linux-qcom-x1e (7.3.0-jg-3) resolute; urgency=medium
 
   * REMOVE drm/msm: TEST force mode set on color mgmt change [JS Deck <jsdeckerido@gmail.com>]
@@ -59,7 +237,6 @@ linux-qcom-x1e (7.3.0-jg-3) resolute; urgency=medium
   * enable Iris node on several devices
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Mon, 26 Oct 2026 07:08:13 +0100
-
 linux-qcom-x1e (7.3.0-jg-2) stonking; urgency=medium
 
   * media: iris: restore the no-TZ firmware boot lost in the rebase [Lars Karlslund <lars@karlslund.dk>]
@@ -89,7 +266,18 @@ linux-qcom-x1e (7.3.0-jg-1) stonking; urgency=medium
 
   * add Iris IOMMU fault series: https://lore.kernel.org/all/20260926-vpu_iommu_iova_handling-v5-0-0322ca5dc10c@oss.qualcomm.com/ [Vikash Garodia <vikash.garodia@oss.qualcomm.com>]
 
- -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Tue, 20 Oct 2026 20:40:27 +0200
+ -- Jens Glathe <jens.glathe@oldschoololutions.biz>  Tue, 20 Oct 2026 20:40:27 +0200
+
+linux-qcom-x1e (7.3.0-jg-1sp11v1) stonking; urgency=medium
+
+  * Start source-only SP11 qualification on upstream 7.3.0-jg-1, retaining
+    original authorship. Accepted source reconstruction:
+    a95adbde4c3cbd8019be8815cab2b1f483e6bfb4
+  * Align ARM64 linker and native build-dependency policy with this source.
+  * This candidate is not hardware-qualified. Configuration, complete kernel
+    packaging and physical regression tests remain pending.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 24 Oct 2026 22:49:00 +0000
 
 linux-qcom-x1e (7.3.0-jg-0) stonking; urgency=medium
 

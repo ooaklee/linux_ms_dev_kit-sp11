@@ -14865,13 +14865,6 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/platform/lenovo,yoga-slim7x-ec.yaml
 F:	drivers/platform/arm64/lenovo-yoga-slim7x.c
 
-LENOVO YOGA SLIM 7X GEN 11 EMBEDDED CONTROLLER DRIVER
-M:	Oleg Keri <okerixx@gmail.com>
-L:	linux-arm-msm@vger.kernel.org
-S:	Maintained
-F:	Documentation/ABI/testing/sysfs-driver-lenovo-yoga-slim7x-gen11-ec
-F:	Documentation/devicetree/bindings/embedded-controller/lenovo,yoga-slim7x-gen11-ec.yaml
-F:	drivers/platform/arm64/lenovo-yoga-slim7x-gen11-ec.c
 
 LETSKETCH HID TABLET DRIVER
 M:	Hans de Goede <hansg@kernel.org>
@@ -18129,6 +18122,15 @@ F:	Documentation/driver-api/surface_aggregator/clients/dtx.rst
 F:	drivers/platform/surface/surface_dtx.c
 F:	include/uapi/linux/surface_aggregator/dtx.h
 
+MICROSOFT SURFACE G6 TOUCHSCREEN DRIVER
+M:	Leon Silcott <leon@boasi.io>
+L:	linux-input@vger.kernel.org
+S:	Maintained
+F:	Documentation/ABI/testing/dev-g6ts-heat
+F:	Documentation/devicetree/bindings/input/touchscreen/microsoft,mshw0485.yaml
+F:	drivers/input/touchscreen/mshw0485_touch.c
+F:	include/uapi/linux/g6ts_heat.h
+
 MICROSOFT SURFACE SENSOR FAN DRIVER
 M:	Maximilian Luz <luzmaximilian@gmail.com>
 M:	Ivor Wanders <ivor@iwanders.net>
@@ -20224,6 +20226,7 @@ M:	Sakari Ailus <sakari.ailus@linux.intel.com>
 L:	linux-media@vger.kernel.org
 S:	Maintained
 T:	git git://linuxtv.org/media.git
+F:	Documentation/devicetree/bindings/media/i2c/ovti,ov13858.yaml
 F:	drivers/media/i2c/ov13858.c
 
 OMNIVISION OV13B10 SENSOR DRIVER
@@ -25633,6 +25636,14 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/media/i2c/sony,imx678.yaml
 F:	drivers/media/i2c/imx678.c
 
+SONY IMX681 SENSOR DRIVER
+M:	turbinebmw <turbine.bmw@gmail.com>
+L:	linux-media@vger.kernel.org
+S:	Maintained
+T:	git git://linuxtv.org/media.git
+F:	Documentation/devicetree/bindings/media/i2c/sony,imx681.yaml
+F:	drivers/media/i2c/imx681*
+
 SONY MEMORYSTICK SUBSYSTEM
 M:	Maxim Levitsky <maximlevitsky@gmail.com>
 M:	Alex Dubov <oakad@yahoo.com>
@@ -26025,6 +26036,7 @@ F:	drivers/hwmon/tsc1641.c
 ST VD55G1 DRIVER
 M:	Benjamin Mugnier <benjamin.mugnier@foss.st.com>
 M:	Sylvain Petinot <sylvain.petinot@foss.st.com>
+M:	Peter Marshall <pm@petermarshall.ca>
 L:	linux-media@vger.kernel.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/media/i2c/st,vd55g1.yaml

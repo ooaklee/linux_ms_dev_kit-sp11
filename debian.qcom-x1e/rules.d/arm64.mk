@@ -8,6 +8,9 @@ no_dumpfile	= true
 
 vdso		= vdso_install
 
+# Keep the annotated LLD linker while retaining the GCC compiler selection.
+kmake += LD=ld.lld-21
+
 do_tools_usbip  = true
 do_tools_cpupower = true
 do_tools_perf   = true
