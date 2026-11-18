@@ -21,6 +21,7 @@
 
 #include "nhi.h"
 #include "nhi_regs.h"
+#include "qcom_usb4_hr.h"
 #include "tb.h"
 
 /**
@@ -126,22 +127,29 @@ static int nhi_pci_init_msi(struct tb_nhi *nhi)
 				     PCI_IRQ_MSIX);
 	if (nvec < 0) {
 		nvec = pci_alloc_irq_vectors(pdev, 1, 1, PCI_IRQ_MSI);
-		if (nvec < 0)
-			return nvec;
-
-		INIT_WORK(&nhi->interrupt_work, nhi_interrupt_work);
+		if (nvec < 0) {
+			res = nvec;
+			goto err_destroy_ida;
+		}
 
 		irq = pci_irq_vector(pdev, 0);
-		if (irq < 0)
-			return irq;
+		if (irq < 0) {
+			res = irq;
+			goto err_destroy_ida;
+		}
 
 		res = devm_request_irq(&pdev->dev, irq, nhi_msi,
 				       IRQF_NO_SUSPEND, "thunderbolt", nhi);
 		if (res)
-			return res;
+			goto err_destroy_ida;
 	}
 
 	return 0;
+
+err_destroy_ida:
+	/* pcim_enable_device() owns the interrupt-vector allocation. */
+	ida_destroy(&nhi_pci->msix_ida);
+	return res;
 }
 
 static bool nhi_pci_imr_valid(struct pci_dev *pdev)
@@ -475,13 +483,28 @@ static int nhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_master(pdev);
 
-	return nhi_probe(&nhi_pci->nhi);
+	res = nhi_probe(nhi);
+	if (res)
+		return res;
+
+	device_wakeup_enable(dev);
+
+	pm_runtime_allow(dev);
+	pm_runtime_set_autosuspend_delay(dev, TB_AUTOSUSPEND_DELAY);
+	pm_runtime_use_autosuspend(dev);
+	pm_runtime_put_autosuspend(dev);
+
+	return 0;
 }
 
 static void nhi_pci_do_remove(struct pci_dev *pdev, bool reset)
 {
 	struct tb *tb = pci_get_drvdata(pdev);
-	struct tb_nhi *nhi = tb->nhi;
+	struct tb_nhi *nhi;
+
+	if (!tb)
+		return;
+	nhi = tb->nhi;
 
 	/*
 	 * On system shutdown/reboot force a host router reset so the
@@ -495,9 +518,7 @@ static void nhi_pci_do_remove(struct pci_dev *pdev, bool reset)
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_forbid(&pdev->dev);
 
-	tb_domain_remove(tb);
-	wait_for_completion(&nhi->domain_released);
-	nhi_shutdown(nhi);
+	nhi_remove(nhi);
 }
 
 static void nhi_pci_remove(struct pci_dev *pdev)
@@ -624,13 +645,24 @@ static int __init nhi_init(void)
 
 	ret = pci_register_driver(&nhi_driver);
 	if (ret)
-		tb_domain_exit();
+		goto err_domain;
 
+	ret = qcom_usb4_hr_register();
+	if (ret)
+		goto err_pci;
+
+	return 0;
+
+err_pci:
+	pci_unregister_driver(&nhi_driver);
+err_domain:
+	tb_domain_exit();
 	return ret;
 }
 
 static void __exit nhi_unload(void)
 {
+	qcom_usb4_hr_unregister();
 	pci_unregister_driver(&nhi_driver);
 	tb_domain_exit();
 }

@@ -18,6 +18,17 @@ menuconfig USB4
 
 if USB4
 
+config USB4_QCOM_EXPERIMENTAL
+	bool "Qualcomm X1E USB4 host-router research scaffold"
+	depends on ARCH_QCOM && OF
+	select GENERIC_PHY
+	help
+	  Build the experimental Qualcomm host-router backend into the
+	  Thunderbolt/USB4 driver. This is a source-review scaffold with
+	  unqualified MMIO, firmware-loading and activation controls.
+	  Keep this disabled for normal kernels. It does not enable board
+	  nodes or establish working USB4 support.
+
 config USB4_CONFIGFS
 	def_tristate USB4
 	depends on CONFIGFS_FS && !(USB4=y && CONFIGFS_FS=m)

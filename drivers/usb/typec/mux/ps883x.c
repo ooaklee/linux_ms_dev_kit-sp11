@@ -79,6 +79,7 @@ struct ps883x_retimer {
 	struct mutex lock; /* protect non-concurrent retimer & switch */
 
 	enum typec_orientation orientation;
+	bool orientation_valid;
 	bool in_reset;
 	bool disable_usb4;
 };
@@ -171,6 +172,7 @@ static void ps883x_reset(struct ps883x_retimer *retimer)
 
 	gpiod_set_value(retimer->reset_gpio, 1);
 	ps883x_disable_vregs(retimer);
+	retimer->orientation_valid = false;
 	retimer->in_reset = true;
 }
 
@@ -199,9 +201,11 @@ static int ps883x_configure(struct ps883x_retimer *retimer, int cfg0,
 
 	ret = regmap_write(retimer->regmap, REG_USB_PORT_CONN_STATUS_0, cfg0);
 	if (ret) {
+		retimer->orientation_valid = false;
 		dev_err(dev, "failed to write conn_status_0: %d\n", ret);
 		return ret;
 	}
+	retimer->orientation_valid = true;
 
 	ret = regmap_write(retimer->regmap, REG_USB_PORT_CONN_STATUS_1, cfg1);
 	if (ret) {
@@ -322,22 +326,29 @@ static int ps883x_sw_set(struct typec_switch_dev *sw,
 
 	guard(mutex)(&retimer->lock);
 
-	if (retimer->orientation != orientation) {
-		retimer->orientation = orientation;
-
+	if (retimer->orientation != orientation || !retimer->orientation_valid) {
 		/*
 		 * Orientation notifications usually come prior to mode switch
 		 * events. If the retimer is already in reset, we still want to
 		 * cache the new orientation value for the subsequent ps883x_set().
 		 */
-		if (retimer->in_reset)
+		if (retimer->in_reset) {
+			retimer->orientation = orientation;
+			retimer->orientation_valid = false;
 			return 0;
+		}
 
 		ret = regmap_assign_bits(retimer->regmap, REG_USB_PORT_CONN_STATUS_0,
 					 CONN_STATUS_0_ORIENTATION_REVERSED,
 					 orientation == TYPEC_ORIENTATION_REVERSE);
-		if (ret)
+		if (ret) {
+			retimer->orientation_valid = false;
 			dev_err(&retimer->client->dev, "failed to set orientation: %d\n", ret);
+			return ret;
+		}
+
+		retimer->orientation = orientation;
+		retimer->orientation_valid = true;
 	}
 
 	return ret;
@@ -532,8 +543,10 @@ err_switch_unregister:
 err_clk_disable:
 	clk_disable_unprepare(retimer->xo_clk);
 err_vregs_disable:
-	gpiod_set_value(retimer->reset_gpio, 1);
-	ps883x_disable_vregs(retimer);
+	/* Initial reset may already have released the regulator enables. */
+	mutex_lock(&retimer->lock);
+	ps883x_reset(retimer);
+	mutex_unlock(&retimer->lock);
 err_mux_put:
 	typec_mux_put(retimer->typec_mux);
 err_switch_put:
@@ -549,11 +562,11 @@ static void ps883x_retimer_remove(struct i2c_client *client)
 	typec_retimer_unregister(retimer->retimer);
 	typec_switch_unregister(retimer->sw);
 
-	gpiod_set_value(retimer->reset_gpio, 1);
+	mutex_lock(&retimer->lock);
+	ps883x_reset(retimer);
+	mutex_unlock(&retimer->lock);
 
 	clk_disable_unprepare(retimer->xo_clk);
-
-	ps883x_disable_vregs(retimer);
 
 	typec_mux_put(retimer->typec_mux);
 	typec_switch_put(retimer->typec_switch);
