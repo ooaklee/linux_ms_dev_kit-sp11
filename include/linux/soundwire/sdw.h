@@ -274,6 +274,11 @@ struct sdw_dp0_prop {
 	u32 *lane_list;
 };
 
+#define SDW_DPN_SIMPLE_TRANSPORT_BLOCKCTRL3	BIT(0)
+#define SDW_DPN_SIMPLE_TRANSPORT_SAMPLECTRL2	BIT(1)
+#define SDW_DPN_SIMPLE_TRANSPORT_HCTRL		BIT(2)
+#define SDW_DPN_SIMPLE_TRANSPORT_OFFSETCTRL2	BIT(3)
+
 /**
  * struct sdw_dpn_prop - Data Port DPn properties
  * @num: port number
@@ -305,6 +310,8 @@ struct sdw_dp0_prop {
  * @read_only_wordlength: Read Only wordlength field in DPN_BlockCtrl1 register
  * @simple_ch_prep_sm: If the port supports simplified channel prepare state
  * machine
+ * @simple_transport_registers: Optional banked transport registers implemented
+ * by a SIMPLE port in addition to the mandatory SIMPLE register set.
  */
 struct sdw_dpn_prop {
 	u32 num;
@@ -330,6 +337,7 @@ struct sdw_dpn_prop {
 	bool block_pack_mode;
 	bool read_only_wordlength;
 	bool simple_ch_prep_sm;
+	u32 simple_transport_registers;
 };
 
 /**
@@ -910,6 +918,22 @@ struct sdw_port_config {
 	unsigned int ch_mask;
 };
 
+#define SDW_SLAVE_PORT_OVERRIDE_OFFSET1	BIT(0)
+
+/**
+ * struct sdw_slave_port_transport - Explicit slave-only transport overrides
+ * @override_mask: SDW_SLAVE_PORT_OVERRIDE_* fields selected by this entry
+ * @offset1: Slave Offset1 value, including zero when explicitly selected
+ *
+ * Entries correspond to the port_config array passed to
+ * sdw_stream_add_slave_with_transport(). Unselected fields are ignored.
+ * Legacy port configurations and master transport parameters are unaffected.
+ */
+struct sdw_slave_port_transport {
+	unsigned int override_mask;
+	u8 offset1;
+};
+
 /**
  * struct sdw_stream_config: Master or Slave stream configuration
  *
@@ -1099,6 +1123,12 @@ int sdw_stream_add_slave(struct sdw_slave *slave,
 			 const struct sdw_port_config *port_config,
 			 unsigned int num_ports,
 			 struct sdw_stream_runtime *stream);
+int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
+					struct sdw_stream_config *stream_config,
+					const struct sdw_port_config *port_config,
+					const struct sdw_slave_port_transport *transport,
+					unsigned int num_ports,
+					struct sdw_stream_runtime *stream);
 int sdw_stream_remove_slave(struct sdw_slave *slave,
 			    struct sdw_stream_runtime *stream);
 
@@ -1127,6 +1157,17 @@ static inline int sdw_stream_add_slave(struct sdw_slave *slave,
 				       const struct sdw_port_config *port_config,
 				       unsigned int num_ports,
 				       struct sdw_stream_runtime *stream)
+{
+	WARN_ONCE(1, "SoundWire API is disabled");
+	return -EINVAL;
+}
+
+static inline int sdw_stream_add_slave_with_transport(struct sdw_slave *slave,
+						      struct sdw_stream_config *stream_config,
+						      const struct sdw_port_config *port_config,
+						      const struct sdw_slave_port_transport *transport,
+						      unsigned int num_ports,
+						      struct sdw_stream_runtime *stream)
 {
 	WARN_ONCE(1, "SoundWire API is disabled");
 	return -EINVAL;
