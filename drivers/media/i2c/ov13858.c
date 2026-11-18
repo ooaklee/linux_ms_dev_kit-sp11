@@ -3,9 +3,12 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
@@ -1028,9 +1031,28 @@ static const struct ov13858_mode supported_modes[] = {
 	}
 };
 
+static const char * const ov13858_supply_names[] = {
+	"dovdd",
+	"avdd",
+	"dvdd",
+};
+
 struct ov13858 {
 	struct device *dev;
 	struct clk *clk;
+	struct regulator_bulk_data supplies[ARRAY_SIZE(ov13858_supply_names)];
+	struct gpio_desc *reset_gpio;
+	bool managed_power;
+	bool power_fault;
+	/*
+	 * Physical resource ownership, tracked per consumer across partial
+	 * failures: bit N set = rail N still physically enabled / clock on.
+	 */
+	unsigned long rails_on;
+	bool xclk_on;
+	unsigned long link_freq_bitmap;
+	struct ov13858_mode modes[ARRAY_SIZE(supported_modes)];
+	unsigned int num_modes;
 
 	struct v4l2_subdev sd;
 	struct media_pad pad;
@@ -1062,6 +1084,9 @@ static int ov13858_read_reg(struct ov13858 *ov13858, u16 reg, u32 len,
 	int ret;
 	__be32 data_be = 0;
 	__be16 reg_addr_be = cpu_to_be16(reg);
+
+	if (READ_ONCE(ov13858->power_fault))
+		return -EIO;
 
 	if (len > 4)
 		return -EINVAL;
@@ -1096,6 +1121,9 @@ static int ov13858_write_reg(struct ov13858 *ov13858, u16 reg, u32 len,
 	int buf_i, val_i;
 	u8 buf[6], *val_p;
 	__be32 val;
+
+	if (READ_ONCE(ov13858->power_fault))
+		return -EIO;
 
 	if (len > 4)
 		return -EINVAL;
@@ -1146,23 +1174,18 @@ static int ov13858_write_reg_list(struct ov13858 *ov13858,
 	return ov13858_write_regs(ov13858, r_list->regs, r_list->num_of_regs);
 }
 
-/* Open sub-device */
-static int ov13858_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+/* Initialize pad format */
+static int ov13858_init_state(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *sd_state)
 {
 	struct ov13858 *ov13858 = to_ov13858(sd);
-	struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_state_get_format(fh->state,
-									  0);
+	struct v4l2_mbus_framefmt *format =
+		v4l2_subdev_state_get_format(sd_state, 0);
 
-	mutex_lock(&ov13858->mutex);
-
-	/* Initialize try_fmt */
-	try_fmt->width = ov13858->cur_mode->width;
-	try_fmt->height = ov13858->cur_mode->height;
-	try_fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
-	try_fmt->field = V4L2_FIELD_NONE;
-
-	/* No crop or compose */
-	mutex_unlock(&ov13858->mutex);
+	format->width = ov13858->cur_mode->width;
+	format->height = ov13858->cur_mode->height;
+	format->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	format->field = V4L2_FIELD_NONE;
 
 	return 0;
 }
@@ -1290,15 +1313,17 @@ static int ov13858_enum_frame_size(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(supported_modes))
+	struct ov13858 *ov13858 = to_ov13858(sd);
+
+	if (fse->index >= ov13858->num_modes)
 		return -EINVAL;
 
 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
 		return -EINVAL;
 
-	fse->min_width = supported_modes[fse->index].width;
+	fse->min_width = ov13858->modes[fse->index].width;
 	fse->max_width = fse->min_width;
-	fse->min_height = supported_modes[fse->index].height;
+	fse->min_height = ov13858->modes[fse->index].height;
 	fse->max_height = fse->min_height;
 
 	return 0;
@@ -1336,9 +1361,8 @@ static int ov13858_get_pad_format(struct v4l2_subdev *sd,
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 	ret = ov13858_do_get_pad_format(ov13858, sd_state, fmt);
-	mutex_unlock(&ov13858->mutex);
 
 	return ret;
 }
@@ -1357,14 +1381,13 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 	s64 pixel_rate;
 	s64 link_freq;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
 	/* Only one raw bayer(GRBG) order is supported */
 	if (fmt->format.code != MEDIA_BUS_FMT_SGRBG10_1X10)
 		fmt->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
 
-	mode = v4l2_find_nearest_size(supported_modes,
-				      ARRAY_SIZE(supported_modes),
+	mode = v4l2_find_nearest_size(ov13858->modes, ov13858->num_modes,
 				      width, height,
 				      fmt->format.width, fmt->format.height);
 	ov13858_update_pad_format(mode, fmt);
@@ -1394,8 +1417,6 @@ ov13858_set_pad_format(struct v4l2_subdev *sd,
 		__v4l2_ctrl_modify_range(ov13858->hblank, h_blank,
 					 h_blank, 1, h_blank);
 	}
-
-	mutex_unlock(&ov13858->mutex);
 
 	return 0;
 }
@@ -1456,40 +1477,80 @@ static int ov13858_stop_streaming(struct ov13858 *ov13858)
 				 OV13858_REG_VALUE_08BIT, OV13858_MODE_STANDBY);
 }
 
-static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
+static int ov13858_enable_streams(struct v4l2_subdev *sd,
+				  struct v4l2_subdev_state *state, u32 pad,
+				  u64 streams_mask)
 {
 	struct ov13858 *ov13858 = to_ov13858(sd);
-	int ret = 0;
+	int ret;
 
-	mutex_lock(&ov13858->mutex);
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
 
-	if (enable) {
-		ret = pm_runtime_resume_and_get(ov13858->dev);
-		if (ret < 0)
-			goto err_unlock;
-
-		/*
-		 * Apply default & customized values
-		 * and then start streaming.
-		 */
-		ret = ov13858_start_streaming(ov13858);
-		if (ret)
-			goto err_rpm_put;
-	} else {
-		ov13858_stop_streaming(ov13858);
-		pm_runtime_put(ov13858->dev);
+	if (READ_ONCE(ov13858->power_fault)) {
+		ret = -EIO;
+		goto err_unlock;
 	}
 
-	mutex_unlock(&ov13858->mutex);
+	ret = pm_runtime_resume_and_get(ov13858->dev);
+	if (ret < 0)
+		goto err_unlock;
 
-	return ret;
+	/*
+	 * Apply default & customized values
+	 * and then start streaming.
+	 */
+	ret = ov13858_start_streaming(ov13858);
+	if (ret)
+		goto err_rollback;
 
-err_rpm_put:
+	return 0;
+
+err_rollback:
+	/*
+	 * The final streaming write may have reached the sensor before
+	 * the failure (start_streaming reports its own last error only):
+	 * establish standby so the sensor is not left streaming when
+	 * the PM reference drops. A rollback failure is logged; the
+	 * sensor stays powered until runtime PM suspends it either way.
+	 */
+	{
+		int stop_ret = ov13858_stop_streaming(ov13858);
+
+		if (stop_ret)
+			dev_warn(ov13858->dev,
+				 "failed start rollback to standby: %d (start err %d)\n",
+				 stop_ret, ret);
+	}
+
 	pm_runtime_put(ov13858->dev);
 err_unlock:
-	mutex_unlock(&ov13858->mutex);
-
 	return ret;
+}
+
+static int ov13858_disable_streams(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_state *state, u32 pad,
+				   u64 streams_mask)
+{
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret;
+
+	/* The caller holds sd->state_lock, which is ov13858->mutex. */
+
+	ret = ov13858_stop_streaming(ov13858);
+	if (ret) {
+		/*
+		 * The standby write failed: the sensor may still be
+		 * streaming. Keep the PM reference so the sensor is
+		 * not powered down mid-stream, and report the failure
+		 * so the framework retains the enabled state and can
+		 * retry the stop (V4L2_SUBDEV_FL_STOP_RETRY).
+		 */
+		return ret;
+	}
+
+	pm_runtime_put(ov13858->dev);
+
+	return 0;
 }
 
 /* Verify chip ID */
@@ -1519,7 +1580,7 @@ static const struct v4l2_subdev_core_ops ov13858_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops ov13858_video_ops = {
-	.s_stream = ov13858_set_stream,
+	.s_stream = v4l2_subdev_s_stream_helper,
 };
 
 static const struct v4l2_subdev_pad_ops ov13858_pad_ops = {
@@ -1527,6 +1588,8 @@ static const struct v4l2_subdev_pad_ops ov13858_pad_ops = {
 	.get_fmt = ov13858_get_pad_format,
 	.set_fmt = ov13858_set_pad_format,
 	.enum_frame_size = ov13858_enum_frame_size,
+	.enable_streams = ov13858_enable_streams,
+	.disable_streams = ov13858_disable_streams,
 };
 
 static const struct v4l2_subdev_sensor_ops ov13858_sensor_ops = {
@@ -1545,7 +1608,7 @@ static const struct media_entity_operations ov13858_subdev_entity_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops ov13858_internal_ops = {
-	.open = ov13858_open,
+	.init_state = ov13858_init_state,
 };
 
 /* Initialize control handlers */
@@ -1559,6 +1622,7 @@ static int ov13858_init_controls(struct ov13858 *ov13858)
 	s64 hblank;
 	s64 pixel_rate_min;
 	s64 pixel_rate_max;
+	s64 link_freq;
 	const struct ov13858_mode *mode;
 	int ret;
 
@@ -1572,14 +1636,20 @@ static int ov13858_init_controls(struct ov13858 *ov13858)
 	ov13858->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr,
 				&ov13858_ctrl_ops,
 				V4L2_CID_LINK_FREQ,
-				OV13858_NUM_OF_LINK_FREQS - 1,
-				0,
+				__fls(ov13858->link_freq_bitmap),
+				ov13858->cur_mode->link_freq_index,
 				link_freq_menu_items);
-	if (ov13858->link_freq)
+	if (ov13858->link_freq) {
 		ov13858->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+		ov13858->link_freq->menu_skip_mask =
+			~ov13858->link_freq_bitmap &
+			GENMASK(OV13858_NUM_OF_LINK_FREQS - 1, 0);
+	}
 
-	pixel_rate_max = link_freq_to_pixel_rate(link_freq_menu_items[0]);
-	pixel_rate_min = link_freq_to_pixel_rate(link_freq_menu_items[1]);
+	link_freq = link_freq_menu_items[__ffs(ov13858->link_freq_bitmap)];
+	pixel_rate_max = link_freq_to_pixel_rate(link_freq);
+	link_freq = link_freq_menu_items[__fls(ov13858->link_freq_bitmap)];
+	pixel_rate_min = link_freq_to_pixel_rate(link_freq);
 	/* By default, PIXEL_RATE is read only */
 	ov13858->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &ov13858_ctrl_ops,
 						V4L2_CID_PIXEL_RATE,
@@ -1655,6 +1725,217 @@ static void ov13858_free_controls(struct ov13858 *ov13858)
 	mutex_destroy(&ov13858->mutex);
 }
 
+static int ov13858_get_dt_resources(struct ov13858 *ov13858)
+{
+	struct v4l2_fwnode_endpoint ep = {
+		.bus_type = V4L2_MBUS_CSI2_DPHY,
+	};
+	struct device *dev = ov13858->dev;
+	struct fwnode_handle *endpoint;
+	u32 lanes[4];
+	u32 clock_lane = 0;
+	int ret;
+
+	/* Existing ACPI systems leave power sequencing to their PM domain. */
+	if (!dev->of_node)
+		return 0;
+
+	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
+	if (!endpoint)
+		return dev_err_probe(dev, -EINVAL, "missing CSI-2 endpoint\n");
+
+	if (fwnode_property_count_u32(endpoint, "data-lanes") != ARRAY_SIZE(lanes)) {
+		ret = -EINVAL;
+		goto put_endpoint;
+	}
+	ret = fwnode_property_read_u32_array(endpoint, "data-lanes", lanes,
+					     ARRAY_SIZE(lanes));
+	if (ret)
+		goto put_endpoint;
+	if (fwnode_property_present(endpoint, "clock-lanes")) {
+		ret = fwnode_property_read_u32(endpoint, "clock-lanes", &clock_lane);
+		if (ret)
+			goto put_endpoint;
+	}
+
+	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &ep);
+
+put_endpoint:
+	fwnode_handle_put(endpoint);
+	if (ret) {
+		dev_err_probe(dev, ret, "invalid CSI-2 endpoint\n");
+		goto free_endpoint;
+	}
+
+	if (ep.bus_type != V4L2_MBUS_CSI2_DPHY ||
+	    ep.bus.mipi_csi2.num_data_lanes != 4) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "four CSI-2 D-PHY data lanes are required\n");
+		goto free_endpoint;
+	}
+
+	if (clock_lane || ep.bus.mipi_csi2.lane_polarities[0] ||
+	    ep.bus.mipi_csi2.flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK) {
+		ret = dev_err_probe(dev, -EINVAL,
+				    "unsupported CSI-2 clock configuration\n");
+		goto free_endpoint;
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(lanes); i++) {
+		if (lanes[i] != i + 1 || ep.bus.mipi_csi2.lane_polarities[i + 1]) {
+			ret = dev_err_probe(dev, -EINVAL,
+					    "unsupported CSI-2 data lane mapping\n");
+			goto free_endpoint;
+		}
+	}
+
+	ret = v4l2_link_freq_to_bitmap(dev, ep.link_frequencies,
+				       ep.nr_of_link_frequencies,
+				       link_freq_menu_items,
+				       ARRAY_SIZE(link_freq_menu_items),
+				       &ov13858->link_freq_bitmap);
+	if (ret)
+		goto free_endpoint;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(ov13858_supply_names); i++)
+		ov13858->supplies[i].supply = ov13858_supply_names[i];
+
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ov13858_supply_names),
+				      ov13858->supplies);
+	if (ret) {
+		dev_err_probe(dev, ret, "failed to get supplies\n");
+		goto free_endpoint;
+	}
+
+	ov13858->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+						      GPIOD_OUT_HIGH);
+	if (IS_ERR(ov13858->reset_gpio)) {
+		ret = dev_err_probe(dev, PTR_ERR(ov13858->reset_gpio),
+				    "failed to get reset GPIO\n");
+		goto free_endpoint;
+	}
+
+	ov13858->managed_power = true;
+
+free_endpoint:
+	v4l2_fwnode_endpoint_free(&ep);
+	return ret;
+}
+
+/*
+ * Release every rail still recorded as owned, one regulator at a time,
+ * so a partial earlier failure cannot produce unbalanced disables on
+ * already-released consumers. The per-rail bit is cleared as each
+ * disable succeeds; the first failure latches power_fault and leaves
+ * the remaining bits set for a later attempt (remove) to retry.
+ *
+ * Accounting limit: the regulator core drops the consumer use count
+ * before voltage balancing or upstream-supply disable can fail, and
+ * its bulk-enable rollback ignores rollback-disable errors, so a bit
+ * can over- or under-report physical state at the margins. The bitmap
+ * is the driver's best knowledge, not a regulator-core guarantee.
+ */
+static int ov13858_release_rails(struct ov13858 *ov13858)
+{
+	unsigned int n = ARRAY_SIZE(ov13858_supply_names);
+	int i, ret = 0;
+
+	for_each_set_bit(i, &ov13858->rails_on, n) {
+		ret = regulator_disable(ov13858->supplies[i].consumer);
+		if (ret) {
+			dev_err(ov13858->dev,
+				"regulator %s disable failed: %d\n",
+				ov13858->supplies[i].supply, ret);
+			return ret;
+		}
+		clear_bit(i, &ov13858->rails_on);
+	}
+
+	return ret;
+}
+
+static int ov13858_power_on(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret;
+
+	if (!ov13858->managed_power)
+		return 0;
+	if (READ_ONCE(ov13858->power_fault))
+		return -EIO;
+
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	ret = regulator_bulk_enable(ARRAY_SIZE(ov13858_supply_names),
+				    ov13858->supplies);
+	if (ret) {
+		/*
+		 * regulator_bulk_enable() already unwinds its own
+		 * successful enables; the bulk-disable cleanup previously
+		 * here produced unbalanced disables and is removed.
+		 */
+
+		WRITE_ONCE(ov13858->power_fault, true);
+		dev_err(dev, "supply enable failed; power state unknown: %d\n", ret);
+		return -EIO;
+	}
+	ov13858->rails_on = GENMASK(ARRAY_SIZE(ov13858_supply_names) - 1, 0);
+
+	ret = clk_prepare_enable(ov13858->clk);
+	if (ret) {
+		dev_err(dev, "failed to enable clock: %d\n", ret);
+		/* Per-rail unwind; a failure latches and keeps the bits set. */
+		if (ov13858_release_rails(ov13858)) {
+			WRITE_ONCE(ov13858->power_fault, true);
+			return -EIO;
+		}
+		return ret;
+	}
+	ov13858->xclk_on = true;
+
+	fsleep(1000);
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 0);
+	/* Allow reset recovery before the first SCCB transaction. */
+	fsleep(5000);
+
+	return 0;
+}
+
+static int ov13858_power_off(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret;
+
+	if (!ov13858->managed_power)
+		return 0;
+
+	/*
+	 * Ownership-gated and idempotent: a faulted device still gets its
+	 * remaining owned resources released (never double-released), then
+	 * reports failure. The fault latch itself is only cleared by
+	 * unbind/rebind.
+	 */
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	if (ov13858->xclk_on) {
+		clk_disable_unprepare(ov13858->clk);
+		ov13858->xclk_on = false;
+	}
+	ret = ov13858_release_rails(ov13858);
+	if (ret) {
+		WRITE_ONCE(ov13858->power_fault, true);
+		dev_err(dev, "supply disable failed; power state unknown: %d\n", ret);
+		return -EIO;
+	}
+
+	if (READ_ONCE(ov13858->power_fault))
+		return -EIO;
+
+	return 0;
+}
+
+static DEFINE_RUNTIME_DEV_PM_OPS(ov13858_pm_ops, ov13858_power_off,
+				ov13858_power_on, NULL);
+
 static int ov13858_probe(struct i2c_client *client)
 {
 	struct ov13858 *ov13858;
@@ -1666,6 +1947,8 @@ static int ov13858_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ov13858->dev = &client->dev;
+	ov13858->link_freq_bitmap =
+		GENMASK(OV13858_NUM_OF_LINK_FREQS - 1, 0);
 
 	ov13858->clk = devm_v4l2_sensor_clk_get(ov13858->dev, NULL);
 	if (IS_ERR(ov13858->clk))
@@ -1678,29 +1961,45 @@ static int ov13858_probe(struct i2c_client *client)
 				     "external clock %lu is not supported\n",
 				     freq);
 
+	ret = ov13858_get_dt_resources(ov13858);
+	if (ret)
+		return ret;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		if (ov13858->link_freq_bitmap & BIT(supported_modes[i].link_freq_index))
+			ov13858->modes[ov13858->num_modes++] = supported_modes[i];
+	}
+
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov13858->sd, client, &ov13858_subdev_ops);
+
+	ret = ov13858_power_on(ov13858->dev);
+	if (ret)
+		return dev_err_probe(ov13858->dev, ret,
+				     "failed to power on sensor\n");
 
 	/* Check module identity */
 	ret = ov13858_identify_module(ov13858);
 	if (ret) {
 		dev_err(ov13858->dev, "failed to find sensor: %d\n", ret);
-		return ret;
+		goto error_power_off;
 	}
 
-	/* Set default mode to max resolution */
-	ov13858->cur_mode = &supported_modes[0];
+	/* The first enabled mode has the highest available resolution. */
+	ov13858->cur_mode = &ov13858->modes[0];
 
 	ret = ov13858_init_controls(ov13858);
 	if (ret)
-		return ret;
+		goto error_power_off;
 
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
 	ov13858->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
-			     V4L2_SUBDEV_FL_HAS_EVENTS;
+			     V4L2_SUBDEV_FL_HAS_EVENTS |
+			     V4L2_SUBDEV_FL_STOP_RETRY;
 	ov13858->sd.entity.ops = &ov13858_subdev_entity_ops;
 	ov13858->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+	ov13858->sd.state_lock = &ov13858->mutex;
 
 	/* Initialize source pad */
 	ov13858->pad.flags = MEDIA_PAD_FL_SOURCE;
@@ -1710,19 +2009,38 @@ static int ov13858_probe(struct i2c_client *client)
 		goto error_handler_free;
 	}
 
-	ret = v4l2_async_register_subdev_sensor(&ov13858->sd);
-	if (ret < 0)
+	ret = v4l2_subdev_init_finalize(&ov13858->sd);
+	if (ret < 0) {
+		dev_err(ov13858->dev, "subdev initialization failed: %d\n",
+			ret);
 		goto error_media_entity;
+	}
 
 	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
-	 * Enable runtime PM and turn off the device.
+	 * The driver powers DT devices; i2c-core powers ACPI devices. Hold the
+	 * initial reference until async registration has finished, since binding
+	 * a bridge can expose sub-device operations immediately.
 	 */
-	pm_runtime_set_active(ov13858->dev);
+	ret = pm_runtime_set_active(ov13858->dev);
+	if (ret)
+		goto error_subdev_cleanup;
+	pm_runtime_get_noresume(ov13858->dev);
 	pm_runtime_enable(ov13858->dev);
-	pm_runtime_idle(ov13858->dev);
+
+	ret = v4l2_async_register_subdev_sensor(&ov13858->sd);
+	if (ret < 0)
+		goto error_runtime_pm;
+
+	pm_runtime_put(ov13858->dev);
 
 	return 0;
+
+error_runtime_pm:
+	pm_runtime_disable(ov13858->dev);
+	pm_runtime_put_noidle(ov13858->dev);
+
+error_subdev_cleanup:
+	v4l2_subdev_cleanup(&ov13858->sd);
 
 error_media_entity:
 	media_entity_cleanup(&ov13858->sd.entity);
@@ -1731,6 +2049,12 @@ error_handler_free:
 	ov13858_free_controls(ov13858);
 	dev_err(ov13858->dev, "%s failed:%d\n", __func__, ret);
 
+error_power_off:
+	if (ov13858_power_off(ov13858->dev))
+		dev_warn(ov13858->dev, "failed to power off sensor\n");
+	else
+		pm_runtime_set_suspended(ov13858->dev);
+
 	return ret;
 }
 
@@ -1738,12 +2062,32 @@ static void ov13858_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov13858 *ov13858 = to_ov13858(sd);
+	int ret = 0;
 
 	v4l2_async_unregister_subdev(sd);
+	v4l2_subdev_cleanup(sd);
 	media_entity_cleanup(&sd->entity);
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
+	if (!pm_runtime_status_suspended(ov13858->dev) ||
+	    ov13858->rails_on || ov13858->xclk_on) {
+		/*
+		 * A live or failed-stop stream holds a runtime PM usage
+		 * reference (retained failed stops never issue their PM
+		 * put). The device is going away: drop one reference
+		 * for the stream this remove tears down so it is not
+		 * inherited across unbind/rebind, then power off.
+		 * Reflect suspended state only when power off
+		 * actually succeeded.
+		 */
+		pm_runtime_put_noidle(ov13858->dev);
+		ret = ov13858_power_off(ov13858->dev);
+		if (ret)
+			dev_warn(ov13858->dev, "failed to power off sensor: %d\n", ret);
+		else
+			pm_runtime_set_suspended(ov13858->dev);
+	}
 }
 
 static const struct i2c_device_id ov13858_id_table[] = {
@@ -1762,10 +2106,18 @@ static const struct acpi_device_id ov13858_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, ov13858_acpi_ids);
 #endif
 
+static const struct of_device_id ov13858_of_match[] = {
+	{ .compatible = "ovti,ov13858" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ov13858_of_match);
+
 static struct i2c_driver ov13858_i2c_driver = {
 	.driver = {
 		.name = "ov13858",
 		.acpi_match_table = ACPI_PTR(ov13858_acpi_ids),
+		.of_match_table = ov13858_of_match,
+		.pm = pm_ptr(&ov13858_pm_ops),
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,

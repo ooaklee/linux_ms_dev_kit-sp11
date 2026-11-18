@@ -105,6 +105,7 @@
 #define		CSI2_RX_CFG0_PHY_TYPE_SEL			24
 #define		CSI2_RX_CFG0_TPG_MUX_EN				BIT(27)
 #define		CSI2_RX_CFG0_TPG_MUX_SEL			GENMASK(29, 28)
+#define		CSI2_RX_CFG0_TPG_NUM_SEL			BIT(28)
 
 #define CSID_CSI2_RX_CFG1					0x204
 #define		CSI2_RX_CFG1_PACKET_ECC_CORRECTION_EN		BIT(0)
@@ -160,6 +161,7 @@
 #define CSID_RDI_FRM_DROP_PERIOD(rdi)				(0x544 + 0x100 * (rdi))
 #define CSID_RDI_IRQ_SUBSAMPLE_PATTERN(rdi)			(0x548 + 0x100 * (rdi))
 #define CSID_RDI_IRQ_SUBSAMPLE_PERIOD(rdi)			(0x54c + 0x100 * (rdi))
+#define CSID_RDI_RPP_HCROP(rdi)					(0x550 + 0x100 * (rdi))
 #define CSID_RDI_PIX_DROP_PATTERN(rdi)				(0x558 + 0x100 * (rdi))
 #define CSID_RDI_PIX_DROP_PERIOD(rdi)				(0x55c + 0x100 * (rdi))
 #define CSID_RDI_LINE_DROP_PATTERN(rdi)				(0x560 + 0x100 * (rdi))
@@ -190,8 +192,13 @@ static void __csid_configure_rx(struct csid_device *csid,
 	struct camss *camss;
 
 	camss = csid->camss;
-	val = (phy->lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
-	val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
+	if (csid_is_denali_cphy(csid)) {
+		/* Zero active lanes and input zero encode the supported trio 0. */
+		val = BIT(CSI2_RX_CFG0_PHY_TYPE_SEL);
+	} else {
+		val = (phy->lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
+		val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
+	}
 
 	if (camss->tpg && csid->tpg_linked &&
 	    camss->tpg[phy->csiphy_id].testgen.mode != TPG_PAYLOAD_MODE_DISABLED) {
@@ -200,6 +207,8 @@ static void __csid_configure_rx(struct csid_device *csid,
 	} else {
 		val |= (phy->csiphy_id + CSI2_RX_CFG0_PHY_SEL_BASE_IDX)
 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
+		if (csid_is_denali_cphy(csid))
+			val |= CSI2_RX_CFG0_TPG_NUM_SEL;
 	}
 
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);
@@ -234,9 +243,12 @@ static void __csid_configure_top(struct csid_device *csid)
 static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 port, u8 vc)
 {
 	struct v4l2_mbus_framefmt *input_format = &csid->fmt[MSM_CSID_PAD_FIRST_SRC + port];
+	struct v4l2_mbus_framefmt *sink_format = &csid->fmt[MSM_CSID_PAD_SINK];
 	const struct csid_format_info *format = csid_get_fmt_entry(csid->res->formats->formats,
 								   csid->res->formats->nformats,
 								   input_format->code);
+	bool sp11_imx681 = csid_is_sp11_imx681_format(csid, sink_format);
+	bool crop = csid_is_cphy_raw10_3844(csid, sink_format);
 	u8 lane_cnt = csid->phy.lane_cnt;
 	u8 dt_id;
 	u32 val;
@@ -244,8 +256,9 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	if (!lane_cnt)
 		lane_cnt = 4;
 
-	val = 0;
-	writel(val, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
+	/* Preserve the existing reset-value path outside the qualified route. */
+	if (!sp11_imx681)
+		writel(0, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
 
 	/*
 	 * DT_ID is a two bit bitfield that is concatenated with
@@ -260,9 +273,13 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	 * CID   : VC 3:0 << 2 | DT_ID 1:0
 	 */
 	dt_id = port & 0x03;
+	val = 0;
 
-	/* note: for non-RDI path, this should be format->decode_format */
-	val |= DECODE_FORMAT_PAYLOAD_ONLY << RDI_CFG0_DECODE_FORMAT;
+	/* Decoding is required for the explicitly selected receiver crop. */
+	if (crop)
+		val |= format->decode_format << RDI_CFG0_DECODE_FORMAT;
+	else
+		val |= DECODE_FORMAT_PAYLOAD_ONLY << RDI_CFG0_DECODE_FORMAT;
 	val |= format->data_type << RDI_CFG0_DATA_TYPE;
 	val |= vc << RDI_CFG0_VIRTUAL_CHANNEL;
 	val |= dt_id << RDI_CFG0_DT_ID;
@@ -271,13 +288,30 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val = RDI_CFG1_TIMESTAMP_STB_FRAME;
 	val |= RDI_CFG1_BYTE_CNTR_EN;
 	val |= RDI_CFG1_TIMESTAMP_EN;
-	val |= RDI_CFG1_DROP_H_EN;
-	val |= RDI_CFG1_DROP_V_EN;
-	val |= RDI_CFG1_CROP_H_EN;
-	val |= RDI_CFG1_CROP_V_EN;
+	if (!sp11_imx681) {
+		val |= RDI_CFG1_DROP_H_EN;
+		val |= RDI_CFG1_DROP_V_EN;
+		val |= RDI_CFG1_CROP_H_EN;
+		val |= RDI_CFG1_CROP_V_EN;
+	}
 	val |= RDI_CFG1_PACKING_MIPI;
+	if (crop) {
+		/* C-PHY RAW10 3844 is the IMX681 route: crop to 4800-byte rows. */
+		writel(3839 << 16, csid->base + CSID_RDI_RPP_HCROP(port));
+		val |= RDI_CFG1_CROP_H_EN;
+	}
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
+
+	if (sp11_imx681) {
+		/* Program an explicit keep-all state for every drop engine. */
+		writel(1, csid->base + CSID_RDI_FRM_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_FRM_DROP_PATTERN(port));
+		writel(1, csid->base + CSID_RDI_PIX_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_PIX_DROP_PATTERN(port));
+		writel(1, csid->base + CSID_RDI_LINE_DROP_PERIOD(port));
+		writel(0, csid->base + CSID_RDI_LINE_DROP_PATTERN(port));
+	}
 
 	val = 0;
 	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port));
@@ -294,6 +328,44 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	else
 		val &= ~RDI_CFG0_ENABLE;
 	writel(val, csid->base + CSID_RDI_CFG0(port));
+}
+
+static void csid_log_status(struct csid_device *csid)
+{
+	struct v4l2_mbus_framefmt *sink_format =
+		&csid->fmt[MSM_CSID_PAD_SINK];
+	int i;
+
+	if (csid->camss->res->version != CAMSS_X1E80100 ||
+	    !csid_is_sp11_imx681_format(csid, sink_format))
+		return;
+
+	dev_dbg(csid->camss->dev,
+		"CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
+		csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
+		readl(csid->base + CSID_CSI2_RX_CFG1),
+		readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
+		readl(csid->base + CSID_CSI2_RX_STATS_ECC),
+		readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
+	dev_dbg(csid->camss->dev,
+		"CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
+		csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
+		readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
+		readl(csid->base + CSID_CSI2_RX_IRQ_STATUS));
+
+	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
+		if (!(csid->phy.en_vc & BIT(i)))
+			continue;
+
+		dev_dbg(csid->camss->dev,
+			"CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
+			csid->id, i,
+			readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
+			readl(csid->base + CSID_RDI_CFG0(i)),
+			readl(csid->base + CSID_RDI_CTRL(i)),
+			readl(csid->base + CSID_RDI_CFG1(i)),
+			readl(csid->base + CSID_RDI_RPP_HCROP(i)));
+	}
 }
 
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
@@ -425,6 +497,7 @@ static void csid_subdev_init(struct csid_device *csid) {}
 const struct csid_hw_ops csid_ops_680 = {
 	.configure_testgen_pattern = NULL,
 	.configure_stream = csid_configure_stream,
+	.log_status = csid_log_status,
 	.hw_version = csid_hw_version,
 	.isr = csid_isr,
 	.reset = csid_reset,

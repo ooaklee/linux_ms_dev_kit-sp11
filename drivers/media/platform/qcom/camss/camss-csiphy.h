@@ -12,6 +12,7 @@
 
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/mutex.h>
 #include <linux/phy/phy.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
@@ -42,6 +43,7 @@ struct csiphy_lanes_cfg {
 };
 
 struct csiphy_csi2_cfg {
+	enum v4l2_mbus_type bus_type;
 	struct csiphy_lanes_cfg lane_cfg;
 };
 
@@ -99,6 +101,18 @@ struct csiphy_device_regs {
 struct csiphy_device {
 	struct camss *camss;
 	struct phy *phy;
+	/* Only the selected Denali private C-PHY slot uses this state. */
+	bool denali_cphy;
+	/* Serializes private PHY lifecycle and subdev callback state. */
+	struct mutex denali_phy_lock;
+	bool denali_phy_initialized;
+	bool denali_phy_action_pending;
+	bool denali_phy_stopping;
+	bool denali_phy_registered;
+	/* Logical stream users share one owned PHY power reference. */
+	bool denali_phy_powered;
+	unsigned int denali_phy_stream_users;
+	int denali_phy_stop_error;
 	u8 id;
 	struct v4l2_subdev subdev;
 	struct media_pad pads[MSM_CSIPHY_PADS_NUM];
@@ -128,6 +142,14 @@ int msm_csiphy_subdev_init_legacy(struct camss *camss,
 int msm_csiphy_subdev_init(struct camss *camss,
 			   struct csiphy_device *csiphy,
 			   const struct camss_subdev_resources *res, u8 id);
+
+int msm_csiphy_subdev_init_denali(struct camss *camss,
+				  struct csiphy_device *csiphy,
+				  const struct camss_subdev_resources *res,
+				  unsigned int slot);
+void msm_csiphy_subdev_cleanup_denali(struct csiphy_device *csiphy);
+bool msm_csiphy_denali_is_initialized(struct csiphy_device *csiphy);
+bool msm_csiphy_denali_is_registered(struct csiphy_device *csiphy);
 
 int msm_csiphy_register_entity(struct csiphy_device *csiphy,
 			       struct v4l2_device *v4l2_dev);
