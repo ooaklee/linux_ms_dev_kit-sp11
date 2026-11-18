@@ -29,18 +29,7 @@ struct msm_dp {
 int msm_dp_display_get_modes(struct msm_dp *msm_dp_display);
 bool msm_dp_display_check_video_test(struct msm_dp *msm_dp_display);
 int msm_dp_display_get_test_bpp(struct msm_dp *msm_dp_display);
-void msm_dp_display_signal_audio_start(struct msm_dp *msm_dp_display);
-void msm_dp_display_signal_audio_complete(struct msm_dp *msm_dp_display);
 void msm_dp_display_set_psr(struct msm_dp *dp, bool enter);
 void msm_dp_display_debugfs_init(struct msm_dp *msm_dp_display, struct dentry *dentry, bool is_edp);
-void msm_dp_display_atomic_post_disable(struct msm_dp *dp_display);
-void msm_dp_display_atomic_disable(struct msm_dp *dp_display);
-void msm_dp_display_atomic_pre_enable(struct msm_dp *dp_display,
-				      struct drm_atomic_commit *state);
-void msm_dp_display_atomic_enable(struct msm_dp *dp_display,
-				  struct drm_atomic_commit *state);
-enum drm_mode_status msm_dp_display_mode_valid(struct msm_dp *dp,
-					       const struct drm_display_info *info,
-					       const struct drm_display_mode *mode);
 
 #endif /* _DP_DISPLAY_H_ */
