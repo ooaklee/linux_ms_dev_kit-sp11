@@ -74,6 +74,14 @@ endif
 
 abinum		:= $(firstword $(subst .,$(space),$(DEB_REVISION)))
 abi_release	:= $(DEB_VERSION_UPSTREAM)-$(abinum)
+ifeq ($(shell echo $(abinum) | grep -qE '^[0-9]+$$'; echo $$?),0)
+  pkg_abi	:= $(abinum)
+else
+  # Fork ABI suffixes are alphanumeric (1sp11v1); kernel code such as
+  # hv_generate_guest_id() uses PKG_ABI as an integer, so export a
+  # numeric form and keep the alphanumeric value for package naming.
+  pkg_abi	:= $(shell echo $(abinum) | tr -cd 0-9)
+endif
 
 uploadnum	:= $(patsubst $(abinum).%,%,$(DEB_REVISION))
 ifneq ($(do_full_build),false)
@@ -226,7 +234,7 @@ kmake = make ARCH=$(build_arch) \
 	KERNELRELEASE=$(abi_release)-$* \
 	CONFIG_DEBUG_SECTION_MISMATCH=y \
 	KBUILD_BUILD_VERSION="$(uploadnum)" \
-	CFLAGS_MODULE="-DPKG_ABI=$(abinum)" \
+	CFLAGS_MODULE="-DPKG_ABI=$(pkg_abi)" \
 	PYTHON=$(PYTHON)
 ifneq ($(LOCAL_ENV_CC),)
 kmake += CC="$(LOCAL_ENV_CC)" DISTCC_HOSTS="$(LOCAL_ENV_DISTCC_HOSTS)"
