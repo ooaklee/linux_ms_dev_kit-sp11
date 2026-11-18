@@ -1,0 +1,24 @@
+name: GPI stale-event comparison
+
+on:
+  pull_request:
+    paths:
+      - drivers/dma/qcom/gpi.c
+      - .github/scripts/test-gpi-stale-events.py
+      - .github/workflows/gpi-stale-events.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test extracted driver functions and negative controls
+        env:
+          GPI_TEST_SANITIZERS: '1'
+        run: python3 .github/scripts/test-gpi-stale-events.py

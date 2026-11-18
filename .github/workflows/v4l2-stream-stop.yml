@@ -1,0 +1,24 @@
+name: V4L2 failed-stop ownership
+
+on:
+  pull_request:
+    paths:
+      - drivers/media/v4l2-core/v4l2-subdev.c
+      - include/media/v4l2-subdev.h
+      - .github/scripts/test-v4l2-stream-stop.py
+      - .github/scripts/v4l2-stream-stop-fixture.c
+      - .github/workflows/v4l2-stream-stop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check failed-stop ownership and compatibility
+        run: python3 .github/scripts/test-v4l2-stream-stop.py --sanitizers
