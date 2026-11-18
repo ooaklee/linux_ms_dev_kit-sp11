@@ -2297,7 +2297,8 @@ EXPORT_SYMBOL_GPL(qcom_scm_qseecom_app_send);
 
 /*
  * We do not yet support re-entrant calls via the qseecom interface. To prevent
- + any potential issues with this, only allow validated machines for now.
+ * any potential issues with this, only allow validated machines and platforms
+ * for now.
  */
 static const struct of_device_id qcom_scm_qseecom_allowlist[] __maybe_unused = {
 	{ .compatible = "acer,swift-sf14-11" },
@@ -2335,18 +2336,25 @@ static const struct of_device_id qcom_scm_qseecom_allowlist[] __maybe_unused = {
 	{ .compatible = "medion,sprchrgd14s1" },
 	{ .compatible = "microsoft,arcata", },
 	{ .compatible = "microsoft,surface-pro-12in", },
-	{ .compatible = "microsoft,blackrock" },
+	{ .compatible = "microsoft,blackrock", },
 	{ .compatible = "microsoft,denali", },
 	{ .compatible = "microsoft,romulus13", },
 	{ .compatible = "microsoft,romulus15", },
+	{ .compatible = "qcom,glymur" },
 	{ .compatible = "qcom,glymur-crd" },
+	{ .compatible = "qcom,hamoa" },
 	{ .compatible = "qcom,hamoa-iot-evk" },
+	{ .compatible = "qcom,mahua" },
 	{ .compatible = "qcom,mahua-crd" },
+	{ .compatible = "qcom,purwa" },
 	{ .compatible = "qcom,purwa-iot-evk" },
+	{ .compatible = "qcom,sc8180x" },
 	{ .compatible = "qcom,sc8180x-primus" },
 	{ .compatible = "qcom,x1e001de-devkit" },
+	{ .compatible = "qcom,x1e80100" },
 	{ .compatible = "qcom,x1e80100-crd" },
 	{ .compatible = "qcom,x1e80100-qcp" },
+	{ .compatible = "qcom,x1p42100" },
 	{ .compatible = "qcom,x1p42100-crd" },
 	{ }
 };

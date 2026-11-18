@@ -133,6 +133,7 @@ enum dpu_enc_rc_states {
  * @cur_master:		Pointer to the current master in this mode. Optimization
  *			Only valid after enable. Cleared as disable.
  * @cur_slave:		As above but for the slave encoder.
+ * @hw_mixer:		Handle to the layer mixers used for the display.
  * @hw_pp:		Handle to the pingpong blocks used for the display. No.
  *			pingpong blocks can be different than num_phys_encs.
  * @hw_cwb:		Handle to the CWB muxes used for concurrent writeback
@@ -182,6 +183,7 @@ struct dpu_encoder_virt {
 	struct dpu_encoder_phys *phys_encs[MAX_PHYS_ENCODERS_PER_VIRTUAL];
 	struct dpu_encoder_phys *cur_master;
 	struct dpu_encoder_phys *cur_slave;
+	struct dpu_hw_mixer *hw_mixer[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_pingpong *hw_pp[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_cwb *hw_cwb[MAX_CWB_PER_ENC];
 	struct dpu_hw_dsc *hw_dsc[MAX_CHANNELS_PER_ENC];
@@ -1156,11 +1158,12 @@ static void dpu_encoder_virt_atomic_mode_set(struct drm_encoder *drm_enc,
 	struct msm_drm_private *priv;
 	struct dpu_kms *dpu_kms;
 	struct dpu_global_state *global_state;
+	struct dpu_hw_blk *hw_lm[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_blk *hw_pp[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_blk *hw_ctl[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_blk *hw_dsc[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_blk *hw_cwb[MAX_CHANNELS_PER_ENC];
-	int num_ctl, num_pp, num_dsc, num_pp_per_intf;
+	int num_ctl, num_lm, num_pp, num_dsc, num_pp_per_intf;
 	int num_cwb = 0;
 	bool is_cwb_encoder;
 	unsigned int dsc_mask = 0;
@@ -1189,6 +1192,14 @@ static void dpu_encoder_virt_atomic_mode_set(struct drm_encoder *drm_enc,
 	trace_dpu_enc_mode_set(DRMID(drm_enc));
 
 	/* Query resource that have been reserved in atomic check step. */
+
+	num_lm = dpu_rm_get_assigned_resources(&dpu_kms->rm, global_state,
+		drm_enc->crtc, DPU_HW_BLK_LM, hw_lm, ARRAY_SIZE(hw_lm));
+
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_mixer); i++)
+		dpu_enc->hw_mixer[i] = i < num_lm ? to_dpu_hw_mixer(hw_lm[i])
+						: NULL;
+
 	if (is_cwb_encoder) {
 		num_pp = dpu_rm_get_assigned_resources(&dpu_kms->rm, global_state,
 						       drm_enc->crtc,
@@ -1205,9 +1216,13 @@ static void dpu_encoder_virt_atomic_mode_set(struct drm_encoder *drm_enc,
 						       ARRAY_SIZE(hw_pp));
 	}
 
-	for (i = 0; i < num_cwb; i++) {
-		dpu_enc->hw_cwb[i] = to_dpu_hw_cwb(hw_cwb[i]);
-		cwb_mask |= BIT(dpu_enc->hw_cwb[i]->idx - CWB_0);
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_cwb); i++) {
+		if (i < num_cwb) {
+			dpu_enc->hw_cwb[i] = to_dpu_hw_cwb(hw_cwb[i]);
+			cwb_mask |= BIT(dpu_enc->hw_cwb[i]->idx - CWB_0);
+		} else {
+			dpu_enc->hw_cwb[i] = NULL;
+		}
 	}
 
 	dpu_enc->cwb_mask = cwb_mask;
@@ -1215,16 +1230,20 @@ static void dpu_encoder_virt_atomic_mode_set(struct drm_encoder *drm_enc,
 	num_ctl = dpu_rm_get_assigned_resources(&dpu_kms->rm, global_state,
 		drm_enc->crtc, DPU_HW_BLK_CTL, hw_ctl, ARRAY_SIZE(hw_ctl));
 
-	for (i = 0; i < MAX_CHANNELS_PER_ENC; i++)
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_pp); i++)
 		dpu_enc->hw_pp[i] = i < num_pp ? to_dpu_hw_pingpong(hw_pp[i])
 						: NULL;
 
 	num_dsc = dpu_rm_get_assigned_resources(&dpu_kms->rm, global_state,
 						drm_enc->crtc, DPU_HW_BLK_DSC,
 						hw_dsc, ARRAY_SIZE(hw_dsc));
-	for (i = 0; i < num_dsc; i++) {
-		dpu_enc->hw_dsc[i] = to_dpu_hw_dsc(hw_dsc[i]);
-		dsc_mask |= BIT(dpu_enc->hw_dsc[i]->idx - DSC_0);
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_dsc); i++) {
+		if (i < num_dsc) {
+			dpu_enc->hw_dsc[i] = to_dpu_hw_dsc(hw_dsc[i]);
+			dsc_mask |= BIT(dpu_enc->hw_dsc[i]->idx - DSC_0);
+		} else {
+			dpu_enc->hw_dsc[i] = NULL;
+		}
 	}
 
 	dpu_enc->dsc_mask = dsc_mask;
@@ -1301,7 +1320,7 @@ static void _dpu_encoder_virt_enable_helper(struct drm_encoder *drm_enc)
 	if (dpu_enc->disp_info.intf_type == INTF_DSI &&
 			!WARN_ON(dpu_enc->num_phys_encs == 0)) {
 		unsigned bpc = dpu_enc->connector->display_info.bpc;
-		for (i = 0; i < MAX_CHANNELS_PER_ENC; i++) {
+		for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_pp); i++) {
 			if (!dpu_enc->hw_pp[i])
 				continue;
 			_dpu_encoder_setup_dither(dpu_enc->hw_pp[i], bpc);
@@ -2177,42 +2196,42 @@ void dpu_encoder_kickoff(struct drm_encoder *drm_enc)
 
 static void dpu_encoder_helper_reset_mixers(struct dpu_encoder_phys *phys_enc)
 {
-	int i, num_lm;
-	struct dpu_global_state *global_state;
-	struct dpu_hw_blk *hw_lm[2];
-	struct dpu_hw_mixer *hw_mixer[2];
+	int i;
 	struct dpu_hw_ctl *ctl = phys_enc->hw_ctl;
+	struct dpu_encoder_virt *dpu_enc = to_dpu_encoder_virt(phys_enc->parent);;
 
 	/* reset all mixers for this encoder */
 	if (ctl->ops.clear_all_blendstages)
 		ctl->ops.clear_all_blendstages(ctl);
 
-	global_state = dpu_kms_get_existing_global_state(phys_enc->dpu_kms);
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_mixer); i++) {
+		if (dpu_enc->hw_mixer[i]) {
+			if (ctl->ops.update_pending_flush_mixer)
+				ctl->ops.update_pending_flush_mixer(ctl, dpu_enc->hw_mixer[i]->idx);
 
-	num_lm = dpu_rm_get_assigned_resources(&phys_enc->dpu_kms->rm, global_state,
-		phys_enc->parent->crtc, DPU_HW_BLK_LM, hw_lm, ARRAY_SIZE(hw_lm));
+			/* clear all blendstages */
+			if (ctl->ops.setup_blendstage)
+				ctl->ops.setup_blendstage(ctl, dpu_enc->hw_mixer[i]->idx, NULL);
 
-	for (i = 0; i < num_lm; i++) {
-		hw_mixer[i] = to_dpu_hw_mixer(hw_lm[i]);
-		if (ctl->ops.update_pending_flush_mixer)
-			ctl->ops.update_pending_flush_mixer(ctl, hw_mixer[i]->idx);
+			if (dpu_enc->hw_mixer[i]->ops.clear_all_blendstages)
+				dpu_enc->hw_mixer[i]->ops.clear_all_blendstages(dpu_enc->hw_mixer[i]);
 
-		/* clear all blendstages */
-		if (ctl->ops.setup_blendstage)
-			ctl->ops.setup_blendstage(ctl, hw_mixer[i]->idx, NULL);
-
-		if (hw_mixer[i]->ops.clear_all_blendstages)
-			hw_mixer[i]->ops.clear_all_blendstages(hw_mixer[i]);
-
-		if (ctl->ops.set_active_lms)
-			ctl->ops.set_active_lms(ctl, NULL);
-
-		if (ctl->ops.set_active_fetch_pipes)
-			ctl->ops.set_active_fetch_pipes(ctl, NULL);
-
-		if (ctl->ops.set_active_pipes)
-			ctl->ops.set_active_pipes(ctl, NULL);
+			if (dpu_enc->hw_mixer[i]->ops.setup_blendstage)
+				dpu_enc->hw_mixer[i]->ops.setup_blendstage(dpu_enc->hw_mixer[i], dpu_enc->hw_mixer[i]->idx, NULL);
+		}
 	}
+
+	if (ctl->ops.clear_all_blendstages)
+		ctl->ops.clear_all_blendstages(ctl);
+
+	if (ctl->ops.set_active_lms)
+		ctl->ops.set_active_lms(ctl, NULL);
+
+	if (ctl->ops.set_active_fetch_pipes)
+		ctl->ops.set_active_fetch_pipes(ctl, NULL);
+
+	if (ctl->ops.set_active_pipes)
+		ctl->ops.set_active_pipes(ctl, NULL);
 }
 
 static void dpu_encoder_dsc_pipe_clr(struct dpu_hw_ctl *ctl,
@@ -2294,8 +2313,10 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 		}
 	}
 
-	if (phys_enc->hw_pp && phys_enc->hw_pp->ops.setup_dither)
-		phys_enc->hw_pp->ops.setup_dither(phys_enc->hw_pp, NULL);
+	if (dpu_enc->disp_info.intf_type == INTF_DSI)
+		for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_pp); i++)
+			if (dpu_enc->hw_pp[i] && dpu_enc->hw_pp[i]->ops.setup_dither)
+				dpu_enc->hw_pp[i]->ops.setup_dither(dpu_enc->hw_pp[i], NULL);
 
 	if (dpu_enc->cwb_mask)
 		dpu_encoder_helper_phys_setup_cwb(phys_enc, false);
@@ -2323,7 +2344,7 @@ void dpu_encoder_helper_phys_cleanup(struct dpu_encoder_phys *phys_enc)
 		dpu_enc->dsc = NULL;
 	}
 
-	intf_cfg.stream_sel = 0; /* Don't care value for video mode */
+	intf_cfg.stream_sel = 0; /* Ignored by reset_intf_cfg */
 	intf_cfg.mode_3d = dpu_encoder_helper_get_3d_blend_mode(phys_enc);
 	intf_cfg.dsc = dpu_encoder_helper_get_dsc(phys_enc);
 	intf_cfg.cwb = dpu_enc->cwb_mask;
@@ -2352,11 +2373,6 @@ void dpu_encoder_helper_phys_setup_cwb(struct dpu_encoder_phys *phys_enc,
 	struct dpu_hw_ctl *hw_ctl;
 	struct dpu_hw_cwb_setup_cfg cwb_cfg;
 
-	struct dpu_kms *dpu_kms;
-	struct dpu_global_state *global_state;
-	struct dpu_hw_blk *rt_pp_list[MAX_CHANNELS_PER_ENC];
-	int num_pp;
-
 	if (!phys_enc->hw_wb)
 		return;
 
@@ -2365,18 +2381,6 @@ void dpu_encoder_helper_phys_setup_cwb(struct dpu_encoder_phys *phys_enc,
 	if (!phys_enc->hw_ctl) {
 		DPU_DEBUG("[wb:%d] no ctl assigned\n",
 			  phys_enc->hw_wb->idx - WB_0);
-		return;
-	}
-
-	dpu_kms = phys_enc->dpu_kms;
-	global_state = dpu_kms_get_existing_global_state(dpu_kms);
-	num_pp = dpu_rm_get_assigned_resources(&dpu_kms->rm, global_state,
-					       phys_enc->parent->crtc,
-					       DPU_HW_BLK_PINGPONG, rt_pp_list,
-					       ARRAY_SIZE(rt_pp_list));
-
-	if (num_pp == 0 || num_pp > MAX_CHANNELS_PER_ENC) {
-		DPU_DEBUG_ENC(dpu_enc, "invalid num_pp %d\n", num_pp);
 		return;
 	}
 
@@ -2392,9 +2396,8 @@ void dpu_encoder_helper_phys_setup_cwb(struct dpu_encoder_phys *phys_enc,
 			continue;
 
 		if (enable) {
-			struct dpu_hw_pingpong *hw_pp =
-					to_dpu_hw_pingpong(rt_pp_list[i]);
-			cwb_cfg.pp_idx = hw_pp->idx;
+			cwb_cfg.pp_idx = i < ARRAY_SIZE(dpu_enc->hw_pp) && dpu_enc->hw_pp[i] ?
+					dpu_enc->hw_pp[i]->idx : PINGPONG_NONE;
 		} else {
 			cwb_cfg.pp_idx = PINGPONG_NONE;
 		}
@@ -2896,6 +2899,34 @@ enum dpu_intf_mode dpu_encoder_get_intf_mode(struct drm_encoder *encoder)
 		return dpu_enc->phys_encs[0]->intf_mode;
 
 	return INTF_MODE_NONE;
+}
+
+/**
+ * dpu_encoder_helper_get_3d_blend_mode - get 3D blend mode for the DPU encoder
+ * @phys_enc: Pointer to physical encoder structure
+ */
+enum dpu_3d_blend_mode dpu_encoder_helper_get_3d_blend_mode(
+		struct dpu_encoder_phys *phys_enc)
+{
+	struct dpu_encoder_virt *dpu_enc = to_dpu_encoder_virt(phys_enc->parent);
+	int i, num_mixers = 0;
+
+	if (!phys_enc || phys_enc->enable_state == DPU_ENC_DISABLING)
+		return BLEND_3D_NONE;
+
+	for (i = 0; i < ARRAY_SIZE(dpu_enc->hw_mixer); i++) {
+		if (!dpu_enc->hw_mixer[i])
+			break;
+		num_mixers++;
+	}
+
+	/* Use merge_3d unless DSC MERGE topology is used */
+	if (phys_enc->split_role == ENC_ROLE_SOLO &&
+	    num_mixers == CRTC_DUAL_MIXERS &&
+	    !dpu_encoder_use_dsc_merge(phys_enc->parent))
+		return BLEND_3D_H_ROW_INT;
+
+	return BLEND_3D_NONE;
 }
 
 /**

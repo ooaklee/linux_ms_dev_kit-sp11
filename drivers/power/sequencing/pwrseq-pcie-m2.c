@@ -189,16 +189,19 @@ static const struct pci_device_id pwrseq_m2_pci_ids[] = {
 	  .driver_data = (kernel_ulong_t)"nxp,88w8987-bt" },
 	{ PCI_DEVICE(PCI_VENDOR_ID_PHILIPS, 0x3003),
 	  .driver_data = (kernel_ulong_t)"nxp,88w8987-bt" },
+
+	/* QCA2066 shares the 1103 ID but needs its own BT data */
 	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x1103, PCI_VENDOR_ID_QCOM, 0x0108),
 	  .driver_data = (kernel_ulong_t)"qcom,qca2066-bt" },
-	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x1103, PCI_VENDOR_ID_FOXCONN, 0xe105),
+
+	/* All other 1103 → WCN6855 */
+	{ PCI_DEVICE(PCI_VENDOR_ID_QCOM, 0x1103),
 	  .driver_data = (kernel_ulong_t)"qcom,wcn6855-bt" },
-	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x1103, PCI_VENDOR_ID_QCOM, 0x337e),
-	  .driver_data = (kernel_ulong_t)"qcom,wcn6855-bt" },
-	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x1107, PCI_VENDOR_ID_QCOM, 0x337c),
+
+	/* WCN7850 family */
+	{ PCI_DEVICE(PCI_VENDOR_ID_QCOM, 0x1107),
 	  .driver_data = (kernel_ulong_t)"qcom,wcn7850-bt" },
-	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x1107, PCI_VENDOR_ID_LENOVO, 0xe0e9),
-	  .driver_data = (kernel_ulong_t)"qcom,wcn7850-bt" },
+
 	{ } /* Sentinel */
 };
 
@@ -425,6 +428,14 @@ static bool pwrseq_pcie_m2_check_remote_node(struct device *dev, u8 port, u8 end
 	return false;
 }
 
+static bool pwrseq_pcie_m2_bt_ambiguous(struct device *dev)
+{
+	bool has_usb  = pwrseq_pcie_m2_check_remote_node(dev, 2, 0, "usb");
+	bool has_uart = pwrseq_pcie_m2_check_remote_node(dev, 3, 0, "serial");
+
+	return has_usb && has_uart;
+}
+
 /*
  * If the connector exposes a non-discoverable bus like UART, the respective
  * protocol device needs to be created manually with the help of the notifier
@@ -441,6 +452,12 @@ static int pwrseq_pcie_m2_register_notifier(struct pwrseq_pcie_m2_ctx *ctx)
 	if (!pwrseq_pcie_m2_check_remote_node(ctx->dev, 3, 0, "serial") ||
 	    !pwrseq_pcie_m2_check_remote_node(ctx->dev, 0, 0, "pcie"))
 		return 0;
+
+	if (pwrseq_pcie_m2_bt_ambiguous(ctx->dev)) {
+		dev_info(ctx->dev,
+			 "connector describes both USB and UART BT; refusing automatic serdev creation\n");
+		return 0;
+	}
 
 	ctx->nb.notifier_call = pwrseq_pcie_m2_notify;
 	ret = bus_register_notifier(&pci_bus_type, &ctx->nb);
