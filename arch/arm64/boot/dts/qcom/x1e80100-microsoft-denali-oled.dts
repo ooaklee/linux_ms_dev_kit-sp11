@@ -5,6 +5,10 @@
 
 /dts-v1/;
 
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/media/video-interfaces.h>
+#include <dt-bindings/phy/phy.h>
+
 #include "hamoa.dtsi"
 #include "x1-microsoft-denali.dtsi"
 
@@ -13,6 +17,254 @@
 	compatible = "microsoft,denali-oled", "microsoft,denali",
 		     "lenovo,thinkpad-t14s",
 		     "qcom,x1e80100";
+
+	leds {
+		compatible = "gpio-leds";
+
+		pinctrl-0 = <&cam_indicator_en>;
+		pinctrl-names = "default";
+
+		privacy_led: privacy-led {
+			function = LED_FUNCTION_INDICATOR;
+			color = <LED_COLOR_ID_WHITE>;
+			/*
+			 * Front-camera privacy indicator. GPIO225, active-high,
+			 * validated on hardware in linux-surface-pro-11-oe#77
+			 * (gpiochip9 line 225). Always default-off.
+			 */
+			gpios = <&tlmm 225 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
+	};
+};
+
+/*
+ * IR illuminator (Windows Hello VCSEL) for the front VD55G0 IR camera.
+ *
+ * Windows drives it through the Qualcomm CamZ flash stack: ACPI device
+ * QCOM0C27 handled by qccamflash8380.sys (CameraWhiteLEDFlashPMIC.c,
+ * i.e. the PM8550 SPMI flash-led module), with the SP11-specific
+ * extension INF (qccamflash_ext8380) programming
+ * IrLedCurrentMilliampere=700. It is NOT a TLMM GPIO and NOT SAM-
+ * controlled; there is no illuminator resource in the CAMI_RES_*
+ * AeoB blobs.
+ *
+ * The upstream leds-qcom-flash driver exposes it as a v4l2-flash
+ * device, so userspace (Howdy/libcamera) can strobe it during IR
+ * capture. No led default trigger; the LED powers up off.
+ */
+&pm8550_flash {
+	status = "okay";
+
+	ir_illuminator: led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_IR>;
+		led-sources = <1>;
+		/* IrLedCurrentMilliampere = 700 mA (qccamflash_ext8380.inf) */
+		led-max-microamp = <700000>;
+		flash-max-microamp = <700000>;
+		flash-max-timeout-us = <1280000>;
+	};
+};
+
+&apps_rsc {
+	regulators-0 {
+		vreg_l7b_2p8: ldo7 {
+			regulator-name = "vreg_l7b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-8 {
+		compatible = "qcom,pm8010-rpmh-regulators";
+		qcom,pmic-id = "m";
+
+		vdd-l1-l2-supply = <&vreg_s5j_1p2>;
+		vdd-l3-l4-supply = <&vreg_s4c_1p8>;
+		vdd-l7-supply = <&vreg_bob1>;
+
+		vreg_l3m_1p8: ldo3 {
+			regulator-name = "vreg_l3m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1808000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* IR camera (VD55G0) rails, CAMI_RES_MSHW0492 order. */
+		vreg_l2m_1p15: ldo2 {
+			regulator-name = "vreg_l2m_1p15";
+			regulator-min-microvolt = <1150000>;
+			regulator-max-microvolt = <1152000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l4m_1p8: ldo4 {
+			regulator-name = "vreg_l4m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1808000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7m_2p8: ldo7 {
+			regulator-name = "vreg_l7m_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&camss {
+	phys = <&csiphy0 PHY_TYPE_DPHY>, <&csiphy1 PHY_TYPE_DPHY>,
+	       <&csiphy2>, <&csiphy4 PHY_TYPE_DPHY>;
+	phy-names = "csiphy0", "csiphy1", "csiphy2", "csiphy4";
+
+	status = "okay";
+};
+
+&camss_csiphy0_inep0 {
+	data-lanes = <1>;
+	remote-endpoint = <&vd55g0_ep>;
+};
+
+&camss_csiphy2_inep0 {
+	bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+	data-lanes = <0>;
+	remote-endpoint = <&imx681_ep>;
+};
+
+&cci1 {
+	status = "okay";
+};
+
+/* CCI0 hosts the auxiliary IR sensor; see the ir-camera note below. */
+&cci0 {
+	status = "okay";
+};
+
+/*
+ * IR / depth auxiliary sensor (Windows Hello). Windows identifies it as
+ * ACPI\SMO55F0 MSHW0492 (ST VD55G0 global shutter); power resource
+ * CAMI_RES_MSHW0492: GPIO109 reset (active low), MCLK0 at 19.2 MHz,
+ * LDO4_M 1.8 V (vddio), LDO2_M 1.15 V (vcore), LDO7_M 2.8 V (vana).
+ *
+ * The IR illuminator (VCSEL) is NOT wired to this sensor: Windows drives
+ * it from the PM8550 SPMI flash LED (ACPI QCOM0C27, qccamflash8380.sys,
+ * IrLedCurrentMilliampere=700) — see the pm8550_flash IR child above.
+ * Therefore no st,leds sensor-GPIO strobe property is defined here.
+ *
+ * Routed per Windows PCFG/SCFG decode (validated in
+ * tools/sp11-driver-audit/camera_fields.md:155-179): PCFG slot 2 (aux
+ * sensor) maps to logical master 0 -> CCI0 I2C0; SCFG address 0xc0 is
+ * 7-bit 0x60; Windows probes reg 0x0000 and reads 30 47 (tail of the
+ * VD55G0 model ID 0x53354730) at 400 kHz with MCLK0 at 19.2 MHz
+ * (RCG-native rate so it actually applies). Link frequency stays at the
+ * base 600 MHz: first I2C contact does not depend on it. CCI1 I2C0 stays
+ * enabled bus-only (no child), matching the existing controller setup.
+ */
+&cci1_i2c0 {
+	clock-frequency = <400000>;
+};
+
+&cci0_i2c0 {
+	clock-frequency = <400000>;
+
+	vd55g0: ir-camera@60 {
+		compatible = "st,vd55g0";
+		reg = <0x60>;
+
+		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam_ir_default>;
+		pinctrl-names = "default";
+
+		clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		vddio-supply = <&vreg_l4m_1p8>;
+		vcore-supply = <&vreg_l2m_1p15>;
+		vana-supply = <&vreg_l7m_2p8>;
+
+		orientation = <0>;
+		rotation = <0>;
+
+		port {
+			vd55g0_ep: endpoint {
+				data-lanes = <1>;
+				/* MIPI 768Mbps = 40 x 19.2MHz integer rule (Lebedev series);
+			 * only valid in-window value at 19.2MHz xclk (750-1200Mbps) */
+			link-frequencies = /bits/ 64 <384000000>;
+				remote-endpoint = <&camss_csiphy0_inep0>;
+			};
+		};
+	};
+};
+
+&cci1_i2c1 {
+	clock-frequency = <400000>;
+
+	imx681: camera@10 {
+		compatible = "sony,imx681";
+		reg = <0x10>;
+
+		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam_front_default>;
+		pinctrl-names = "default";
+
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		avdd-supply = <&vreg_l7b_2p8>;
+		dovdd-supply = <&vreg_l3m_1p8>;
+
+		leds = <&privacy_led>;
+		led-names = "privacy";
+
+		orientation = <0>;
+		rotation = <0>;
+
+		port {
+			imx681_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <0>;
+				/* Half of the observed 2406-Msymbol/s C-PHY rate. */
+				link-frequencies = /bits/ 64 <1203000000>;
+				remote-endpoint = <&camss_csiphy2_inep0>;
+			};
+		};
+	};
+};
+
+&csiphy0 {
+	vdda-0p8-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+	phy-type = <PHY_TYPE_DPHY>;
+
+	status = "okay";
+};
+
+&csiphy2 {
+	compatible = "qcom,x1e80100-mipi-csi2-combo-phy";
+	#phy-cells = <0>;
+
+	clocks = <&camcc CAM_CC_CAMNOC_AXI_RT_CLK>,
+		 <&camcc CAM_CC_CPAS_AHB_CLK>,
+		 <&camcc CAM_CC_CSIPHY2_CLK>,
+		 <&camcc CAM_CC_CSI2PHYTIMER_CLK>;
+	clock-names = "camnoc_axi", "cpas_ahb", "csiphy", "csiphy_timer";
+
+	/delete-property/ operating-points-v2;
+	/delete-property/ power-domain-names;
+	power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+	vdda-0p8-supply = <&vreg_l2c_0p8>;
+	vdda-1p2-supply = <&vreg_l1c_1p2>;
+	phy-type = <PHY_TYPE_CPHY>;
+
+	status = "okay";
 };
 
 &gpu_zap_shader {
@@ -36,4 +288,38 @@
 			"qcom/x1e80100/microsoft/Denali/cdsp_dtb.mbn";
 
 	status = "okay";
+};
+
+&tlmm {
+	cam_front_default: cam-front-default-state {
+		mclk4-pins {
+			pins = "gpio100";
+			function = "cam_aon";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		reset-n-pins {
+			pins = "gpio237";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
+
+	cam_ir_default: cam-ir-default-state {
+		mclk0-pins {
+			pins = "gpio96";
+			function = "cam_mclk";
+			drive-strength = <16>;
+			bias-disable;
+		};
+
+		reset-n-pins {
+			pins = "gpio109";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
+	};
 };
