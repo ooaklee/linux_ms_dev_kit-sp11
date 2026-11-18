@@ -4,6 +4,7 @@
  * Copyright (c) 2022, Linaro Ltd
  */
 #include <linux/auxiliary_bus.h>
+#include <linux/atomic.h>
 #include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -46,6 +47,12 @@ struct pmic_glink {
 	unsigned int client_state;
 	unsigned int pdr_state;
 	bool pdr_available;
+	/*
+	 * Incremented under state_lock (with client_lock held) whenever the
+	 * client state changes; read atomically so receive/state callbacks
+	 * can snapshot it and later reject sends that straddle a transition.
+	 */
+	atomic64_t state_generation;
 
 	/* serializing clients list updates */
 	spinlock_t client_lock;
@@ -126,10 +133,8 @@ int pmic_glink_send(struct pmic_glink_client *client, void *data, size_t len)
 	int ret;
 
 	guard(mutex)(&pg->state_lock);
-	if (!pg->ept) {
+	if (!pg->ept)
 		return -ECONNRESET;
-	}
-
 	start = jiffies;
 	for (;;) {
 		ret = rpmsg_send(pg->ept, data, len);
@@ -148,6 +153,70 @@ int pmic_glink_send(struct pmic_glink_client *client, void *data, size_t len)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(pmic_glink_send);
+
+/**
+ * pmic_glink_get_generation() - snapshot the current client-state generation
+ * @client: registered PMIC GLINK client
+ *
+ * May be called from a receive or state callback. The token does not imply
+ * service availability or correlate replies with requests. Pass it to
+ * pmic_glink_send_generation() to reject a send across a state transition.
+ *
+ * Return: An opaque token for this PMIC GLINK instance's client-state generation.
+ */
+u64 pmic_glink_get_generation(struct pmic_glink_client *client)
+{
+	return atomic64_read(&client->pg->state_generation);
+}
+EXPORT_SYMBOL_GPL(pmic_glink_get_generation);
+
+/**
+ * pmic_glink_send_generation() - send a message unless the state changed
+ * @client: registered PMIC GLINK client
+ * @data: message to send; must start with a pmic_glink_hdr
+ * @len: length of the message
+ * @generation: generation token from pmic_glink_get_generation()
+ *
+ * Like pmic_glink_send(), but returns -ECONNRESET without sending when the
+ * client-state generation changed since @generation was sampled, so callers
+ * cannot act on stale state observed before a service restart. The send
+ * itself re-checks the generation under state_lock, making the check and the
+ * transmit atomic with respect to state transitions.
+ *
+ * Return: 0 on success, -ECONNRESET when the endpoint is gone, the service is
+ * down, or the generation changed, or the rpmsg error otherwise.
+ */
+int pmic_glink_send_generation(struct pmic_glink_client *client, void *data,
+			       size_t len, u64 generation)
+{
+	struct pmic_glink *pg = client->pg;
+	bool timeout_reached = false;
+	unsigned long start;
+	int ret;
+
+	guard(mutex)(&pg->state_lock);
+	if (!pg->ept || pg->client_state != SERVREG_SERVICE_STATE_UP ||
+	    generation != atomic64_read(&pg->state_generation))
+		return -ECONNRESET;
+
+	start = jiffies;
+	for (;;) {
+		ret = rpmsg_send(pg->ept, data, len);
+		if (ret != -EAGAIN)
+			break;
+
+		if (timeout_reached) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+
+		usleep_range(1000, 5000);
+		timeout_reached = time_after(jiffies, start + PMIC_GLINK_SEND_TIMEOUT);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pmic_glink_send_generation);
 
 static int pmic_glink_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 				     int len, void *priv, u32 addr)
@@ -216,6 +285,8 @@ static void pmic_glink_state_notify_clients(struct pmic_glink *pg)
 	unsigned int new_state = pg->client_state;
 	unsigned long flags;
 
+	lockdep_assert_held(&pg->state_lock);
+
 	if (pg->client_state != SERVREG_SERVICE_STATE_UP) {
 		if (pg->pdr_state == SERVREG_SERVICE_STATE_UP && pg->ept)
 			new_state = SERVREG_SERVICE_STATE_UP;
@@ -226,6 +297,8 @@ static void pmic_glink_state_notify_clients(struct pmic_glink *pg)
 
 	if (new_state != pg->client_state) {
 		spin_lock_irqsave(&pg->client_lock, flags);
+		/* Invalidate generations sampled before this transition. */
+		atomic64_inc(&pg->state_generation);
 		list_for_each_entry(client, &pg->clients, node)
 			client->pdr_notify(client->priv, new_state);
 		spin_unlock_irqrestore(&pg->client_lock, flags);
@@ -313,6 +386,7 @@ static int pmic_glink_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&pg->clients);
 	spin_lock_init(&pg->client_lock);
 	mutex_init(&pg->state_lock);
+	atomic64_set(&pg->state_generation, 0);
 
 	pg->data = of_device_get_match_data(&pdev->dev);
 	if (!pg->data)
