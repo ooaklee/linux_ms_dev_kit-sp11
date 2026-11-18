@@ -42,6 +42,7 @@ Build-Depends:
  libudev-dev <!stage1>,
  libunwind8-dev [amd64 arm64 armhf ppc64el] <!stage1>,
  lld-21:native [arm64],
+ llvm-21,
  llvm-19-dev,
  makedumpfile:native [amd64] <!stage1>,
  openssl <!stage1>,

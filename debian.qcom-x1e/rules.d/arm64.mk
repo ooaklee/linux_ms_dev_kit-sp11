@@ -10,6 +10,11 @@ vdso		= vdso_install
 
 # Keep the annotated LLD linker while retaining the GCC compiler selection.
 kmake += LD=ld.lld-21
+# Pair LLVM binutils with the LLD link: GNU objcopy mangles empty lld
+# sections (sh_entsize=0 on .relr.dyn), so its two-pass vmlinux strip in
+# scripts/Makefile.vmlinux fails with "file format not recognized" on the
+# second in-place pass.
+kmake += OBJCOPY=llvm-objcopy-21
 
 do_tools_usbip  = true
 do_tools_cpupower = true
