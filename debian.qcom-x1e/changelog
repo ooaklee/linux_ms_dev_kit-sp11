@@ -1,3 +1,25 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v1) stonking; urgency=medium
+
+  * Rebase the SP11 device delta onto upstream 7.3.3-jg-1
+    (jglathe jg/ubuntu-qcom-x1e-7.3.y tip 1fa928c8073f, merge 962771e9764e),
+    superseding the 7.3.0-jg-1 base of 1sp11v1..v15.
+  * Upstream content absorbed: x1-denali DisplayPort audio dai-links and
+    volume-key definitions, DP audio power-off fix (27cbafd8), Iris iova
+    restriction series (34a2bc2), qmp-combo explicit initial mode, qrtr
+    send-lock deadlock fix (045abac), x126100 ideapad-slim3 series,
+    t14s pwrseq bluetooth, glymur Gen11 EC driver, ubuntu archive
+    config refresh (7.3.0-29.29..7.3.3).
+  * SP11 delta retained: camss denali C-PHY plan dispatch, VD55G0 IR +
+    ov13858/imx681 sensor enablement, mshw0485 touch/IPTSD, SAM
+    BAT0/BAT1 + thermal, DP ownership state machine (#85), qmp-combo
+    USB4/TBT3 quarantine (#87 #88 #90), protected audioreach/q6apm
+    configuration, fastrpc lifetime hardening, selfcompile driver
+    packaging.
+  * This candidate is not hardware-qualified; physical regression tests
+    pending against the 7.3.3 baseline.
+
+ -- Leon Silcott <leon@boasi.io>  Wed, 18 Nov 2026 05:20:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v15) stonking; urgency=medium
 
   * Publish-consolidation release: first OE-published release since
