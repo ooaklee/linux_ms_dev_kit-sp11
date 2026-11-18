@@ -45,6 +45,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v15) stonking; urgency=medium
     sp11/ubuntu-qcom-x1e-7.3.y.
 
  -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 19:17:12 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v14) stonking; urgency=medium
 
   * Program the VD55G0 OIF_CTRL register with the correct data-lane
@@ -53,6 +54,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v14) stonking; urgency=medium
     CSI2 TX serializer disabled so CSID never received MIPI traffic.
 
  -- Leon Silcott <leon@boasi.io>  Tue, 17 Nov 2026 10:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v13) stonking; urgency=medium
 
   * Switch the VD55G0 link frequency from 600 MHz to 384 MHz so the
@@ -61,6 +63,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v13) stonking; urgency=medium
     window that satisfies the integer-ratio rule at this xclk.
 
  -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 22:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
 
   * Route the VD55G0 IR sensor using the Windows-decoded CCI0 master 0,
@@ -73,6 +76,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v12) stonking; urgency=medium
     X1E.
 
  -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 20:20:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
 
   * vd55g1 power-on rail ordering fixed to match the Windows
@@ -83,6 +87,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v11) stonking; urgency=medium
     in #99).
 
  -- Leon Silcott <leon@boasi.io>  Mon, 16 Nov 2026 10:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
 
   * fastrpc buffer lifetime hardening: map/unmap and buffer
@@ -96,6 +101,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v8) stonking; urgency=medium
     (#93).
 
  -- Leon Silcott <leon@boasi.io>  Sun, 15 Nov 2026 03:15:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
 
   * Register battery nodes for the Surface Pro 11 in the surface
@@ -109,6 +115,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v7) stonking; urgency=medium
     node so the scaffold cannot probe on stock hardware (#92).
 
  -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 19:00:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
 
   * Harden qmp-combo common-resource ownership for USB4/TBT3: per-
@@ -128,6 +135,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v6) stonking; urgency=medium
     (#89).
 
  -- Leon Silcott <leon@boasi.io>  Sat, 14 Nov 2026 08:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v5) stonking; urgency=medium
 
   * Port the Qualcomm USB4 host-router research frontend behind the
@@ -141,6 +149,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v5) stonking; urgency=medium
     mapping failure unwound through the prepare devres group.
 
  -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 22:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v4) stonking; urgency=medium
 
   * Port the X1E QMP-combo USB4/TBT3 PHY support to the 7.3 lifetime:
@@ -159,6 +168,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v4) stonking; urgency=medium
     (PR #73).
 
  -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 20:30:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v3) stonking; urgency=medium
 
   * Quarantine further stream and control operations after the first
@@ -169,6 +179,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v3) stonking; urgency=medium
     PM-resume failures and the default-off path unchanged.
 
  -- Leon Silcott <leon@boasi.io>  Sat, 31 Oct 2026 18:28:00 +0000
+
 linux-qcom-x1e (7.3.0-jg-1sp11v2) stonking; urgency=medium
 
   * Add a default-off IMX681 fixed-gain/direct-exposure experiment inspired
@@ -181,6 +192,7 @@ linux-qcom-x1e (7.3.0-jg-1sp11v2) stonking; urgency=medium
     image quality, capture longevity and privacy remain unqualified.
 
  -- Leon Silcott <leon@boasi.io>  Thu, 29 Oct 2026 09:58:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1) stonking; urgency=medium
 
   * arm64: dts: qcom: lenovo-t14s: remove compatible for Bluetooth definition
@@ -206,12 +218,14 @@ linux-qcom-x1e (7.3.3-jg-1) stonking; urgency=medium
   * Ubuntu: update annotations and ubuntu_x1e_defconfig
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Tue, 17 Nov 2026 18:27:35 +0100
+
 linux-qcom-x1e (7.3.3-jg-0) stonking; urgency=medium
 
   * power: sequencing: pcie-m2: refuse serdev creation on dual-wired connectors
   * rebase the stack onto v7.3.3
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Sun, 08 Nov 2026 09:56:06 +0100
+
 linux-qcom-x1e (7.3.1-jg-0) stonking; urgency=medium
 
   * rebase the stack onto v7.3.1
@@ -219,17 +233,20 @@ linux-qcom-x1e (7.3.1-jg-0) stonking; urgency=medium
   * power: sequencing: pcie-m2: stop requiring subsystem IDs for WCN6855/WCN7850
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Thu, 05 Nov 2026 22:38:20 +0100
+
 linux-qcom-x1e (7.3.0-jg-5) stonking; urgency=medium
 
   * rebase onto git+ssh://git.launchpad.net/~ubuntu-concept/ubuntu/+source/linux/+git/stonking repo, 7.3.0-29.29 including config(-ish)
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Fri, 30 Oct 2026 06:44:47 +0100
+
 linux-qcom-x1e (7.3.0-jg-4) stonking; urgency=medium
 
   * media: iris: apply clock defaults after power domains
   * net: qrtr: smd: release send_lock before endpoint unregister on open failure [Ethan RAMSEY <132889564+3thanRam@users.noreply.github.com>]
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Wed, 28 Oct 2026 22:36:03 +0100
+
 linux-qcom-x1e (7.3.0-jg-3) resolute; urgency=medium
 
   * REMOVE drm/msm: TEST force mode set on color mgmt change [JS Deck <jsdeckerido@gmail.com>]
@@ -237,6 +254,7 @@ linux-qcom-x1e (7.3.0-jg-3) resolute; urgency=medium
   * enable Iris node on several devices
 
  -- Jens Glathe <jens.glathe@oldschoolsolutions.biz>  Mon, 26 Oct 2026 07:08:13 +0100
+
 linux-qcom-x1e (7.3.0-jg-2) stonking; urgency=medium
 
   * media: iris: restore the no-TZ firmware boot lost in the rebase [Lars Karlslund <lars@karlslund.dk>]
