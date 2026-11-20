@@ -31,8 +31,15 @@
 #define CSIPHY_2PH_LANE_BLOCK_NUM	4
 #define CSIPHY_2PH_CLK_BLOCK		0x0e00
 #define CSIPHY_2PH_LANE_RESET		0x18
-#define CSIPHY_2PH_REFGEN_STATUS	0x10fc
-#define CSIPHY_2PH_REFGEN_READY		BIT(7)
+#define CSIPHY_2PH_LANE_STATUS(n)	(0x00c4 + 0x0400 * (n))
+#define CSIPHY_2PH_CLK_STATUS		0x0ec4
+#define CSIPHY_2PH_REFGEN_STATUS		0x10fc
+#define CSIPHY_2PH_REFGEN_READY			BIT(7)
+
+/* Common control registers 11-21, as loaded by the vendor 2.1.2 sequence. */
+static const u32 csiphy_2ph_common_ctrl[] = {
+	0xff, 0xfe, 0xe6, 0xdf, 0xdf, 0xfc, 0xfb, 0x9b, 0x7f, 0xbf, 0xff,
+};
 
 /*
  * 3 phase CSI has 19 common status regs with only 0-10 being used
@@ -58,13 +65,18 @@
 
 /* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode
  *
- * Note: the common CONTROL registers (0x1014/0x1018/0x101c) were dropped
- * from this imported sequence: phy_qcom_mipi_csi2_lanes_enable() writes
- * them from the actual negotiated configuration (lane count!) and the
- * stale 4-lane values here silently overrode that write, leaving data
- * lanes 1-3 enabled for 1-lane transmitters (observed on X1E80100,
- * Surface Pro 11, VD55G0: CTRL5 read back 0xd5 after configure(1 lane)).
- * Lane blocks for unused data lanes are skipped at replay time.
+ * This is the same table the Surface Pro 11 Windows driver replays for the
+ * D-PHY standard-rate path (qccammipicsi8380.sys, table VA 0x140010750,
+ * 105 entries, CSIDPhyProgramPerFrequency). Verified byte-for-byte against
+ * the vendor driver on 2026-11-20.
+ *
+ * The common CONTROL registers 0x1014/0x1018/0x101c are written by
+ * phy_qcom_mipi_csi2_lanes_enable() from the negotiated configuration so
+ * the stale 4-lane values cannot leak into a 1-lane setup (observed on
+ * X1E80100, Surface Pro 11, VD55G0: CTRL5 read back 0xd5 after
+ * configure(1 lane)).
+ *
+ * All four data-lane blocks are programmed, as the vendor driver does.
  */
 static const struct
 mipi_csi2phy_lane_regs lane_regs_x1e80100[] = {
@@ -336,7 +348,7 @@ static u8 phy_qcom_mipi_csi2_settle_cnt_calc(s64 link_freq)
 
 static void
 phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
-				     u8 settle_cnt, u8 num_data_lanes)
+				     u8 settle_cnt)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 	const struct mipi_csi2phy_lane_regs *r = regs->init_seq;
@@ -345,18 +357,13 @@ phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
 
 	for (i = 0; i < array_size; i++, r++) {
 		/*
-		 * The imported sequence programs all four D-PHY data-lane
-		 * blocks (0x0000/0x0400/0x0800/0x0c00). Skip the blocks of
-		 * lanes the transmitter does not drive; leaving them
-		 * initialized caused idle-lane interference on X1E80100
-		 * 1-lane transmitters. The clock-lane block (0x0e00) and
-		 * the common block (0x1000+) are always programmed.
+		 * The vendor driver programs all four data-lane blocks
+		 * unconditionally, even for a single-lane transmitter
+		 * (CSIDPhyProgramPerFrequency replays the whole 105-entry
+		 * table, no per-lane filtering). Do the same: skipping the
+		 * unused blocks deviated from the working Windows stack and
+		 * left the lane front-end in an unexpected state.
 		 */
-		if (num_data_lanes > 0 && (r->reg_addr & 0x0c00) &&
-		    (r->reg_addr & 0x0c00) >> 10 >= num_data_lanes &&
-		    (r->reg_addr & 0x0e00) != 0x0e00)
-			continue;
-
 		switch (r->param_type) {
 		case CSIPHY_SETTLE_CNT_LOWER_BYTE:
 			val = settle_cnt & 0xff;
@@ -386,10 +393,10 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq);
 
 	/*
-	 * Common-block analog setup, matching downstream 2.1.2
-	 * (csiphy_common_reg_2_1_2) and the Windows-observed sequence for
-	 * this chip: {0x1084 = 0}, {0x108C = 0 + 1 ms}. Without these the
-	 * receiver front-end never settles on X1E80100.
+	 * Common-block analog setup, matching the vendor 2.1.2 sequence for
+	 * this chip: {0x1084 = 0}, {0x108C = 0}. The Windows driver has no
+	 * delay here in the standard-rate table (the 1 ms belongs to the
+	 * 2.5 Gbps preamble); keep a short settle delay, it is harmless.
 	 */
 	writel(0x00, csi2phy->base + 0x1084);
 	writel(0x00, csi2phy->base + 0x108c);
@@ -414,8 +421,7 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
-	phy_qcom_mipi_csi2_gen2_config_lanes(csi2phy, settle_cnt,
-					     cfg->num_data_lanes);
+	phy_qcom_mipi_csi2_gen2_config_lanes(csi2phy, settle_cnt);
 
 	/*
 	 * Release the PHY from idle into 2-phase mission mode. Downstream
@@ -428,11 +434,41 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	writel(0x02, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
-	/* IRQ_MASK registers - disable all interrupts */
-	for (i = CSI_COMMON_STATUS_NUM; i < CSI_CTRL_STATUS_INDEX; i++) {
-		writel(0, csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, i));
+	/*
+	 * Common control registers 11-21 (0x102c-0x1054). The vendor driver
+	 * loads these values from the GPL 2.1.2 sequence unconditionally;
+	 * they are not mask-all-interrupts registers as previously assumed.
+	 * Writing zero here deviated from the working Windows stack.
+	 */
+	for (i = 0; i < ARRAY_SIZE(csiphy_2ph_common_ctrl); i++)
+		writel(csiphy_2ph_common_ctrl[i], csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset,
+						       11 + i));
+
+	/*
+	 * The vendor driver does not return from start until every lane and
+	 * the clock lane report ready: lane status dwords 0xc4/0x4c4/0x8c4/
+	 * 0xcc4 and clock status 0xec4 must all read zero (polled every
+	 * 1 ms, up to ~100 ms). Without the wait the CSI2 receiver can be
+	 * enabled while the PHY lanes are still settling.
+	 */
+	for (i = 0; i < 100; i++) {
+		u32 status = 0;
+		int lane;
+
+		for (lane = 0; lane < CSIPHY_2PH_LANE_BLOCK_NUM; lane++)
+			status |= readl_relaxed(csi2phy->base +
+						CSIPHY_2PH_LANE_STATUS(lane));
+		status |= readl_relaxed(csi2phy->base + CSIPHY_2PH_CLK_STATUS);
+
+		if (!status)
+			break;
+
+		usleep_range(1000, 1500);
 	}
+
+	if (i == 100)
+		dev_warn(csi2phy->dev, "D-PHY lanes did not report ready\n");
 
 	return 0;
 }
