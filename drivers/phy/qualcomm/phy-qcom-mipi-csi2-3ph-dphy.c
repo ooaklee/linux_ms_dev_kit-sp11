@@ -43,13 +43,20 @@
 #define CSIPHY_SETTLE_CNT_LOWER_BYTE			2
 #define CSIPHY_SKEW_CAL					7
 
-/* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode */
+/* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode
+ *
+ * Note: the common CONTROL registers (0x1014/0x1018/0x101c) were dropped
+ * from this imported sequence: phy_qcom_mipi_csi2_lanes_enable() writes
+ * them from the actual negotiated configuration (lane count!) and the
+ * stale 4-lane values here silently overrode that write, leaving data
+ * lanes 1-3 enabled for 1-lane transmitters (observed on X1E80100,
+ * Surface Pro 11, VD55G0: CTRL5 read back 0xd5 after configure(1 lane)).
+ * Lane blocks for unused data lanes are skipped at replay time.
+ */
 static const struct
 mipi_csi2phy_lane_regs lane_regs_x1e80100[] = {
 	/* Power up lanes 2ph mode */
-	{.reg_addr = 0x1014, .reg_data = 0xd5, .param_type = CSIPHY_DEFAULT_PARAMS},
 	{.reg_addr = 0x101c, .reg_data = 0x7a, .param_type = CSIPHY_DEFAULT_PARAMS},
-	{.reg_addr = 0x1018, .reg_data = 0x01, .param_type = CSIPHY_DEFAULT_PARAMS},
 
 	{.reg_addr = 0x0094, .reg_data = 0x00, .param_type = CSIPHY_DEFAULT_PARAMS},
 	{.reg_addr = 0x00a0, .reg_data = 0x00, .param_type = CSIPHY_DEFAULT_PARAMS},
@@ -235,14 +242,20 @@ static u8 phy_qcom_mipi_csi2_settle_cnt_calc(s64 link_freq, u32 timer_clk_rate)
 	t_hs_settle_ps = t_hs_prepare_max_ps;
 
 	timer_period_ps = div_u64(PSEC_PER_SEC, timer_clk_rate);
-	settle_cnt = t_hs_settle_ps / timer_period_ps - 6;
+	/*
+	 * Round up: the realized settle time (cnt + 6) * period must stay
+	 * >= t_hs_settle. Integer truncation here yielded counts one below
+	 * the minimum at 420 MHz / 266.67 MHz timer (18 vs 19, realized
+	 * 90.0 ns vs the 92.1 ns floor, observed on X1E80100).
+	 */
+	settle_cnt = DIV_ROUND_UP(t_hs_settle_ps, timer_period_ps) - 6;
 
 	return settle_cnt;
 }
 
 static void
 phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
-				     u8 settle_cnt)
+				     u8 settle_cnt, u8 num_data_lanes)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 	const struct mipi_csi2phy_lane_regs *r = regs->init_seq;
@@ -250,6 +263,19 @@ phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
 	u32 val;
 
 	for (i = 0; i < array_size; i++, r++) {
+		/*
+		 * The imported sequence programs all four D-PHY data-lane
+		 * blocks (0x0000/0x0400/0x0800/0x0c00). Skip the blocks of
+		 * lanes the transmitter does not drive; leaving them
+		 * initialized caused idle-lane interference on X1E80100
+		 * 1-lane transmitters. The clock-lane block (0x0e00) and
+		 * the common block (0x1000+) are always programmed.
+		 */
+		if (num_data_lanes > 0 && (r->reg_addr & 0x0c00) &&
+		    (r->reg_addr & 0x0c00) >> 10 >= num_data_lanes &&
+		    (r->reg_addr & 0x0e00) != 0x0e00)
+			continue;
+
 		switch (r->param_type) {
 		case CSIPHY_SETTLE_CNT_LOWER_BYTE:
 			val = settle_cnt & 0xff;
@@ -278,6 +304,16 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq, csi2phy->timer_clk_rate);
 
+	/*
+	 * Common-block analog setup, matching downstream 2.1.2
+	 * (csiphy_common_reg_2_1_2) and the Windows-observed sequence for
+	 * this chip: {0x1084 = 0}, {0x108C = 0 + 1 ms}. Without these the
+	 * receiver front-end never settles on X1E80100.
+	 */
+	writel(0x00, csi2phy->base + 0x1084);
+	writel(0x00, csi2phy->base + 0x108c);
+	usleep_range(1000, 1100);
+
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
 	for (i = 0; i < cfg->num_data_lanes; i++)
 		val |= BIT(lane_cfg->data[i].pos * 2);
@@ -297,7 +333,19 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
-	phy_qcom_mipi_csi2_gen2_config_lanes(csi2phy, settle_cnt);
+	phy_qcom_mipi_csi2_gen2_config_lanes(csi2phy, settle_cnt,
+					     cfg->num_data_lanes);
+
+	/*
+	 * Release the PHY from idle into 2-phase mission mode. Downstream
+	 * cam_csiphy_2_1_2_hwreg.h ends the D-PHY (2ph) sequence with
+	 * {0x1000, 0x02} (3ph uses 0x0e); without this write the receiver
+	 * never leaves idle and no lane lock is possible. Observed on
+	 * X1E80100 + VD55G0: CTRL5/settle correct but zero reception with
+	 * CTRL0 left at 0x00.
+	 */
+	writel(0x02, csi2phy->base +
+	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
 	/* IRQ_MASK registers - disable all interrupts */
 	for (i = CSI_COMMON_STATUS_NUM; i < CSI_CTRL_STATUS_INDEX; i++) {
