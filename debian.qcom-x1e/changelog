@@ -1,3 +1,19 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v4) stonking; urgency=medium
+
+  * Diagnostic build for the VD55G0 capture path. Streaming still delivers no
+    frames; this build adds the register evidence needed to separate "sensor
+    not transmitting", "PHY not locked" and "CSID rejecting packets".
+  * phy: qcom-mipi-csi2: add lane_pos and ctrl5_mask module parameters so a
+    receive-lane sweep needs no rebuild per candidate, and log the CTRL5
+    readback, the reference-generator result and the per-lane status dwords at
+    stream start.
+  * camss: csid gen3: log the decoder configuration (csiphy, lane count, lane
+    assignment, enabled virtual channels, media bus code) and the first 24
+    interrupt status words (top, CSI2 RX, buffer done, RDI0).
+  * vd55g1: log the sensor MIPI rate and OIF_CTRL when streaming begins.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 23:55:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v3) stonking; urgency=medium
 
   * phy: qcom-mipi-csi2: enable every data-lane RX block. The generic D-PHY

@@ -9,8 +9,17 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/module.h>
 
 #include "phy-qcom-mipi-csi2.h"
+
+/*
+ * SP11 diagnostic: allow the lane sweep to override the CTRL5 lane-enable
+ * value without rebuilding for every candidate. -1 keeps the shipped value.
+ */
+static int ctrl5_mask = -1;
+module_param(ctrl5_mask, int, 0644);
+MODULE_PARM_DESC(ctrl5_mask, "Override CTRL5 lane-enable value (-1 = all RX blocks)");
 
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(offset, n)	((offset) + 0x4 * (n))
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET	BIT(0)
@@ -255,8 +264,7 @@ static void phy_qcom_mipi_csi2_lane_reset(struct mipi_csi2phy_device *csi2phy)
  * shows whether the bit asserts.
  */
 static bool phy_qcom_mipi_csi2_wait_refgen(struct mipi_csi2phy_device *csi2phy)
-{
-	int i;
+{	int i;
 
 	for (i = 0; i < 100; i++) {
 		if (readl_relaxed(csi2phy->base + CSIPHY_2PH_REFGEN_STATUS) &
@@ -402,8 +410,18 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	for (i = 0; i < CSI2_MAX_DATA_LANES; i++)
 		val |= BIT(i * 2);
 
+	if (ctrl5_mask >= 0)
+		val = ctrl5_mask;
+
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5));
+
+	dev_info(csi2phy->dev,
+		 "lanes_enable: lanes=%u pos=%u ctrl5=0x%02x rb=0x%02x settle=%u link_freq=%lld\n",
+		 cfg->num_data_lanes, cfg->lane_cfg.data[0].pos, val,
+		 readl_relaxed(csi2phy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5)),
+		 settle_cnt, cfg->link_freq);
 
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B;
 	writel(val, csi2phy->base +
@@ -472,6 +490,17 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 
 	if (i == 100)
 		dev_warn(csi2phy->dev, "D-PHY lanes did not report ready\n");
+
+	dev_info(csi2phy->dev,
+		 "phy state: refgen=0x%08x clk=0x%08x d0=0x%08x d1=0x%08x d2=0x%08x d3=0x%08x ctrl0=0x%02x\n",
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_REFGEN_STATUS),
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_CLK_STATUS),
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_LANE_STATUS(0)),
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_LANE_STATUS(1)),
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_LANE_STATUS(2)),
+		 readl_relaxed(csi2phy->base + CSIPHY_2PH_LANE_STATUS(3)),
+		 readl_relaxed(csi2phy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0)));
 
 	return 0;
 }

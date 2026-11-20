@@ -6,6 +6,7 @@
  */
 #include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/atomic.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -14,6 +15,9 @@
 #include "camss.h"
 #include "camss-csid.h"
 #include "camss-csid-gen3.h"
+
+/* SP11 diagnostic: log the first few CSID interrupts and their status words. */
+static atomic_t csid_dbg_irqs = ATOMIC_INIT(0);
 
 #define CSID_IO_PATH_CFG0(csid)		(0x4 * (csid))
 #define		OUTPUT_IFE_EN			0x100
@@ -223,6 +227,13 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	u8 i;
 
+	if (enable)
+		dev_info(csid->camss->dev,
+			 "csid%d configure: csiphy=%u lanes=%u lane_assign=0x%x en_vc=0x%x mbus=0x%x\n",
+			 csid->id, csid->phy.csiphy_id, csid->phy.lane_cnt,
+			 csid->phy.lane_assign, csid->phy.en_vc,
+			 csid->fmt[0].code);
+
 	__csid_configure_wrapper(csid);
 
 	/* Loop through all enabled ports and configure a stream for each */
@@ -260,15 +271,16 @@ static irqreturn_t csid_isr(int irq, void *dev)
 {
 	struct csid_device *csid = dev;
 	u32 val, buf_done_val;
+	u32 dbg_top, dbg_rx;
 	u8 reset_done;
 	int i;
 
-	val = readl(csid->base + CSID_TOP_IRQ_STATUS);
-	writel(val, csid->base + CSID_TOP_IRQ_CLEAR);
-	reset_done = val & TOP_IRQ_STATUS_RESET_DONE;
+	dbg_top = readl(csid->base + CSID_TOP_IRQ_STATUS);
+	writel(dbg_top, csid->base + CSID_TOP_IRQ_CLEAR);
+	reset_done = dbg_top & TOP_IRQ_STATUS_RESET_DONE;
 
-	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
-	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+	dbg_rx = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
+	writel(dbg_rx, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
 
 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
 	writel(buf_done_val, csid->base + CSID_BUF_DONE_IRQ_CLEAR);
@@ -295,6 +307,12 @@ static irqreturn_t csid_isr(int irq, void *dev)
 
 	val = IRQ_CMD_CLEAR;
 	writel(val, csid->base + CSID_IRQ_CMD);
+
+	if (atomic_inc_return(&csid_dbg_irqs) <= 24)
+		dev_info(csid->camss->dev,
+			 "csid%d isr: top=0x%08x rx=0x%08x bufdone=0x%08x rdi0=0x%08x\n",
+			 csid->id, dbg_top, dbg_rx, buf_done_val,
+			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(0)));
 
 	if (reset_done)
 		complete(&csid->reset_complete);
