@@ -1,3 +1,41 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v3) stonking; urgency=medium
+
+  * phy: qcom-mipi-csi2: enable every data-lane RX block. The generic D-PHY
+    configure path cannot carry lane positions from the device tree
+    (phy_qcom_mipi_csi2_configure() fills lane_cfg.data[i].pos with i), so
+    lanes_enable() only powered D0 while the VD55G0 IR sensor transports its
+    single lane as physical lane 1 (data-lanes = <1>) and camss programs
+    CSID for position 1. The receiver and transmitter disagreed about the
+    wire, and every failure path only warned: camss reported the PHY up,
+    STREAMON succeeded, CSID0 raised no interrupt, and capture timed out
+    with zero frames - including with the sensor's own test pattern.
+    Enabling all four data-lane blocks matches the vendor driver and is
+    independent of which physical lane the board wires.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 20 Nov 2026 19:30:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v2) stonking; urgency=medium
+
+  * D-PHY start-sequence parity with the Surface Pro 11 Windows camera
+    stack (qccammipicsi8380.sys, REA static analysis 2026-11-20), for the
+    VD55G0 zero-frame fault on csiphy0:
+    - reset every lane block during D-PHY reset: pulse the per-lane reset
+      line at block +0x18 (clock lane first, then data lanes 0-3, 100 us)
+      after the common software reset; this write was entirely missing;
+    - gate the reset on the reference generator reporting ready (0x10fc
+      bit 7) and match the vendor 20 us common reset pulse;
+    - drop the per-lane table filtering: the vendor driver programs all
+      four data-lane blocks, even for a single-lane transmitter;
+    - write the GPL 2.1.2 values for common control registers 11-21
+      (0x102c-0x1054: ff fe e6 df df fc fb 9b 7f bf ff) instead of zero;
+    - poll lane/clock status (0xc4/0x4c4/0x8c4/0xcc4/0xec4) until ready
+      after programming, as the vendor driver does before start succeeds;
+    - compute the settle count in the vendor's 2.5 ns units
+      ((1000/mbps)*6+85)/2.5-10: 0x1e at 384 Mbps instead of 0x13.
+  * Carries the 7.3.3-jg-1 base with no other delta against 1sp11v1.
+
+ -- Leon Silcott <leon@boasi.io>  Fri, 20 Nov 2026 13:30:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v1) stonking; urgency=medium
 
   * Rebase the SP11 device delta onto upstream 7.3.3-jg-1
