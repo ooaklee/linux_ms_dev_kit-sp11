@@ -140,3 +140,88 @@ IR camera), transcribe the csiphy0 region writes, and build an
 observation-based `lane_regs` table + settle handling. Alternative if
 Windows tracing is unavailable: obtain the X1E80100 D-PHY settings from
 turbineBMW's SP11 camera review series (already cited by d9223c234804).
+
+## Experiments 4–7 (2026-11-19/20): driver brought to downstream parity — still silent
+
+All changes below are in the working tree on branch `sp11-vd55g0-oif-lanes`
+(uncommitted at time of writing), file
+`drivers/phy/qualcomm/phy-qcom-mipi-csi2-3ph-dphy.c`.
+
+### Experiment 4: table vs downstream GPL 2.1.2 audit — RESULT: table genuine, driver missing pieces
+
+Compared the imported table against Qualcomm's GPL
+`cam_csiphy_2_1_2_hwreg.h` (qualcomm-linux/camera-driver, master). The
+lane-block values are byte-genuine `csiphy_2ph_v2_1_2_reg`. But downstream
+applies more than the table (cam_csiphy_core.c):
+
+| Downstream behavior | Our driver before fixes |
+|---|---|
+| `csiphy_reset_exit_reg_2_1_2`: **2ph exit = CTRL0(0x1000)=0x02** (3ph=0x0e) | never written a mission exit (0x00 left) |
+| `csiphy_common_reg_2_1_2`: {0x1084=0, 0x108C=0 + 1 µs} | never written |
+| lane-enable BIT layout: DPHY_LANE_0=BIT(0)…CLK=BIT(7) → 1 lane = **0x81** | table wrote stale 4-lane 0xd5 (clobbered correct value) |
+| settle via SETTLE_CNT entries | same, but formula truncated (see #5) |
+
+Also confirmed: downstream applies per-datarate AFE tables
+(`datarate_212_*Msps`) **only for C-PHY**
+(`cam_csiphy_cphy_data_rate_config` is 3phase-gated) — so D-PHY gets
+exactly the 2ph table + common regs + lane-enable + CTRL0 exit. karsies'
+independent X1E80100 C-PHY work (issue #74) reports the identical
+D-PHY-never-receives result with the byte-identical table, corroborating
+that the missing driver-side steps — not the table values — are the
+difference.
+
+### Experiment 5: three driver fixes — RESULT: applied live, verified by MMIO, still zero frames
+
+1. **CTRL5 clobber fix**: removed {0x1014,0xd5} and {0x1018,0x01} from
+   the imported table; `lanes_enable()` now computes CTRL5 from the
+   actual lane count (1 lane → 0x81, verified read-back).
+2. **Settle round-up**: `settle_cnt` now rounds up (DIV_ROUND_UP) so
+   realized settle ≥ t_hs_settle floor (0x11→0x13 at 420 MHz; lane0
+   0x0008 and clock-lane 0x0e08 verified).
+3. **Unused-lane skip + mission exit + common regs**: lane blocks for
+   data lanes ≥ num_lanes are skipped; after lane programming, write
+   CTRL0=0x02 (2ph mission mode, matching
+   `csiphy_reset_exit_reg_2_1_2`) and the common pair {0x1084=0,
+   0x108C=0 + 1 ms} before IRQ masking.
+
+Module rebuilt/redeployed per reboot (srcversions B7FE97F9, E17C2264…);
+MMIO mid-stream confirms CTRL0=0x02, CTRL5=0x81, settle=0x13, lanes 1–3
+untouched. **Still zero frames.**
+
+### Experiment 6: settle sweep 0x01–0x3f during live TPG — RESULT: dead wire, not mistuning
+
+Sensor TPG on (test_pattern=1), sensor FSM verified STREAMING by the
+driver's own s_stream poll. Mid-stream, settle (0x0008 + 0x0e08) swept
+0x01..0x3f via /dev/mem while sampling csid0 `CSI2_RX_IRQ_STATUS`
+(0x9c), `CSI2_RDI0_IRQ_STATUS` (0xec), PHY STATUS0–3 (0x10b0..0x10bc),
+lane0/clk cal_status (0x20/0x0e20). **Union of all IRQ/status registers
+across the entire sweep: 0x00000000.** Only STATUS0 bit4 toggled as a
+constant settle-update strobe, value-independent. With a mistuned-but-
+alive receiver some settling value would produce ECC/CRC/latch bits;
+silence across 63 values means **no MIPI energy reaches the CSID**
+under any receiver tuning.
+
+### Experiment 7: cross-checks that narrow the fault domain
+
+- Media topology mid-capture: `vd55g1→csiphy0→csid0→vfe0_rdi0→video0`
+  all [ENABLED]; topology/routing correct.
+- Stale-process red herring eliminated (a forgotten `v4l2-ctl` had held
+  /dev/video0 EBUSY; after cleanup, tests reproducible).
+- Sensor-side CCI reads confirm OIF_CTRL=0x0001 (D-PHY 1 lane, phys
+  lane 0, no polarity inversion) and streaming state.
+- SCFG integers (Windows SCFG_AUX_MSHW0492): front/rear `0x150020` vs
+  IR `0x1500C0` — IR routing/config differs in bits 6–7; schema not
+  decoded (source-audit.md), parked as corroborating-only.
+
+### Standing conclusion after experiments 4–7
+
+The Linux driver now replicates everything the GPL downstream 2.1.2
+stack does for a 2-phase D-PHY stream, verified live by MMIO, and the
+wire is still dead across the full settle range while the sensor
+transmits. The only surviving hypothesis is that Windows' QTI camera
+stack programs csiphy0 D-PHY with additional steps beyond the GPL
+cam_csiphy core (proprietary extension or a different PHY-mode path).
+**The decisive evidence is an MMIO trace of a Windows Hello IR
+session** on this device, restricted to the csiphy0 page, per the
+gates in sp11-windows-capture/windbg/32-camera-camss-mmio-dump.txt.
+Runbook: `sp11-windows-capture/windbg/33-camera-csiphy0-dphy-hello-trace-runbook.md`.
