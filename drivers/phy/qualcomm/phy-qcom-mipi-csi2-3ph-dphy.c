@@ -9,7 +9,6 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/time64.h>
 
 #include "phy-qcom-mipi-csi2.h"
 
@@ -42,19 +41,6 @@ static const u32 csiphy_2ph_common_ctrl[] = {
 };
 
 /*
- * 3 phase CSI has 19 common status regs with only 0-10 being used
- * and 11-18 being reserved.
- */
-#define CSI_COMMON_STATUS_NUM				11
-/*
- * There are a number of common control registers
- * The offset to clear the CSIPHY IRQ status starts @ 22
- * So to clear CSI_COMMON_STATUS0 this is CSI_COMMON_CONTROL22, STATUS1 is
- * CONTROL23 and so on
- */
-#define CSI_CTRL_STATUS_INDEX				22
-
-/*
  * There are 43 COMMON_CTRL registers with regs after # 33 being reserved
  */
 #define CSI_CTRL_MAX					33
@@ -65,10 +51,13 @@ static const u32 csiphy_2ph_common_ctrl[] = {
 
 /* 4nm 2PH v 2.1.2 2p5Gbps 4 lane DPHY mode
  *
- * This is the same table the Surface Pro 11 Windows driver replays for the
- * D-PHY standard-rate path (qccammipicsi8380.sys, table VA 0x140010750,
- * 105 entries, CSIDPhyProgramPerFrequency). Verified byte-for-byte against
- * the vendor driver on 2026-11-20.
+ * This is the table the Surface Pro 11 Windows driver replays for the D-PHY
+ * standard-rate path (qccammipicsi8380.sys, table VA 0x140010750,
+ * CSIDPhyProgramPerFrequency). The register values below match the vendor
+ * table; entries this driver derives from negotiated state (0x1014/0x1018/
+ * 0x101c lane enables, the settle counts, 0x1084/0x108c and the final
+ * 0x1000 mission-mode write) are programmed from code, and the
+ * skew-calibration entries are skipped at replay time.
  *
  * The common CONTROL registers 0x1014/0x1018/0x101c are written by
  * phy_qcom_mipi_csi2_lanes_enable() from the negotiated configuration so
@@ -244,7 +233,7 @@ static void phy_qcom_mipi_csi2_lane_reset(struct mipi_csi2phy_device *csi2phy)
 		u32 block = i ? CSIPHY_2PH_LANE_BLOCK(i - 1) : CSIPHY_2PH_CLK_BLOCK;
 
 		writel(0x1, csi2phy->base + block + CSIPHY_2PH_LANE_RESET);
-		udelay(100);
+		usleep_range(100, 120);
 		writel(0x0, csi2phy->base + block + CSIPHY_2PH_LANE_RESET);
 	}
 }
@@ -253,11 +242,17 @@ static void phy_qcom_mipi_csi2_lane_reset(struct mipi_csi2phy_device *csi2phy)
  * phy_qcom_mipi_csi2_wait_refgen - Wait for the reference generator
  * @csi2phy: CSIPHY device
  *
- * The vendor driver refuses to start the PHY until bit 7 of the refgen
- * status register reads back set. Poll it for up to 100 ms. A timeout is
- * reported but does not abort the start sequence: the register reports
- * readiness only, and some firmware leaves it unasserted while the PHY
- * still operates.
+ * The vendor driver reads bit 7 of the refgen status register once, before
+ * it resets or programs anything, and fails the start if it is clear. The
+ * register only means something once the common block is out of power-down
+ * (CTRL6 COMMON_PWRDN_B), which this driver does inside lanes_enable(), so
+ * the check lives there and polls instead of sampling once.
+ *
+ * A timeout is reported but does not abort the start: neither the vendor
+ * behaviour on X1E80100 nor the bit's exact semantics on this SoC have been
+ * confirmed on hardware yet, and a false negative here would turn a possible
+ * camera into a guaranteed one. Revisit once a start with frames captured
+ * shows whether the bit asserts.
  */
 static bool phy_qcom_mipi_csi2_wait_refgen(struct mipi_csi2phy_device *csi2phy)
 {
@@ -281,9 +276,6 @@ static void phy_qcom_mipi_csi2_reset(struct mipi_csi2phy_device *csi2phy)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 
-	if (!phy_qcom_mipi_csi2_wait_refgen(csi2phy))
-		dev_warn(csi2phy->dev, "reference generator not ready after 100 ms\n");
-
 	writel(CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET,
 	       csi2phy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 	/* The vendor driver holds the reset for 20 us, not milliseconds. */
@@ -294,16 +286,6 @@ static void phy_qcom_mipi_csi2_reset(struct mipi_csi2phy_device *csi2phy)
 	phy_qcom_mipi_csi2_lane_reset(csi2phy);
 }
 
-/*
- * phy_qcom_mipi_csi2_settle_cnt_calc - Calculate settle count value
- *
- * Helper function to calculate settle count value. This is
- * based on the CSI2 T_hs_settle parameter which in turn
- * is calculated based on the CSI2 transmitter link frequency.
- *
- * Return settle count value or 0 if the CSI2 link frequency
- * is not available
- */
 /*
  * phy_qcom_mipi_csi2_settle_cnt_calc - Calculate the settle count
  * @link_freq: MIPI D-PHY lane bit rate in Hz
@@ -336,7 +318,7 @@ static u8 phy_qcom_mipi_csi2_settle_cnt_calc(s64 link_freq)
 	t_hs_prepare_max_ns = 6000 / data_rate_mbps;
 	t_hs_prepare_max_ns += 85;
 
-	/* ... divided by 2.5, truncated, then offset by the fixed 6 UI */
+	/* ... divided by 2.5, truncated, then offset by 10 units (25 ns) */
 	settle_cnt = (t_hs_prepare_max_ns * 2) / 5;
 	if (settle_cnt < 10)
 		return 0;
@@ -359,14 +341,14 @@ phy_qcom_mipi_csi2_gen2_config_lanes(struct mipi_csi2phy_device *csi2phy,
 		/*
 		 * The vendor driver programs all four data-lane blocks
 		 * unconditionally, even for a single-lane transmitter
-		 * (CSIDPhyProgramPerFrequency replays the whole 105-entry
-		 * table, no per-lane filtering). Do the same: skipping the
-		 * unused blocks deviated from the working Windows stack and
-		 * left the lane front-end in an unexpected state.
+		 * (CSIDPhyProgramPerFrequency replays the whole table, no
+		 * per-lane filtering). Do the same: skipping the unused blocks
+		 * deviated from the working Windows stack and left the lane
+		 * front-end in an unexpected state.
 		 */
 		switch (r->param_type) {
 		case CSIPHY_SETTLE_CNT_LOWER_BYTE:
-			val = settle_cnt & 0xff;
+			val = settle_cnt;
 			break;
 		case CSIPHY_SKEW_CAL:
 			/* TODO: support application of skew from dt flag */
@@ -388,7 +370,7 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	struct mipi_csi2phy_lanes_cfg *lane_cfg = &cfg->lane_cfg;
 	u8 settle_cnt;
 	u8 val;
-	int i;
+	unsigned int i;
 
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq);
 
@@ -413,6 +395,10 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 6));
 
+	/* Refgen only reports readiness once the common block is powered up. */
+	if (!phy_qcom_mipi_csi2_wait_refgen(csi2phy))
+		dev_warn(csi2phy->dev, "reference generator not ready after 100 ms\n");
+
 	val = 0x02;
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 7));
@@ -422,6 +408,19 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
 	phy_qcom_mipi_csi2_gen2_config_lanes(csi2phy, settle_cnt);
+
+	/*
+	 * Common control registers 11-21 (0x102c-0x1054). The vendor driver
+	 * loads these values from the GPL 2.1.2 sequence unconditionally;
+	 * they are not mask-all-interrupts registers as previously assumed.
+	 * Writing zero here deviated from the working Windows stack. They must
+	 * be programmed before CTRL0 leaves idle (vendor table order: 0x102c-
+	 * 0x1054 are entries 93-103, {0x1000, 0x02} is the final entry).
+	 */
+	for (i = 0; i < ARRAY_SIZE(csiphy_2ph_common_ctrl); i++)
+		writel(csiphy_2ph_common_ctrl[i], csi2phy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset,
+						       11 + i));
 
 	/*
 	 * Release the PHY from idle into 2-phase mission mode. Downstream
@@ -435,22 +434,12 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
 
 	/*
-	 * Common control registers 11-21 (0x102c-0x1054). The vendor driver
-	 * loads these values from the GPL 2.1.2 sequence unconditionally;
-	 * they are not mask-all-interrupts registers as previously assumed.
-	 * Writing zero here deviated from the working Windows stack.
-	 */
-	for (i = 0; i < ARRAY_SIZE(csiphy_2ph_common_ctrl); i++)
-		writel(csiphy_2ph_common_ctrl[i], csi2phy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset,
-						       11 + i));
-
-	/*
-	 * The vendor driver does not return from start until every lane and
-	 * the clock lane report ready: lane status dwords 0xc4/0x4c4/0x8c4/
-	 * 0xcc4 and clock status 0xec4 must all read zero (polled every
-	 * 1 ms, up to ~100 ms). Without the wait the CSI2 receiver can be
-	 * enabled while the PHY lanes are still settling.
+	 * The vendor polls the same lane status dwords after programming
+	 * (0xc4/0x4c4/0x8c4/0xcc4 and clock 0xec4 must all read zero, every
+	 * 1 ms for up to 100 iterations) and ignores the result there; its
+	 * enforced wait sits in the reset path instead. Keep the poll as a
+	 * diagnostic: without it the CSI2 receiver can be enabled while the
+	 * PHY lanes are still settling and nothing says why.
 	 */
 	for (i = 0; i < 100; i++) {
 		u32 status = 0;
