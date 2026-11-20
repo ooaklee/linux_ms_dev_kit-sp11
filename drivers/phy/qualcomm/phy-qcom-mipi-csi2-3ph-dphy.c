@@ -367,7 +367,6 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 					   struct mipi_csi2phy_stream_cfg *cfg)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
-	struct mipi_csi2phy_lanes_cfg *lane_cfg = &cfg->lane_cfg;
 	u8 settle_cnt;
 	u8 val;
 	unsigned int i;
@@ -385,8 +384,23 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	usleep_range(1000, 1100);
 
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
-	for (i = 0; i < cfg->num_data_lanes; i++)
-		val |= BIT(lane_cfg->data[i].pos * 2);
+	/*
+	 * Enable every data-lane RX block, as the vendor driver does.
+	 *
+	 * The generic D-PHY path has no way to pass lane positions down from
+	 * the device tree: phy_qcom_mipi_csi2_configure() fills
+	 * lane_cfg.data[i].pos with i (see the TODO there), so a sensor whose
+	 * endpoint uses data-lanes = <1> keeps its single lane on physical D1
+	 * while this mask would only turn on D0. Nothing reports the resulting
+	 * failure: the lanes_enable() ready-poll and the refgen wait only warn,
+	 * camss treats the PHY as up, CSID sees no packets and capture times
+	 * out with zero frames and zero errors.
+	 *
+	 * Enabling all four blocks costs nothing for the lanes that carry no
+	 * data and restores reception until the position is plumbed through.
+	 */
+	for (i = 0; i < CSI2_MAX_DATA_LANES; i++)
+		val |= BIT(i * 2);
 
 	writel(val, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5));
