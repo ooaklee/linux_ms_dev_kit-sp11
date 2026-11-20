@@ -22,6 +22,19 @@
 #define CSIPHY_3PH_CMN_CSI_COMMON_STATUSn(offset, n)	((offset) + 0xb0 + 0x4 * (n))
 
 /*
+ * 2.1.2 2-phase lane block layout, as used by the Surface Pro 11 Windows
+ * driver (qccammipicsi8380.sys, CameraMIPIPHY.c). The lane blocks are
+ * 0x400 apart and each carries its own reset line at +0x18; the clock
+ * lane sits at 0x0e00.
+ */
+#define CSIPHY_2PH_LANE_BLOCK(n)	(0x0400 * (n))
+#define CSIPHY_2PH_LANE_BLOCK_NUM	4
+#define CSIPHY_2PH_CLK_BLOCK		0x0e00
+#define CSIPHY_2PH_LANE_RESET		0x18
+#define CSIPHY_2PH_REFGEN_STATUS	0x10fc
+#define CSIPHY_2PH_REFGEN_READY		BIT(7)
+
+/*
  * 3 phase CSI has 19 common status regs with only 0-10 being used
  * and 11-18 being reserved.
  */
@@ -201,6 +214,54 @@ static void phy_qcom_mipi_csi2_hw_version_read(struct mipi_csi2phy_device *csi2p
 }
 
 /*
+ * phy_qcom_mipi_csi2_lane_reset - Pulse the per-lane reset lines
+ * @csi2phy: CSIPHY device
+ *
+ * The Windows driver (CameraMIPIPHY.c, CSIDPhyReset) releases the common
+ * block from software reset and then pulses the reset line of every lane
+ * block: clock lane first, then data lanes 0-3, each held asserted for
+ * 100 us. The imported GPL 2.1.2 sequence does not contain these writes at
+ * all, so without this the lane front-ends stay in their post-reset state
+ * on X1E80100 and no lane ever reports ready.
+ */
+static void phy_qcom_mipi_csi2_lane_reset(struct mipi_csi2phy_device *csi2phy)
+{
+	int i;
+
+	for (i = 0; i <= CSIPHY_2PH_LANE_BLOCK_NUM; i++) {
+		u32 block = i ? CSIPHY_2PH_LANE_BLOCK(i - 1) : CSIPHY_2PH_CLK_BLOCK;
+
+		writel(0x1, csi2phy->base + block + CSIPHY_2PH_LANE_RESET);
+		udelay(100);
+		writel(0x0, csi2phy->base + block + CSIPHY_2PH_LANE_RESET);
+	}
+}
+
+/*
+ * phy_qcom_mipi_csi2_wait_refgen - Wait for the reference generator
+ * @csi2phy: CSIPHY device
+ *
+ * The vendor driver refuses to start the PHY until bit 7 of the refgen
+ * status register reads back set. Poll it for up to 100 ms. A timeout is
+ * reported but does not abort the start sequence: the register reports
+ * readiness only, and some firmware leaves it unasserted while the PHY
+ * still operates.
+ */
+static bool phy_qcom_mipi_csi2_wait_refgen(struct mipi_csi2phy_device *csi2phy)
+{
+	int i;
+
+	for (i = 0; i < 100; i++) {
+		if (readl_relaxed(csi2phy->base + CSIPHY_2PH_REFGEN_STATUS) &
+		    CSIPHY_2PH_REFGEN_READY)
+			return true;
+		usleep_range(1000, 1500);
+	}
+
+	return false;
+}
+
+/*
  * phy_qcom_mipi_csi2_reset - Perform software reset on CSIPHY module
  * @phy_qcom_mipi_csi2: CSIPHY device
  */
@@ -208,11 +269,17 @@ static void phy_qcom_mipi_csi2_reset(struct mipi_csi2phy_device *csi2phy)
 {
 	const struct mipi_csi2phy_device_regs *regs = csi2phy_dev_to_regs(csi2phy);
 
+	if (!phy_qcom_mipi_csi2_wait_refgen(csi2phy))
+		dev_warn(csi2phy->dev, "reference generator not ready after 100 ms\n");
+
 	writel(CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET,
 	       csi2phy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
-	usleep_range(5000, 8000);
+	/* The vendor driver holds the reset for 20 us, not milliseconds. */
+	usleep_range(20, 30);
 	writel(0x0, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
+
+	phy_qcom_mipi_csi2_lane_reset(csi2phy);
 }
 
 /*
