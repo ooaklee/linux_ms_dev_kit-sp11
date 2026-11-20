@@ -292,32 +292,46 @@ static void phy_qcom_mipi_csi2_reset(struct mipi_csi2phy_device *csi2phy)
  * Return settle count value or 0 if the CSI2 link frequency
  * is not available
  */
-static u8 phy_qcom_mipi_csi2_settle_cnt_calc(s64 link_freq, u32 timer_clk_rate)
+/*
+ * phy_qcom_mipi_csi2_settle_cnt_calc - Calculate the settle count
+ * @link_freq: MIPI D-PHY lane bit rate in Hz
+ *
+ * The hardware counts the settle time in fixed 2.5 ns units; the vendor
+ * driver computes
+ *
+ *	((1000 / data_rate_mbps) * 6 + 85) / 2.5 - 10
+ *
+ * with integer truncation at every step and writes the result straight
+ * into the lane and clock settle registers. Deriving the count from the
+ * CSIPHY timer clock period instead (as this driver used to) yields a
+ * count ~35% too small on X1E80100: 0x13 vs 0x1d at 420 Mbps, i.e. the
+ * realizable settle time falls below the D-PHY floor.
+ */
+static u8 phy_qcom_mipi_csi2_settle_cnt_calc(s64 link_freq)
 {
-	u32 t_hs_prepare_max_ps;
-	u32 timer_period_ps;
-	u32 t_hs_settle_ps;
-	u8 settle_cnt;
-	u32 ui_ps;
+	u32 data_rate_mbps;
+	u32 t_hs_prepare_max_ns;
+	u32 settle_cnt;
 
 	if (link_freq <= 0)
 		return 0;
 
-	ui_ps = div_u64(PSEC_PER_SEC, link_freq);
-	ui_ps /= 2;
-	t_hs_prepare_max_ps = 85000 + 6 * ui_ps;
-	t_hs_settle_ps = t_hs_prepare_max_ps;
+	data_rate_mbps = div_u64(link_freq, 1000000);
+	if (!data_rate_mbps)
+		return 0;
 
-	timer_period_ps = div_u64(PSEC_PER_SEC, timer_clk_rate);
-	/*
-	 * Round up: the realized settle time (cnt + 6) * period must stay
-	 * >= t_hs_settle. Integer truncation here yielded counts one below
-	 * the minimum at 420 MHz / 266.67 MHz timer (18 vs 19, realized
-	 * 90.0 ns vs the 92.1 ns floor, observed on X1E80100).
-	 */
-	settle_cnt = DIV_ROUND_UP(t_hs_settle_ps, timer_period_ps) - 6;
+	/* (1000 / data_rate) * 6, truncated to whole nanoseconds */
+	t_hs_prepare_max_ns = 6000 / data_rate_mbps;
+	t_hs_prepare_max_ns += 85;
 
-	return settle_cnt;
+	/* ... divided by 2.5, truncated, then offset by the fixed 6 UI */
+	settle_cnt = (t_hs_prepare_max_ns * 2) / 5;
+	if (settle_cnt < 10)
+		return 0;
+
+	settle_cnt -= 10;
+
+	return min_t(u32, settle_cnt, 0xff);
 }
 
 static void
@@ -369,7 +383,7 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	u8 val;
 	int i;
 
-	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq, csi2phy->timer_clk_rate);
+	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq);
 
 	/*
 	 * Common-block analog setup, matching downstream 2.1.2
