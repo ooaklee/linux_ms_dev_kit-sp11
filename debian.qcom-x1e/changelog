@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v7) stonking; urgency=medium
+
+  * media: qcom: camss: port upstream ba5752445d3d - normalize data-lanes
+    base for the standalone (non-legacy) CSIPHY mode. X1E80100 uses the
+    standalone CSIPHY, where data-lanes start at 1; the parser copied the
+    DT value verbatim, so data-lanes=<1> programmed PHY lane block 1 and
+    CSID DL0_INPUT_SEL=1 while the VD55G0 transmits on physical lane 0.
+    Sensor streams (frame counter advances) but the CSID receiver watched
+    an unconnected wire: zero packets, zero RX IRQs, no lane errors.
+    With lane_base=1 the endpoint keeps data-lanes=<1> and both the PHY
+    lane block and the CSID decoder input select the first data lane.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 13:30:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v5) stonking; urgency=medium
 
   * Diagnostic build, correction and packet evidence. X1E80100 selects
