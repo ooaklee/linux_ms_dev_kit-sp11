@@ -4800,6 +4800,11 @@ static int camss_parse_endpoint_node(struct device *dev,
 	csd->interface.csiphy_id = vep.base.port;
 	csd->interface.csi2.bus_type = vep.bus_type;
 
+	/* The private Denali C-PHY keeps 0-based trio indexing; the
+	 * standalone D-PHY data-lane base does not apply to it. */
+	if (private_cphy)
+		lane_base = 0;
+
 	mipi_csi2 = &vep.bus.mipi_csi2;
 	if (private_cphy &&
 	    (mipi_csi2->num_data_lanes != 1 ||

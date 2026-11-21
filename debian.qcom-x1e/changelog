@@ -1,3 +1,15 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v8) stonking; urgency=medium
+
+  * media: qcom: camss: correct the lane_base port for the private Denali
+    C-PHY. v7 applied the standalone D-PHY data-lane base (1) to the imx681
+    C-PHY endpoint as well, and data-lanes=<0> (trio 0, 0-based) was
+    rejected as invalid: "invalid data-lane 0", qcom-camss probe -22, no
+    /dev/video0 at all. The private Denali C-PHY keeps 0-based trio
+    indexing; neutralize lane_base for private C-PHY endpoints only. The
+    VD55G0 D-PHY endpoint still normalizes data-lanes=<1> to lane pos 0.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 14:05:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v7) stonking; urgency=medium
 
   * media: qcom: camss: port upstream ba5752445d3d - normalize data-lanes
