@@ -8,10 +8,14 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/atomic.h>
 
 #include "camss.h"
 #include "camss-csid.h"
 #include "camss-csid-gen2.h"
+
+/* SP11 diagnostic: log the first few CSID interrupts and their status words. */
+static atomic_t csid_dbg_irqs = ATOMIC_INIT(0);
 
 #define CSID_TOP_IO_PATH_CFG0(csid)				(0x4 * (csid))
 #define		CSID_TOP_IO_PATH_CFG0_INTERNAL_CSID		BIT(0)
@@ -213,6 +217,11 @@ static void __csid_configure_rx(struct csid_device *csid,
 
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);
 
+	dev_info(csid->camss->dev,
+		 "csid%d rx_cfg0=0x%08x (lanes=%u assign=0x%x phy=%u vc=%d tpg=%d)\n",
+		 csid->id, val, phy->lane_cnt, phy->lane_assign,
+		 phy->csiphy_id, vc, csid->tpg_linked);
+
 	val = CSI2_RX_CFG1_PACKET_ECC_CORRECTION_EN;
 	if (vc > 3)
 		val |= CSI2_RX_CFG1_VC_MODE;
@@ -372,6 +381,13 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	int i;
 
+	if (enable)
+		dev_info(csid->camss->dev,
+			 "csid%d configure: csiphy=%u lanes=%u lane_assign=0x%x en_vc=0x%x mbus=0x%x\n",
+			 csid->id, csid->phy.csiphy_id, csid->phy.lane_cnt,
+			 csid->phy.lane_assign, csid->phy.en_vc,
+			 csid->fmt[0].code);
+
 	__csid_configure_top(csid);
 
 	/* Loop through all enabled ports and configure a stream for each */
@@ -476,6 +492,12 @@ static irqreturn_t csid_isr(int irq, void *dev)
 
 	/* Issue clear command */
 	writel(CSID_IRQ_CMD_CLEAR, csid->base + CSID_IRQ_CMD);
+
+	if (atomic_inc_return(&csid_dbg_irqs) <= 24)
+		dev_info(csid->camss->dev,
+			 "csid%d isr: top=0x%08x rx=0x%08x bufdone=0x%08x rdi0=0x%08x\n",
+			 csid->id, val_top, val, buf_done_val,
+			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(0)));
 
 	/* Reset complete */
 	if (val_top & CSID_TOP_IRQ_RESET)

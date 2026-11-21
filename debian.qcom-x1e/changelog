@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v5) stonking; urgency=medium
+
+  * Diagnostic build, correction: X1E80100 uses csid_ops_680 and
+    vfe_ops_680, not csid_ops_gen3, so the v4 CSID instrumentation was dead
+    code for this SoC. vfe_ops_680 has a stub ISR and takes bus-done from
+    CSID, so VFE interrupts carry no information here.
+  * camss: csid 680: log the stream configuration (csiphy, lane count, lane
+    assignment, enabled virtual channels, media bus code, RX_CFG0 value) and
+    the first 24 interrupt status words (top, CSI2 RX, buffer done, RDI0).
+  * phy: qcom-mipi-csi2: unchanged from v4 (lane_pos, ctrl5_mask and the
+    register evidence at stream start).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 00:20:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v4) stonking; urgency=medium
 
   * Diagnostic build for the VD55G0 capture path. Streaming still delivers no
