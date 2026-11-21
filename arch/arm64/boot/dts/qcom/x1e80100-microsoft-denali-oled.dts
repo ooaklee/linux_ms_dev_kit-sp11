@@ -193,9 +193,11 @@
 		port {
 			vd55g0_ep: endpoint {
 				data-lanes = <1>;
-				/* MIPI 768Mbps = 40 x 19.2MHz integer rule (Lebedev series);
-			 * only valid in-window value at 19.2MHz xclk (750-1200Mbps) */
-			link-frequencies = /bits/ 64 <384000000>;
+				/* MIPI 840Mbps — matches the Windows Chromatix payload for
+			 * this SKU (MSHW0492: 0x0224=0x32116200, 19.2MHz xclk).
+			 * 768Mbps matched an integer-divisor rule but the sensor
+			 * never transmitted; Windows evidence wins. */
+			link-frequencies = /bits/ 64 <420000000>;
 				remote-endpoint = <&camss_csiphy0_inep0>;
 			};
 		};
