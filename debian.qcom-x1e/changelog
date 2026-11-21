@@ -1,3 +1,22 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v9) stonking; urgency=medium
+
+  * media: i2c: ov13858: bring up the Denali rear camera. Add the
+    Windows-authoritative 1186 Mbps MIPI PLL table (592.8 MHz link
+    frequency, index 0) and the 4076x2806 binned mode; register values
+    validated 196/197 against the Windows Chromatix payload
+    (rfc_ov13858.bin), the single divergence at 0x3106 keeps the
+    reference-patch value 0x15 per review. Retry the software-reset
+    register write once (first SCCB transaction after power-up can
+    transiently fail -EIO; reset write is idempotent).
+  * arm64: dts: denali: rear OV13858 wiring. pm8010 ldo1 (1.2V dvdd),
+    ldo5 (2.8V avdd), ldo6 (1.8V dovdd) with vdd-l5/l6 supply
+    parents; cci0_i2c1 at 400 kHz with rear-camera@10 (CAM_CC_MCLK1
+    19.2 MHz, reset tlmm110, 4-lane D-PHY to csiphy1, all three link
+    frequencies advertised); csiphy1 endpoint override and supplies;
+    cam_rear_default pinctrl (gpio97 mclk, gpio110 reset).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 22:10:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v8) stonking; urgency=medium
 
   * media: qcom: camss: correct the lane_base port for the private Denali
