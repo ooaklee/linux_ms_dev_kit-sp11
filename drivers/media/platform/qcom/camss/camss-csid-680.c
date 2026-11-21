@@ -14,8 +14,13 @@
 #include "camss-csid.h"
 #include "camss-csid-gen2.h"
 
-/* SP11 diagnostic: log the first few CSID interrupts and their status words. */
-static atomic_t csid_dbg_irqs = ATOMIC_INIT(0);
+/* HW version register (same offset the core reads in csid_hw_version()). */
+#define CSID_680_HW_VERSION 0x0
+
+/* SP11 diagnostic: per-CSID log budget, reset at each stream start. */
+static atomic_t csid_dbg_irqs[4] = {
+	ATOMIC_INIT(0), ATOMIC_INIT(0), ATOMIC_INIT(0), ATOMIC_INIT(0)
+};
 
 #define CSID_TOP_IO_PATH_CFG0(csid)				(0x4 * (csid))
 #define		CSID_TOP_IO_PATH_CFG0_INTERNAL_CSID		BIT(0)
@@ -341,39 +346,36 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 static void csid_log_status(struct csid_device *csid)
 {
-	struct v4l2_mbus_framefmt *sink_format =
-		&csid->fmt[MSM_CSID_PAD_SINK];
 	int i;
 
-	if (csid->camss->res->version != CAMSS_X1E80100 ||
-	    !csid_is_sp11_imx681_format(csid, sink_format))
+	/* SP11: any X1E80100 sensor gets the packet counters, not just IMX681. */
+	if (csid->camss->res->version != CAMSS_X1E80100)
 		return;
 
-	dev_dbg(csid->camss->dev,
-		"CSID%u IMX681 stop: RX_CFG0=%#010x RX_CFG1=%#010x TOTAL_PKTS=%u ECC=%u CRC=%u\n",
-		csid->id, readl(csid->base + CSID_CSI2_RX_CFG0),
-		readl(csid->base + CSID_CSI2_RX_CFG1),
-		readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
-		readl(csid->base + CSID_CSI2_RX_STATS_ECC),
-		readl(csid->base + CSID_CSI2_RX_CRC_ERRORS));
-	dev_dbg(csid->camss->dev,
-		"CSID%u IMX681 IRQ: TOP=%#010x BUF_DONE=%#010x RX=%#010x\n",
-		csid->id, readl(csid->base + CSID_TOP_IRQ_STATUS),
-		readl(csid->base + CSID_BUF_DONE_IRQ_STATUS),
-		readl(csid->base + CSID_CSI2_RX_IRQ_STATUS));
+	dev_info(csid->camss->dev,
+		 "csid%d stop: pkts=%u ecc=%u crc=%u rx_cfg0=%#010x rx_cfg1=%#010x rx_mask=%#010x rx_irq=%#010x top=%#010x bufdone=%#010x\n",
+		 csid->id,
+		 readl(csid->base + CSID_CSI2_RX_TOTAL_PKTS_RCVD),
+		 readl(csid->base + CSID_CSI2_RX_STATS_ECC),
+		 readl(csid->base + CSID_CSI2_RX_CRC_ERRORS),
+		 readl(csid->base + CSID_CSI2_RX_CFG0),
+		 readl(csid->base + CSID_CSI2_RX_CFG1),
+		 readl(csid->base + CSID_CSI2_RX_IRQ_MASK),
+		 readl(csid->base + CSID_CSI2_RX_IRQ_STATUS),
+		 readl(csid->base + CSID_TOP_IRQ_STATUS),
+		 readl(csid->base + CSID_BUF_DONE_IRQ_STATUS));
 
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
 		if (!(csid->phy.en_vc & BIT(i)))
 			continue;
 
-		dev_dbg(csid->camss->dev,
-			"CSID%u IMX681 linked RDI%d: IRQ=%#010x CFG0=%#010x CTRL=%#010x CFG1=%#010x HCROP=%#010x\n",
-			csid->id, i,
-			readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
-			readl(csid->base + CSID_RDI_CFG0(i)),
-			readl(csid->base + CSID_RDI_CTRL(i)),
-			readl(csid->base + CSID_RDI_CFG1(i)),
-			readl(csid->base + CSID_RDI_RPP_HCROP(i)));
+		dev_info(csid->camss->dev,
+			 "csid%d rdi%d: irq=%#010x cfg0=%#010x ctrl=%#010x cfg1=%#010x\n",
+			 csid->id, i,
+			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i)),
+			 readl(csid->base + CSID_RDI_CFG0(i)),
+			 readl(csid->base + CSID_RDI_CTRL(i)),
+			 readl(csid->base + CSID_RDI_CFG1(i)));
 	}
 }
 
@@ -388,6 +390,8 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 			 csid->phy.lane_assign, csid->phy.en_vc,
 			 csid->fmt[0].code);
 
+	atomic_set(&csid_dbg_irqs[csid->id & 3], 0);
+
 	__csid_configure_top(csid);
 
 	/* Loop through all enabled ports and configure a stream for each */
@@ -398,6 +402,15 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 			__csid_ctrl_rdi(csid, enable, i);
 		}
 	}
+
+	if (enable)
+		dev_info(csid->camss->dev,
+			 "csid%d post-config: hw=0x%08x rx_cfg0=0x%08x rx_cfg1=0x%08x rdi0_cfg0=0x%08x rdi0_ctrl=0x%08x\n",
+			 csid->id, readl(csid->base + CSID_680_HW_VERSION),
+			 readl(csid->base + CSID_CSI2_RX_CFG0),
+			 readl(csid->base + CSID_CSI2_RX_CFG1),
+			 readl(csid->base + CSID_RDI_CFG0(0)),
+			 readl(csid->base + CSID_RDI_CTRL(0)));
 }
 
 /*
@@ -462,16 +475,16 @@ static void csid_rup_complete(struct csid_device *csid, int rdi)
 static irqreturn_t csid_isr(int irq, void *dev)
 {
 	struct csid_device *csid = dev;
-	u32 buf_done_val, val, val_top;
+	u32 buf_done_val, rx_val, val, val_top, rdi0_val = 0;
 	int i;
 
 	/* Latch and clear TOP status */
 	val_top = readl(csid->base + CSID_TOP_IRQ_STATUS);
 	writel(val_top, csid->base + CSID_TOP_IRQ_CLEAR);
 
-	/* Latch and clear CSID_CSI2 status */
-	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
-	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+	/* Latch and clear CSID_CSI2 status; keep the latched word for logging */
+	rx_val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
+	writel(rx_val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
 
 	/* Latch and clear top level BUF_DONE status */
 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
@@ -480,6 +493,8 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	/* Process state for each RDI channel */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
 		val = readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
+		if (i == 0)
+			rdi0_val = val;
 		if (val)
 			writel(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
 
@@ -493,15 +508,16 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	/* Issue clear command */
 	writel(CSID_IRQ_CMD_CLEAR, csid->base + CSID_IRQ_CMD);
 
-	if (atomic_inc_return(&csid_dbg_irqs) <= 24)
-		dev_info(csid->camss->dev,
-			 "csid%d isr: top=0x%08x rx=0x%08x bufdone=0x%08x rdi0=0x%08x\n",
-			 csid->id, val_top, val, buf_done_val,
-			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(0)));
-
 	/* Reset complete */
 	if (val_top & CSID_TOP_IRQ_RESET)
 		complete(&csid->reset_complete);
+
+	/* Log real event traffic only; the reset interrupt alone is not data. */
+	if ((val_top | rx_val | buf_done_val | rdi0_val) &&
+	    atomic_inc_return(&csid_dbg_irqs[csid->id & 3]) <= 32)
+		dev_info(csid->camss->dev,
+			 "csid%d isr: top=0x%08x rx=0x%08x bufdone=0x%08x rdi0=0x%08x\n",
+			 csid->id, val_top, rx_val, buf_done_val, rdi0_val);
 
 	return IRQ_HANDLED;
 }

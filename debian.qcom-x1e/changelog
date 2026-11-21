@@ -1,14 +1,23 @@
 linux-qcom-x1e (7.3.3-jg-1sp11v5) stonking; urgency=medium
 
-  * Diagnostic build, correction: X1E80100 uses csid_ops_680 and
-    vfe_ops_680, not csid_ops_gen3, so the v4 CSID instrumentation was dead
-    code for this SoC. vfe_ops_680 has a stub ISR and takes bus-done from
-    CSID, so VFE interrupts carry no information here.
-  * camss: csid 680: log the stream configuration (csiphy, lane count, lane
-    assignment, enabled virtual channels, media bus code, RX_CFG0 value) and
-    the first 24 interrupt status words (top, CSI2 RX, buffer done, RDI0).
-  * phy: qcom-mipi-csi2: unchanged from v4 (lane_pos, ctrl5_mask and the
-    register evidence at stream start).
+  * Diagnostic build, correction and packet evidence. X1E80100 selects
+    csid_ops_680 and vfe_ops_680, so the v4 CSID instrumentation was dead
+    code for this SoC and vfe_ops_680 has a stub ISR with bus-done taken
+    from CSID: VFE interrupts carry no information here.
+  * camss: csid 680: log the stream configuration, the RX_CFG0 value written
+    and the first 32 interrupt status words per CSID and stream (top, CSI2
+    RX, buffer done, RDI0), fixing the v4/v5 draft that reported the last
+    RDI word as the RX word and sampled RDI0 after the clear.
+  * camss: csid 680: the IMX681-only stop dump (packet, ECC and CRC
+    counters, RX_CFG0/1, RX mask, RDI0 config) now runs for every X1E80100
+    sensor at dev_info level, so a stopped stream states whether the
+    receiver saw any packet at all.
+  * phy: qcom-mipi-csi2: new bit_rate_x2 parameter. The settle calculation
+    documents a lane bit rate in Mbps but receives the 384 MHz link clock
+    from CAMSS while the sensor transmits 768 Mb/s, giving settle 0x1e
+    instead of 0x1a. Both values are logged; the corrected one is testable
+    without a rebuild. lane_pos and ctrl5_mask still present from v4.
+  * vd55g1: log the sensor MIPI rate and OIF_CTRL when streaming begins.
 
  -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 00:20:00 +0000
 

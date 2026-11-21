@@ -2200,7 +2200,7 @@ static int vd55g1_enable_streams(struct v4l2_subdev *sd,
 		goto err_rollback;
 
 	dev_info(sensor->dev,
-		 "streaming started: mipi_rate=%d oif_ctrl=0x%04x\n",
+		 "streaming started: mipi_rate=%u oif_ctrl=0x%04x\n",
 		 sensor->mipi_rate, sensor->oif_ctrl);
 
 	vd55g1_grab_ctrls(sensor, true);

@@ -271,7 +271,7 @@ static irqreturn_t csid_isr(int irq, void *dev)
 {
 	struct csid_device *csid = dev;
 	u32 val, buf_done_val;
-	u32 dbg_top, dbg_rx;
+	u32 dbg_top, dbg_rx, dbg_rdi0 = 0;
 	u8 reset_done;
 	int i;
 
@@ -289,6 +289,8 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {
 			val = readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
+			if (i == 0)
+				dbg_rdi0 = val;
 			writel(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
 
 			if (val & RUP_DONE_IRQ_STATUS)
@@ -311,8 +313,7 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	if (atomic_inc_return(&csid_dbg_irqs) <= 24)
 		dev_info(csid->camss->dev,
 			 "csid%d isr: top=0x%08x rx=0x%08x bufdone=0x%08x rdi0=0x%08x\n",
-			 csid->id, dbg_top, dbg_rx, buf_done_val,
-			 readl(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(0)));
+			 csid->id, dbg_top, dbg_rx, buf_done_val, dbg_rdi0);
 
 	if (reset_done)
 		complete(&csid->reset_complete);

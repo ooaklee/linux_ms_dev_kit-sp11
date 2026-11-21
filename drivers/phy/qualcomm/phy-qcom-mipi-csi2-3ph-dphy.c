@@ -21,6 +21,14 @@ static int ctrl5_mask = -1;
 module_param(ctrl5_mask, int, 0644);
 MODULE_PARM_DESC(ctrl5_mask, "Override CTRL5 lane-enable value (-1 = all RX blocks)");
 
+/*
+ * SP11 diagnostic: treat the incoming link frequency as the lane bit rate
+ * (link x2) when computing the settle count.
+ */
+static bool bit_rate_x2;
+module_param(bit_rate_x2, bool, 0644);
+MODULE_PARM_DESC(bit_rate_x2, "Compute settle from 2x link frequency (bit rate)");
+
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(offset, n)	((offset) + 0x4 * (n))
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET	BIT(0)
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE	BIT(7)
@@ -264,7 +272,8 @@ static void phy_qcom_mipi_csi2_lane_reset(struct mipi_csi2phy_device *csi2phy)
  * shows whether the bit asserts.
  */
 static bool phy_qcom_mipi_csi2_wait_refgen(struct mipi_csi2phy_device *csi2phy)
-{	int i;
+{
+	int i;
 
 	for (i = 0; i < 100; i++) {
 		if (readl_relaxed(csi2phy->base + CSIPHY_2PH_REFGEN_STATUS) &
@@ -379,7 +388,17 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	u8 val;
 	unsigned int i;
 
+	/*
+	 * SP11 diagnostic: cfg->link_freq arrives from CAMSS as the link clock
+	 * (384 MHz for VD55G0), but the vendor settle formula in
+	 * phy_qcom_mipi_csi2_settle_cnt_calc() is written for the lane bit rate
+	 * in Mbps (768 Mb/s for a 2-bit-per-clock sensor). Keep the shipped
+	 * interpretation by default and allow the corrected one to be tested
+	 * without another build.
+	 */
 	settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq);
+	if (bit_rate_x2)
+		settle_cnt = phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq * 2);
 
 	/*
 	 * Common-block analog setup, matching the vendor 2.1.2 sequence for
@@ -417,11 +436,13 @@ static int phy_qcom_mipi_csi2_lanes_enable(struct mipi_csi2phy_device *csi2phy,
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5));
 
 	dev_info(csi2phy->dev,
-		 "lanes_enable: lanes=%u pos=%u ctrl5=0x%02x rb=0x%02x settle=%u link_freq=%lld\n",
+		 "lanes_enable: lanes=%u pos=%u ctrl5=0x%02x rb=0x%02x settle=%u settle_x2=%u link_freq=%lld\n",
 		 cfg->num_data_lanes, cfg->lane_cfg.data[0].pos, val,
 		 readl_relaxed(csi2phy->base +
 			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 5)),
-		 settle_cnt, cfg->link_freq);
+		 settle_cnt,
+		 phy_qcom_mipi_csi2_settle_cnt_calc(cfg->link_freq * 2),
+		 cfg->link_freq);
 
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B;
 	writel(val, csi2phy->base +
