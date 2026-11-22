@@ -1,3 +1,125 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v9) stonking; urgency=medium
+
+  * media: i2c: ov13858: bring up the Denali rear camera. Add the
+    Windows-authoritative 1186 Mbps MIPI PLL table (592.8 MHz link
+    frequency, index 0) and the 4076x2806 binned mode; register values
+    validated 196/197 against the Windows Chromatix payload
+    (rfc_ov13858.bin), the single divergence at 0x3106 keeps the
+    reference-patch value 0x15 per review. Retry the software-reset
+    register write once (first SCCB transaction after power-up can
+    transiently fail -EIO; reset write is idempotent).
+  * arm64: dts: denali: rear OV13858 wiring. pm8010 ldo1 (1.2V dvdd),
+    ldo5 (2.8V avdd), ldo6 (1.8V dovdd) with vdd-l5/l6 supply
+    parents; cci0_i2c1 at 400 kHz with rear-camera@10 (CAM_CC_MCLK1
+    19.2 MHz, reset tlmm110, 4-lane D-PHY to csiphy1, all three link
+    frequencies advertised); csiphy1 endpoint override and supplies;
+    cam_rear_default pinctrl (gpio97 mclk, gpio110 reset).
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 22:10:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v8) stonking; urgency=medium
+
+  * media: qcom: camss: correct the lane_base port for the private Denali
+    C-PHY. v7 applied the standalone D-PHY data-lane base (1) to the imx681
+    C-PHY endpoint as well, and data-lanes=<0> (trio 0, 0-based) was
+    rejected as invalid: "invalid data-lane 0", qcom-camss probe -22, no
+    /dev/video0 at all. The private Denali C-PHY keeps 0-based trio
+    indexing; neutralize lane_base for private C-PHY endpoints only. The
+    VD55G0 D-PHY endpoint still normalizes data-lanes=<1> to lane pos 0.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 14:05:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v7) stonking; urgency=medium
+
+  * media: qcom: camss: port upstream ba5752445d3d - normalize data-lanes
+    base for the standalone (non-legacy) CSIPHY mode. X1E80100 uses the
+    standalone CSIPHY, where data-lanes start at 1; the parser copied the
+    DT value verbatim, so data-lanes=<1> programmed PHY lane block 1 and
+    CSID DL0_INPUT_SEL=1 while the VD55G0 transmits on physical lane 0.
+    Sensor streams (frame counter advances) but the CSID receiver watched
+    an unconnected wire: zero packets, zero RX IRQs, no lane errors.
+    With lane_base=1 the endpoint keeps data-lanes=<1> and both the PHY
+    lane block and the CSID decoder input select the first data lane.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 13:30:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v5) stonking; urgency=medium
+
+  * Diagnostic build, correction and packet evidence. X1E80100 selects
+    csid_ops_680 and vfe_ops_680, so the v4 CSID instrumentation was dead
+    code for this SoC and vfe_ops_680 has a stub ISR with bus-done taken
+    from CSID: VFE interrupts carry no information here.
+  * camss: csid 680: log the stream configuration, the RX_CFG0 value written
+    and the first 32 interrupt status words per CSID and stream (top, CSI2
+    RX, buffer done, RDI0), fixing the v4/v5 draft that reported the last
+    RDI word as the RX word and sampled RDI0 after the clear.
+  * camss: csid 680: the IMX681-only stop dump (packet, ECC and CRC
+    counters, RX_CFG0/1, RX mask, RDI0 config) now runs for every X1E80100
+    sensor at dev_info level, so a stopped stream states whether the
+    receiver saw any packet at all.
+  * phy: qcom-mipi-csi2: new bit_rate_x2 parameter. The settle calculation
+    documents a lane bit rate in Mbps but receives the 384 MHz link clock
+    from CAMSS while the sensor transmits 768 Mb/s, giving settle 0x1e
+    instead of 0x1a. Both values are logged; the corrected one is testable
+    without a rebuild. lane_pos and ctrl5_mask still present from v4.
+  * vd55g1: log the sensor MIPI rate and OIF_CTRL when streaming begins.
+
+ -- Leon Silcott <leon@boasi.io>  Sat, 21 Nov 2026 00:20:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v4) stonking; urgency=medium
+
+  * Diagnostic build for the VD55G0 capture path. Streaming still delivers no
+    frames; this build adds the register evidence needed to separate "sensor
+    not transmitting", "PHY not locked" and "CSID rejecting packets".
+  * phy: qcom-mipi-csi2: add lane_pos and ctrl5_mask module parameters so a
+    receive-lane sweep needs no rebuild per candidate, and log the CTRL5
+    readback, the reference-generator result and the per-lane status dwords at
+    stream start.
+  * camss: csid gen3: log the decoder configuration (csiphy, lane count, lane
+    assignment, enabled virtual channels, media bus code) and the first 24
+    interrupt status words (top, CSI2 RX, buffer done, RDI0).
+  * vd55g1: log the sensor MIPI rate and OIF_CTRL when streaming begins.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 12 Nov 2026 23:55:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v3) stonking; urgency=medium
+
+  * phy: qcom-mipi-csi2: enable every data-lane RX block. The generic D-PHY
+    configure path cannot carry lane positions from the device tree
+    (phy_qcom_mipi_csi2_configure() fills lane_cfg.data[i].pos with i), so
+    lanes_enable() only powered D0 while the VD55G0 IR sensor transports its
+    single lane as physical lane 1 (data-lanes = <1>) and camss programs
+    CSID for position 1. The receiver and transmitter disagreed about the
+    wire, and every failure path only warned: camss reported the PHY up,
+    STREAMON succeeded, CSID0 raised no interrupt, and capture timed out
+    with zero frames - including with the sensor's own test pattern.
+    Enabling all four data-lane blocks matches the vendor driver and is
+    independent of which physical lane the board wires.
+
+ -- Leon Silcott <leon@boasi.io>  Thu, 20 Nov 2026 19:30:00 +0000
+
+linux-qcom-x1e (7.3.3-jg-1sp11v2) stonking; urgency=medium
+
+  * D-PHY start-sequence parity with the Surface Pro 11 Windows camera
+    stack (qccammipicsi8380.sys, REA static analysis 2026-11-20), for the
+    VD55G0 zero-frame fault on csiphy0:
+    - reset every lane block during D-PHY reset: pulse the per-lane reset
+      line at block +0x18 (clock lane first, then data lanes 0-3, 100 us)
+      after the common software reset; this write was entirely missing;
+    - gate the reset on the reference generator reporting ready (0x10fc
+      bit 7) and match the vendor 20 us common reset pulse;
+    - drop the per-lane table filtering: the vendor driver programs all
+      four data-lane blocks, even for a single-lane transmitter;
+    - write the GPL 2.1.2 values for common control registers 11-21
+      (0x102c-0x1054: ff fe e6 df df fc fb 9b 7f bf ff) instead of zero;
+    - poll lane/clock status (0xc4/0x4c4/0x8c4/0xcc4/0xec4) until ready
+      after programming, as the vendor driver does before start succeeds;
+    - compute the settle count in the vendor's 2.5 ns units
+      ((1000/mbps)*6+85)/2.5-10: 0x1e at 384 Mbps instead of 0x13.
+  * Carries the 7.3.3-jg-1 base with no other delta against 1sp11v1.
+
+ -- Leon Silcott <leon@boasi.io>  Fri, 20 Nov 2026 13:30:00 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v1) stonking; urgency=medium
 
   * Rebase the SP11 device delta onto upstream 7.3.3-jg-1

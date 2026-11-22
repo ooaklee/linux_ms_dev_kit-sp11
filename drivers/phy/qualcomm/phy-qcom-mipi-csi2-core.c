@@ -23,6 +23,16 @@
 #include "phy-qcom-mipi-csi2.h"
 #include "phy-qcom-mipi-csi2-cphy.h"
 
+/*
+ * SP11 diagnostic: the generic D-PHY path cannot carry data-lane positions
+ * from device tree, so lane_cfg.data[i].pos is filled with i. Allow a test
+ * override so the lane sweep needs no rebuild per candidate. -1 keeps the
+ * upstream behaviour.
+ */
+static int lane_pos = -1;
+module_param(lane_pos, int, 0644);
+MODULE_PARM_DESC(lane_pos, "Override data-lane position 0-3 (-1 = use lane index)");
+
 static int
 phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
 				   s64 link_freq)
@@ -103,11 +113,15 @@ static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 	 */
 	for (i = 0; i < stream_cfg->num_data_lanes; i++) {
 		stream_cfg->lane_cfg.data[i].pol = 0;
-		stream_cfg->lane_cfg.data[i].pos = i;
+		stream_cfg->lane_cfg.data[i].pos = (lane_pos >= 0) ? lane_pos : i;
 	}
 
 	stream_cfg->lane_cfg.clk.pol = 0;
 	stream_cfg->lane_cfg.clk.pos = 7;
+
+	dev_info(&phy->dev, "configure: lanes=%u pos[lane0]=%u link_freq=%lld\n",
+		 stream_cfg->num_data_lanes, stream_cfg->lane_cfg.data[0].pos,
+		 stream_cfg->link_freq);
 
 	return 0;
 }
