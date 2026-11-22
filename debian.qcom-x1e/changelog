@@ -1,3 +1,17 @@
+linux-qcom-x1e (7.3.3-jg-1sp11v10) stonking; urgency=medium
+
+  * Release the integrated SP11 camera bring-up from the default 7.3.y
+    branch: standalone D-PHY initialization and CAMSS lane-index fixes,
+    VD55G1 IR capture, and OV13858 rear-camera wiring and mode support.
+  * Front and rear RGB capture verified through PipeWire and Google Meet;
+    IR GREY capture verified separately. Desktop camera labels are supplied
+    by the companion camera-harmony configuration (OE PR #87).
+  * Repackage the merged v9 camera sources as v10; biometric matching,
+    automatic IR illumination, and reboot/suspend qualification remain
+    outside the completed capture verification.
+
+ -- Leon Silcott <leon@boasi.io>  Sun, 22 Nov 2026 16:09:25 +0000
+
 linux-qcom-x1e (7.3.3-jg-1sp11v9) stonking; urgency=medium
 
   * media: i2c: ov13858: bring up the Denali rear camera. Add the
